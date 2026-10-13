@@ -306,3 +306,44 @@ fn inherited_git_variables_never_redirect_git() {
     assert_eq!(ended["dirty_files"], json!(["src/login.rs"]), "{ended}");
     assert_eq!(env.log(), "");
 }
+
+/// Git broken or missing on every git-using hook path: each hook still exits 0, and a
+/// resumed session still gets its briefing.
+#[cfg(unix)]
+#[test]
+fn broken_git_never_fails_a_hook() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mut env = env();
+    env.hook("session-start", "s1");
+    claim(&env, "s1", "1.1");
+    edit(&env, "s1", "src/login.rs", "half\n");
+    env.hook("session-end", "s1");
+    env.hook("session-start", "s2");
+    let bin = tempfile::tempdir().unwrap();
+    let fake = bin.path().join("git");
+    std::fs::write(&fake, "#!/bin/sh\necho 'fatal: broken' >&2\nexit 128\n").unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for path in [
+        format!("{}:/usr/bin:/bin", bin.path().display()),
+        // No git at all.
+        bin.path().join("none").display().to_string(),
+    ] {
+        env.vars = vec![("PATH".into(), path)];
+        // A dead session to analyse at the next start.
+        env.hook("session-end", "s2");
+        let out = hook_with(&env, "session-start", "s2", |p| {
+            p["source"] = json!("resume");
+        });
+        assert!(out.contains("bridge-screen briefing"), "{out}");
+        claim(&env, "s2", "1.2");
+        hook_with(&env, "pre-tool-use", "s2", |p| {
+            p["tool_name"] = json!("Bash");
+            p["tool_input"] = json!({"command": "gh pr create --fill"});
+        });
+        hook_with(&env, "post-tool-use", "s2", |p| {
+            p["tool_name"] = json!("Bash");
+            p["tool_input"] = json!({"command": "git commit -m x"});
+        });
+        env.hook("stop", "s2");
+    }
+}
