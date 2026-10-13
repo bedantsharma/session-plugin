@@ -246,3 +246,213 @@ fn summary_text_is_not_stored() {
         .count();
     assert_eq!(summary, 300);
 }
+
+mod tolerance {
+    use super::*;
+    use bridge_screen_core::store::{EventDraft, append_in_at};
+    use jiff::{SignedDuration, Timestamp};
+
+    /// `s1` has been on detour "CI cache is broken" for 35 minutes (task 1.1, 30-minute
+    /// estimate: tolerance 15 minutes), as of now.
+    fn far_off(env: &Env, session: &str) {
+        env.hook("session-start", session);
+        claim(env, session, "1.1");
+        let mut store = Store::open(&env.db_path()).unwrap();
+        let repo = session::get(store.conn(), session)
+            .unwrap()
+            .unwrap()
+            .repo_id;
+        let now = Timestamp::now();
+        let ago = |min: i64| now - SignedDuration::from_mins(min);
+        let script = [
+            ("prompt", json!({"chars": 5}), ago(40)),
+            (
+                "detour_opened",
+                json!({"detour_id": format!("D-{session}"), "reason": "CI cache is broken",
+                       "blocks": "1.1", "resume_cue": "rerun the login test"}),
+                ago(40),
+            ),
+            (
+                "item_suspended",
+                json!({"item_id": format!("I-{session}"), "kind": "task", "ref_id": "1.1",
+                       "resume_cue": "rerun the login test", "by_detour": format!("D-{session}")}),
+                ago(40),
+            ),
+            ("unit_stopped", json!({"unit_no": 1}), ago(5)),
+            (
+                "unit_labeled",
+                json!({"unit_no": 1, "label": "detour", "source": "declared"}),
+                ago(5),
+            ),
+        ];
+        store
+            .write(|tx| {
+                for (kind, data, ts) in script {
+                    append_in_at(tx, EventDraft::new(&repo, session, kind, data), ts)?;
+                }
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    fn bash(env: &Env, session: &str) -> String {
+        hook_with(env, "post-tool-use", session, |p| {
+            p["tool_name"] = json!("Bash");
+            p["tool_input"] = json!({"command": "cargo test"});
+        })
+    }
+
+    fn cli(env: &Env, args: &[&str]) -> (bool, String) {
+        let out = env.run(args, "");
+        let text = if out.status.success() {
+            String::from_utf8(out.stdout).unwrap()
+        } else {
+            String::from_utf8(out.stderr).unwrap()
+        };
+        (out.status.success(), text)
+    }
+
+    fn nav_state(env: &Env, session: &str) -> String {
+        let store = Store::open(&env.db_path()).unwrap();
+        session::get(store.conn(), session)
+            .unwrap()
+            .unwrap()
+            .nav_state
+            .as_str()
+            .to_string()
+    }
+
+    const RED: &str = "bridge-screen: this detour is well past tolerance; the owner has been flagged. Keep going if it's essential, or close it and return to 1.1 Login form validation.";
+
+    #[test]
+    fn red_flags_the_owner_and_is_listed_first() {
+        let env = Env::new();
+        assert!(env.run(&["plan", "edit"], SEED).status.success());
+        far_off(&env, "s1aaaa");
+        env.hook("session-start", "s2bbbb");
+        let out = bash(&env, "s1aaaa");
+        assert_eq!(context_of(&out, "PostToolUse"), RED);
+        assert_eq!(nav_state(&env, "s1aaaa"), "red");
+        let flagged = events(&env)
+            .into_iter()
+            .find(|e| e.kind == "needs_owner")
+            .unwrap();
+        assert_eq!(flagged.data["kind"], "drift");
+        // Rate-limited: the next tool call says nothing.
+        assert_eq!(bash(&env, "s1aaaa"), "");
+        let (_, status) = cli(&env, &["status"]);
+        let lines: Vec<&str> = status.lines().collect();
+        assert!(lines[2].starts_with("  S s1aaaa  needs you"), "{status}");
+        assert!(lines[3].starts_with("  S s2bbbb  idle"), "{status}");
+    }
+
+    #[test]
+    fn continue_drops_back_to_green_and_is_told_once() {
+        let env = Env::new();
+        assert!(env.run(&["plan", "edit"], SEED).status.success());
+        far_off(&env, "s1aaaa");
+        bash(&env, "s1aaaa");
+        let (ok, text) = cli(&env, &["drift", "s1", "continue"]);
+        assert!(ok, "{text}");
+        assert_eq!(text, "Told s1aaaa: continue.\n");
+        assert_eq!(nav_state(&env, "s1aaaa"), "green");
+        // The answer reaches the agent at its next prompt, once.
+        let out = env.hook("user-prompt-submit", "s1aaaa");
+        assert_eq!(
+            context_of(&out, "UserPromptSubmit"),
+            "bridge-screen: the owner says continue."
+        );
+        assert_eq!(bash(&env, "s1aaaa"), "");
+        assert_eq!(env.hook("user-prompt-submit", "s1aaaa"), "");
+    }
+
+    #[test]
+    fn stop_reaches_the_agent_once() {
+        let env = Env::new();
+        assert!(env.run(&["plan", "edit"], SEED).status.success());
+        far_off(&env, "s1aaaa");
+        let (ok, text) = cli(&env, &["drift", "s1a", "stop"]);
+        assert!(ok, "{text}");
+        let out = env.hook("user-prompt-submit", "s1aaaa");
+        assert_eq!(
+            context_of(&out, "UserPromptSubmit"),
+            "bridge-screen: the owner says stop the detour and return to 1.1 Login form validation."
+        );
+        assert_eq!(env.hook("user-prompt-submit", "s1aaaa"), "");
+        let replies = events(&env)
+            .into_iter()
+            .filter(|e| e.kind == "note_sent" && e.data["kind"] == "owner_reply")
+            .count();
+        assert_eq!(replies, 1);
+    }
+
+    #[test]
+    fn make_task_promotes_the_detour() {
+        let env = Env::new();
+        assert!(env.run(&["plan", "edit"], SEED).status.success());
+        far_off(&env, "s1aaaa");
+        let (ok, text) = cli(&env, &["drift", "s1", "make-task"]);
+        assert!(!ok);
+        assert!(text.contains("--title"), "{text}");
+        let (ok, text) = cli(
+            &env,
+            &[
+                "drift",
+                "s1",
+                "make-task",
+                "--parent",
+                "1",
+                "--title",
+                "Fix the CI cache",
+            ],
+        );
+        assert!(ok, "{text}");
+        assert_eq!(text, "Detour D1 is now task 1.3, claimed by s1aaaa.\n");
+        let store = Store::open(&env.db_path()).unwrap();
+        let s = session::get(store.conn(), "s1aaaa").unwrap().unwrap();
+        assert_eq!(s.active_task.as_deref(), Some("1.3"));
+        assert_eq!(s.current_detour, None);
+    }
+
+    #[test]
+    fn label_override_creates_an_owner_sample() {
+        let env = setup();
+        unit(&env, "s1", &["src/login.rs"], ON_TASK);
+        let (ok, text) = cli(&env, &["label", "s1", "1", "drift"]);
+        assert!(ok, "{text}");
+        assert_eq!(text, "Labelled unit 1 of s1 as drift.\n");
+        let u = &units(&env, "s1")[0];
+        assert_eq!(
+            (u.label, u.label_source),
+            (Some(Label::Drift), Some(LabelSource::Owner))
+        );
+        assert!(u.disagreement, "the heuristic said on-task");
+        let store = Store::open(&env.db_path()).unwrap();
+        let (n, source): (i64, String) = store
+            .conn()
+            .query_row("SELECT count(*), max(source) FROM drift_samples", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((n, source.as_str()), (1, "owner"));
+        let (ok, text) = cli(&env, &["label", "s1", "7", "drift"]);
+        assert!(!ok);
+        assert!(
+            text.contains("no finished unit 7 in this session"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn session_prefix_must_be_unique() {
+        let env = Env::new();
+        env.hook("session-start", "abc111");
+        env.hook("session-start", "abc222");
+        let (ok, text) = cli(&env, &["drift", "abc", "continue"]);
+        assert!(!ok);
+        assert!(text.contains("ambiguous"), "{text}");
+        let (ok, text) = cli(&env, &["drift", "zzz", "continue"]);
+        assert!(!ok);
+        assert!(text.contains("no live session starts with zzz"), "{text}");
+    }
+}

@@ -9,6 +9,7 @@ use bridge_screen_core::claim::task_title;
 use bridge_screen_core::plan::{NodeStatus, get_node};
 use bridge_screen_core::session::{self, Session, SessionState};
 use bridge_screen_core::store::{Store, repo_name};
+use bridge_screen_core::tangent::NavState;
 
 /// Width of the "state + task" column, and the most of it the text may use.
 const TASK_COLUMN: usize = 32;
@@ -18,13 +19,16 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
-/// Needs-you first, then working, then idle.
-fn state_rank(state: SessionState) -> u8 {
-    match state {
-        SessionState::NeedsOwner => 0,
-        SessionState::Working => 1,
-        SessionState::Idle => 2,
-        SessionState::Ended => 3,
+/// Red drift first, then other needs-you, then working, then idle.
+fn state_rank(s: &Session) -> u8 {
+    if s.nav_state == NavState::Red {
+        return 0;
+    }
+    match s.state {
+        SessionState::NeedsOwner => 1,
+        SessionState::Working => 2,
+        SessionState::Idle => 3,
+        SessionState::Ended => 4,
     }
 }
 
@@ -66,7 +70,7 @@ pub fn render(store: &Store) -> Result<String> {
             }
         }
         // `list_live` is newest first; a stable sort keeps that within each state.
-        sessions.sort_by_key(|s| state_rank(s.state));
+        sessions.sort_by_key(state_rank);
         for s in &sessions {
             out.push_str(&session_line(store, s)?);
         }
@@ -77,6 +81,7 @@ pub fn render(store: &Store) -> Result<String> {
 fn session_line(store: &Store, s: &Session) -> Result<String> {
     let short: String = s.session_id.chars().take(6).collect();
     let label = match s.state {
+        _ if s.nav_state == NavState::Red => "needs you",
         SessionState::NeedsOwner => "needs you",
         SessionState::Working => "working",
         SessionState::Idle => "idle",

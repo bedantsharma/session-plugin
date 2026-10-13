@@ -9,6 +9,7 @@
 
 pub mod ops;
 pub mod project;
+pub mod tolerance;
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use schemars::JsonSchema;
@@ -24,6 +25,7 @@ pub use project::{
     ConfigChanged, DetourClosed, DetourOpened, DetourPromoted, DriftFlagged, ItemResumed,
     ItemSuspended, NavStateChanged, NoteSent, OwnerAction, TANGENT_KINDS, UnitLabeled, project,
 };
+pub use tolerance::{NavEval, drift_pause, evaluate, tolerance_secs};
 
 /// What a unit of work was, relative to the session's task (spec §7.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]

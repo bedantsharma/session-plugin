@@ -66,6 +66,9 @@ pub struct FileEvent {
 pub enum NeedsOwnerKind {
     PermissionPrompt,
     IdlePrompt,
+    /// Far outside the tolerance band (spec §7.3). The owner should look, but the agent
+    /// keeps working: this is not a wait.
+    Drift,
     #[serde(other)]
     Other,
 }
@@ -178,8 +181,10 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
     match event.kind.as_str() {
         "prompt" => at.prompt(unit, &payload(event)?)?,
         "needs_owner" => {
-            payload::<NeedsOwner>(event)?;
-            at.needs_owner(unit)?;
+            let d: NeedsOwner = payload(event)?;
+            if d.kind != NeedsOwnerKind::Drift {
+                at.needs_owner(unit)?;
+            }
         }
         "tool_intent" => at.tool_activity(unit.as_ref())?,
         "file_changed" => {

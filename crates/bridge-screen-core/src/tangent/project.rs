@@ -391,7 +391,8 @@ fn owner_action(tx: &Transaction, event: &Event, d: &OwnerAction) -> Result<()> 
     if answer == "continue" {
         tx.execute(
             "UPDATE sessions SET ack_away_secs = away_secs,
-                 ack_unit = (SELECT COALESCE(MAX(unit_no), 0) FROM units WHERE session_id = ?1)
+                 ack_unit = (SELECT COALESCE(MAX(unit_no), 0) FROM units
+                             WHERE session_id = ?1 AND stopped_at IS NOT NULL)
              WHERE session_id = ?1",
             [target],
         )?;

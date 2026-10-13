@@ -97,11 +97,14 @@ pub fn handle(
         config,
         stopped_unit: scored.map(|(unit_no, _)| unit_no),
         actor: ctx.actor(),
+        now: jiff::Timestamp::now(),
     };
     // Nothing of our own to record: look first (read-only) whether the navigator has
     // anything to do, so the common tool call doesn't take the write lock.
-    let worth_writing =
-        !all.is_empty() || (navigates && !nav::step(store.conn(), &nav_ctx)?.is_empty());
+    let worth_writing = !all.is_empty()
+        || (navigates
+            && !(nav::step(store.conn(), &nav_ctx)?.is_empty()
+                && nav::state_step(store.conn(), &nav_ctx)?.is_empty()));
     let mut note = None;
     if worth_writing {
         note = store.write(|tx| {
@@ -111,11 +114,16 @@ pub fn handle(
             if !navigates {
                 return Ok(None);
             }
-            let step = nav::step(tx, &nav_ctx)?;
-            for draft in step.events {
+            // Labels first, so the tolerance band sees them.
+            let labels = nav::step(tx, &nav_ctx)?;
+            for draft in labels.events {
                 append_in(tx, draft)?;
             }
-            Ok(step.note)
+            let state = nav::state_step(tx, &nav_ctx)?;
+            for draft in state.events {
+                append_in(tx, draft)?;
+            }
+            Ok(labels.note.or(state.note))
         })?;
     }
     if let Some((tool_use_id, tool, args)) = call {

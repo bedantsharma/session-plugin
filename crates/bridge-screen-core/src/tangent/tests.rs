@@ -349,3 +349,281 @@ fn nav_state_notes_and_tuning_project() {
         .unwrap();
     assert_eq!(row, (Some(0.35), None, 20));
 }
+
+mod tolerance {
+    use super::{at, ev, open_detour};
+    use crate::config::Config;
+    use crate::navigator::{Channel, nav_step};
+    use crate::plan::{EditContext, NodeKind, PlanOp, plan_edit};
+    use crate::repo::RepoInfo;
+    use crate::session;
+    use crate::store::{Actor, Store, append_in};
+    use crate::tangent::{NavState, Thresholds, evaluate, tolerance_secs};
+    use serde_json::json;
+
+    fn th() -> Thresholds {
+        Thresholds::from_config(&Config::default())
+    }
+
+    /// Repo `r` with G → 1.1 Login form (100 min) and 1.2 Reset (no estimate); session `s`.
+    fn planned(task: Option<&str>) -> Store {
+        let mut s = Store::open_in_memory().unwrap();
+        s.register_repo(&RepoInfo {
+            id: "r".into(),
+            name: "shop".into(),
+            root: "/r".into(),
+        })
+        .unwrap();
+        let add = |parent: Option<&str>, kind, title: &str, est| PlanOp::AddNode {
+            parent: parent.map(str::to_string),
+            kind,
+            title: title.into(),
+            intent: kind.requires_intent().then(|| "why".to_string()),
+            estimate_min: est,
+            expected_files: vec![],
+        };
+        plan_edit(
+            &mut s,
+            &EditContext {
+                repo_id: "r".into(),
+                session_id: "owner".into(),
+                actor: Actor::default(),
+                reason: None,
+                replan: false,
+            },
+            &[
+                add(None, NodeKind::Goal, "Ship", None),
+                add(Some("G"), NodeKind::Milestone, "Accounts", None),
+                add(Some("1"), NodeKind::Task, "Login form", Some(100)),
+                add(Some("1"), NodeKind::Task, "Reset", None),
+            ],
+        )
+        .unwrap();
+        ev(
+            &mut s,
+            "session_started",
+            json!({"cwd": "/r", "source": "startup"}),
+            0,
+        );
+        if let Some(t) = task {
+            ev(
+                &mut s,
+                "task_claimed",
+                json!({"task_id": t, "mode": "auto", "confidence": 0.9}),
+                0,
+            );
+        }
+        s
+    }
+
+    fn eval(s: &Store, now: i64) -> (NavState, i64) {
+        let sess = session::get(s.conn(), "s").unwrap().unwrap();
+        let e = evaluate(s.conn(), &sess, &th(), at(now)).unwrap();
+        (e.state, e.away_secs)
+    }
+
+    fn detour_unit(s: &mut Store, unit_no: i64, from: i64, to: i64) {
+        ev(s, "prompt", json!({"chars": 1}), from);
+        ev(s, "unit_stopped", json!({}), to);
+        ev(
+            s,
+            "unit_labeled",
+            json!({"unit_no": unit_no, "label": "detour", "source": "declared"}),
+            to,
+        );
+    }
+
+    #[test]
+    fn tolerance_without_estimate_or_task() {
+        assert_eq!(tolerance_secs(&th(), None), 900);
+        assert_eq!(tolerance_secs(&th(), Some(30)), 900);
+        assert_eq!(tolerance_secs(&th(), Some(100)), 1200);
+
+        // A session that never claimed a task still counts away time.
+        let mut s = planned(None);
+        ev(
+            &mut s,
+            "detour_opened",
+            json!({"detour_id": "D1", "reason": "setup", "blocks": null, "resume_cue": "x"}),
+            0,
+        );
+        detour_unit(&mut s, 1, 0, 600);
+        assert_eq!(eval(&s, 700), (NavState::Green, 600));
+        detour_unit(&mut s, 2, 700, 1100);
+        assert_eq!(eval(&s, 1200), (NavState::Amber, 1000));
+
+        // A task without an estimate uses the 15-minute floor.
+        let mut s = planned(Some("1.2"));
+        open_detour(&mut s, "D1", "I1", "task", "1.2", 0);
+        detour_unit(&mut s, 1, 0, 1900);
+        assert_eq!(eval(&s, 2000), (NavState::Red, 1900));
+    }
+
+    #[test]
+    fn transitions_with_live_time_and_waits() {
+        // Tolerance for 1.1: max(15 min, 20% of 100 min) = 20 min.
+        let mut s = planned(Some("1.1"));
+        open_detour(&mut s, "D1", "I1", "task", "1.1", 0);
+        detour_unit(&mut s, 1, 0, 1500);
+        assert_eq!(eval(&s, 1600), (NavState::Amber, 1500));
+        // A unit still open inside the detour counts live, minus waits on the owner.
+        ev(&mut s, "prompt", json!({"chars": 1}), 2000);
+        ev(
+            &mut s,
+            "needs_owner",
+            json!({"kind": "permission_prompt"}),
+            2100,
+        );
+        ev(
+            &mut s,
+            "tool_intent",
+            json!({"tool": "Bash", "files": []}),
+            2400,
+        );
+        assert_eq!(eval(&s, 3000), (NavState::Amber, 2200));
+        assert_eq!(eval(&s, 3300), (NavState::Red, 2500));
+        // The owner says continue: what was seen is acknowledged.
+        ev(
+            &mut s,
+            "owner_action",
+            json!({"action": "drift", "answer": "continue", "target": "s"}),
+            3300,
+        );
+        assert_eq!(eval(&s, 3300), (NavState::Green, 1000));
+    }
+
+    #[test]
+    fn a_flagged_unit_without_a_declared_detour_is_red_until_acknowledged() {
+        let mut s = planned(Some("1.1"));
+        ev(&mut s, "prompt", json!({"chars": 1}), 0);
+        ev(&mut s, "unit_stopped", json!({"score": 0.9}), 60);
+        ev(
+            &mut s,
+            "drift_flagged",
+            json!({"unit_no": 1, "score": 0.9}),
+            60,
+        );
+        assert_eq!(eval(&s, 100).0, NavState::Red);
+        // Labelled a detour by the agent: a declared reason after all.
+        ev(
+            &mut s,
+            "unit_labeled",
+            json!({"unit_no": 1, "label": "detour", "source": "agent", "heuristic": "drift"}),
+            70,
+        );
+        assert_eq!(eval(&s, 100).0, NavState::Green);
+        ev(
+            &mut s,
+            "unit_labeled",
+            json!({"unit_no": 1, "label": "on_task", "source": "agent", "heuristic": "drift"}),
+            80,
+        );
+        assert_eq!(eval(&s, 100).0, NavState::Red);
+        ev(
+            &mut s,
+            "owner_action",
+            json!({"action": "drift", "answer": "continue", "target": "s"}),
+            90,
+        );
+        assert_eq!(eval(&s, 100).0, NavState::Green);
+    }
+
+    fn step(s: &mut Store, channel: Channel, now: i64) -> (Vec<String>, Option<String>) {
+        s.write(|tx| {
+            let step = nav_step(tx, "s", channel, &th(), at(now))?;
+            let kinds = step.events.iter().map(|e| e.kind.clone()).collect();
+            for e in step.events {
+                append_in(tx, e)?;
+            }
+            Ok((kinds, step.note))
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn amber_warning_once_per_state() {
+        let mut s = planned(Some("1.1"));
+        open_detour(&mut s, "D1", "I1", "task", "1.1", 0);
+        detour_unit(&mut s, 1, 0, 1800);
+        let (kinds, note) = step(&mut s, Channel::PostToolUse, 1900);
+        assert_eq!(kinds, vec!["nav_state_changed", "note_sent"]);
+        assert_eq!(
+            note.as_deref(),
+            Some(
+                "bridge-screen: you've been on \"fix D1\" for 30 min (~0.3× the task estimate). Continue if it still blocks 1.1 Login form; otherwise close the detour and return."
+            )
+        );
+        assert_eq!(
+            session::get(s.conn(), "s").unwrap().unwrap().nav_state,
+            NavState::Amber
+        );
+        // Same unit, same state: nothing.
+        assert_eq!(step(&mut s, Channel::PostToolUse, 1950), (vec![], None));
+        // Next unit, still the same state: rate-limited.
+        ev(&mut s, "prompt", json!({"chars": 1}), 2000);
+        assert_eq!(step(&mut s, Channel::PostToolUse, 2010), (vec![], None));
+        // Far outside tolerance: the state changed, so the red note goes out at once
+        // (unit 2 had none yet), and the owner is flagged.
+        let (kinds, note) = step(&mut s, Channel::PostToolUse, 2700);
+        assert_eq!(kinds, vec!["nav_state_changed", "needs_owner", "note_sent"]);
+        assert_eq!(
+            note.as_deref(),
+            Some(
+                "bridge-screen: this detour is well past tolerance; the owner has been flagged. Keep going if it's essential, or close it and return to 1.1 Login form."
+            )
+        );
+        ev(&mut s, "unit_stopped", json!({}), 2700);
+        ev(
+            &mut s,
+            "unit_labeled",
+            json!({"unit_no": 2, "label": "detour", "source": "declared"}),
+            2700,
+        );
+        // Still red in the next unit: not repeated.
+        ev(&mut s, "prompt", json!({"chars": 1}), 2800);
+        assert_eq!(step(&mut s, Channel::PostToolUse, 2810), (vec![], None));
+        // Other channels carry no tolerance notes.
+        ev(&mut s, "prompt", json!({"chars": 1}), 2900);
+        assert_eq!(step(&mut s, Channel::PromptSubmit, 2910).1, None);
+    }
+
+    #[test]
+    fn drift_pause_changes_the_red_note() {
+        let mut s = planned(Some("1.1"));
+        s.conn()
+            .execute(
+                "UPDATE repos SET settings = '{\"drift_pause\": true}' WHERE id = 'r'",
+                [],
+            )
+            .unwrap();
+        open_detour(&mut s, "D1", "I1", "task", "1.1", 0);
+        detour_unit(&mut s, 1, 0, 3000);
+        let (_, note) = step(&mut s, Channel::PostToolUse, 3100);
+        assert_eq!(
+            note.as_deref(),
+            Some(
+                "bridge-screen: this detour is well past tolerance; the owner has been flagged. Finish your current step, commit, then stop and ask the owner before continuing."
+            )
+        );
+    }
+
+    #[test]
+    fn owner_reply_is_delivered_once() {
+        let mut s = planned(Some("1.1"));
+        ev(&mut s, "prompt", json!({"chars": 1}), 0);
+        ev(
+            &mut s,
+            "owner_action",
+            json!({"action": "drift", "answer": "stop", "target": "s"}),
+            10,
+        );
+        let (_, note) = step(&mut s, Channel::PromptSubmit, 20);
+        assert_eq!(
+            note.as_deref(),
+            Some("bridge-screen: the owner says stop the detour and return to 1.1 Login form.")
+        );
+        ev(&mut s, "prompt", json!({"chars": 1}), 30);
+        assert_eq!(step(&mut s, Channel::PromptSubmit, 40).1, None);
+        assert_eq!(step(&mut s, Channel::PostToolUse, 40).1, None);
+    }
+}

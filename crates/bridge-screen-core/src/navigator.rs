@@ -7,10 +7,14 @@
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
+use crate::claim::task_title;
 use crate::error::Result;
-use crate::session::{Session, Unit};
+use crate::session::{self, NeedsOwner, NeedsOwnerKind, Session, SessionState, Unit};
 use crate::store::EventDraft;
-use crate::tangent::{DriftFlagged, Label, LabelSource, NoteSent, Thresholds, UnitLabeled};
+use crate::tangent::{
+    DriftFlagged, Label, LabelSource, NavEval, NavState, NavStateChanged, NoteSent, Thresholds,
+    UnitLabeled, drift_pause, evaluate, get_detour,
+};
 
 /// Kinds of note, highest priority first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -362,6 +366,156 @@ pub fn label_left_unlabeled(
         unit.drift_score,
         heuristic,
     )?))
+}
+
+/// `1.2 Login form`, or `your task` without one.
+fn task_display(conn: &Connection, session: &Session) -> Result<String> {
+    Ok(match &session.active_task {
+        Some(id) => {
+            let title = task_title(conn, &session.repo_id, id)?.unwrap_or_default();
+            format!("{id} {title}").trim_end().to_string()
+        }
+        None => "your task".to_string(),
+    })
+}
+
+/// The amber note (spec §7.3).
+fn tolerance_text(reason: &str, e: &NavEval, task: &str) -> String {
+    let minutes = e.away_secs / 60;
+    let ratio = match e.estimate_min.filter(|m| *m > 0) {
+        #[allow(clippy::cast_precision_loss)] // seconds of away time
+        Some(est) => format!(
+            " (~{:.1}× the task estimate)",
+            e.away_secs as f64 / (f64::from(est) * 60.0)
+        ),
+        None => String::new(),
+    };
+    format!(
+        "bridge-screen: you've been on \"{reason}\" for {minutes} min{ratio}. Continue if it still blocks {task}; otherwise close the detour and return."
+    )
+}
+
+/// The red note; with `drift_pause` the agent stops after its current step.
+fn red_text(on_detour: bool, pause: bool, task: &str) -> String {
+    let what = if on_detour {
+        "this detour"
+    } else {
+        "this tangent"
+    };
+    let head = format!("bridge-screen: {what} is well past tolerance; the owner has been flagged.");
+    if pause {
+        format!(
+            "{head} Finish your current step, commit, then stop and ask the owner before continuing."
+        )
+    } else {
+        format!("{head} Keep going if it's essential, or close it and return to {task}.")
+    }
+}
+
+/// The owner's answer to a drift question, as a note.
+fn reply_text(answer: &str, task: &str) -> String {
+    let says = match answer {
+        "continue" => "continue".to_string(),
+        "make_task" => "make this a task".to_string(),
+        _ => format!("stop the detour and return to {task}"),
+    };
+    format!("bridge-screen: the owner says {says}.")
+}
+
+/// Track the tolerance band and pick a note for `channel` (spec §7.3, §7.5):
+/// - when the computed state differs from the stored one, `nav_state_changed` (and, on
+///   red, `needs_owner {kind: drift}` so the owner sees it);
+/// - through `PostToolUse`: a tolerance warning on amber, the red note on red;
+/// - through `PostToolUse` or `UserPromptSubmit`: a pending owner answer.
+pub fn nav_step(
+    conn: &Connection,
+    session_id: &str,
+    channel: Channel,
+    th: &Thresholds,
+    now: jiff::Timestamp,
+) -> Result<Step> {
+    let mut step = Step::default();
+    let Some(session) = session::get(conn, session_id)? else {
+        return Ok(step);
+    };
+    if session.state == SessionState::Ended {
+        return Ok(step);
+    }
+    let e = evaluate(conn, &session, th, now)?;
+    if e.state != session.nav_state {
+        let data = NavStateChanged {
+            from: session.nav_state,
+            to: e.state,
+            away_secs: e.away_secs,
+        };
+        step.events
+            .push(draft(&session, "nav_state_changed", &data)?);
+        if e.state == NavState::Red {
+            let data = NeedsOwner {
+                kind: NeedsOwnerKind::Drift,
+            };
+            step.events.push(draft(&session, "needs_owner", &data)?);
+        }
+    }
+    let notes_here = matches!(channel, Channel::PostToolUse | Channel::PromptSubmit);
+    if !notes_here {
+        return Ok(step);
+    }
+    let detour = match &session.current_detour {
+        Some(id) => get_detour(conn, id)?,
+        None => None,
+    };
+    let key_end = detour.as_ref().map_or("none", |d| d.detour_id.as_str());
+    let task = task_display(conn, &session)?;
+    let mut candidates = Vec::new();
+    if channel == Channel::PostToolUse {
+        match e.state {
+            NavState::Amber => {
+                let reason = detour
+                    .as_ref()
+                    .map_or("work outside your task", |d| d.reason.as_str());
+                candidates.push(Candidate::new(
+                    NoteKind::ToleranceWarning,
+                    channel,
+                    tolerance_text(reason, &e, &task),
+                    format!("tol:amber:{key_end}"),
+                ));
+            }
+            NavState::Red => {
+                let pause = drift_pause(conn, &session.repo_id)?;
+                candidates.push(Candidate::new(
+                    NoteKind::DriftRed,
+                    channel,
+                    red_text(detour.is_some(), pause, &task),
+                    format!("tol:red:{key_end}"),
+                ));
+            }
+            NavState::Green => {}
+        }
+    }
+    if let Some(pending) = &session.pending_reply {
+        let (answer, id) = pending.split_once(':').unwrap_or((pending.as_str(), ""));
+        candidates.push(Candidate::new(
+            NoteKind::OwnerReply,
+            channel,
+            reply_text(answer, &task),
+            format!("reply:{id}"),
+        ));
+    }
+    if candidates.is_empty() {
+        return Ok(step);
+    }
+    let unit_no = session::last_unit(conn, session_id)?.map_or(0, |u| u.unit_no);
+    if let Some(note) = select(conn, session_id, unit_no, channel, candidates)? {
+        step.events.push(note_sent_draft(
+            &session.repo_id,
+            session_id,
+            unit_no,
+            &note,
+        )?);
+        step.note = Some(note.text);
+    }
+    Ok(step)
 }
 
 #[cfg(test)]
