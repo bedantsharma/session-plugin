@@ -167,6 +167,9 @@ fn claim_in(tx: &Transaction, req: &ClaimRequest) -> Result<ClaimOutcome> {
     let session = session::get(tx, &req.session_id)?
         .filter(|s| s.repo_id == req.repo_id)
         .ok_or_else(|| claim_err(format!("unknown session {}", req.session_id)))?;
+    if session.state == session::SessionState::Ended {
+        return Err(claim_err(format!("session {} has ended", req.session_id)));
+    }
     if !(0.0..=1.0).contains(&req.confidence) {
         return Err(claim_err("confidence must be between 0 and 1"));
     }
@@ -572,6 +575,18 @@ mod tests {
             "unknown session nobody"
         );
         assert_eq!(active_task(&s, "s1"), None);
+        s.append(EventDraft::new(
+            "r",
+            "s2",
+            "session_ended",
+            json!({"reason": "other"}),
+        ))
+        .unwrap();
+        assert_eq!(
+            claim_error(claim(&mut s, &req("s2", existing("1.1")))),
+            "session s2 has ended"
+        );
+        assert_eq!(status(&s, "1.1"), NodeStatus::Todo);
     }
 
     #[test]

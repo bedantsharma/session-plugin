@@ -134,12 +134,26 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
         .parse()
         .map_err(|e| Error::BadEvent(format!("timestamp {}: {e}", event.ts)))?;
     if event.kind == "session_started" {
-        upsert_session(tx, event, &payload(event)?)?;
+        let d: SessionStarted = payload(event)?;
+        if d.source != COMPACT
+            && let Some(before) = get(tx, &event.session_id)?
+            && let Some(open) = current_unit(tx, &event.session_id)?
+        {
+            close_crashed_unit(tx, &before, open, ts)?;
+        }
+        upsert_session(tx, event, &d)?;
     }
     // Events for a session bridge-screen never saw start change nothing.
     let Some(session) = get(tx, &event.session_id)? else {
         return Ok(());
     };
+    // Late hooks after SessionEnd don't bring an ended session back; a new start or a new
+    // prompt does.
+    if session.state == SessionState::Ended
+        && !matches!(event.kind.as_str(), "session_started" | "prompt")
+    {
+        return Ok(());
+    }
     let mut unit = current_unit(tx, &session.session_id)?;
     if let Some(u) = unit.as_mut()
         && event.kind != "needs_owner"
@@ -160,7 +174,10 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
     };
     match event.kind.as_str() {
         "prompt" => at.prompt(unit, &payload(event)?)?,
-        "needs_owner" => at.needs_owner(unit, &payload::<NeedsOwner>(event)?)?,
+        "needs_owner" => {
+            payload::<NeedsOwner>(event)?;
+            at.needs_owner(unit)?;
+        }
         "tool_intent" => at.tool_activity(unit.as_ref())?,
         "file_changed" => {
             at.tool_activity(unit.as_ref())?;
@@ -217,8 +234,36 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
     Ok(())
 }
 
+/// `SessionStart` source for a compaction inside a running session: not a new start.
+const COMPACT: &str = "compact";
+
+/// A session that starts again (resume) while a unit is still open crashed or was killed
+/// mid-unit. The unit ends at the session's last recorded event, not at the restart, so the
+/// time it lay dead doesn't count; a wait still open then ends there too.
+fn close_crashed_unit(
+    tx: &Transaction,
+    before: &Session,
+    mut u: Unit,
+    ts: Timestamp,
+) -> Result<()> {
+    let last = parse_ts(&before.last_event_at).unwrap_or(ts).min(ts);
+    let end = parse_ts(&u.started_at).map_or(last, |start| last.max(start).min(ts));
+    if let Some(since) = u.wait_started_at.take() {
+        u.waited_secs += secs_between(&since, end).max(0);
+    }
+    let end_text = end.to_string();
+    Moment {
+        tx,
+        ts: end,
+        ts_text: &end_text,
+        session: before,
+    }
+    .close_unit(u)
+}
+
 fn upsert_session(tx: &Transaction, event: &Event, d: &SessionStarted) -> Result<()> {
-    // A resumed session keeps its counters and first start time.
+    // A resumed session keeps its counters and first start time. A compaction happens
+    // inside a running session, so it changes neither its state nor how it started.
     tx.execute(
         "INSERT INTO sessions (session_id, repo_id, cwd, branch, source, model, transcript_path,
                                started_at, last_event_at, state)
@@ -226,12 +271,12 @@ fn upsert_session(tx: &Transaction, event: &Event, d: &SessionStarted) -> Result
          ON CONFLICT(session_id) DO UPDATE SET
              cwd = excluded.cwd,
              branch = COALESCE(excluded.branch, branch),
-             source = excluded.source,
              model = COALESCE(excluded.model, model),
              transcript_path = COALESCE(excluded.transcript_path, transcript_path),
-             state = 'idle',
-             ended_at = NULL,
-             end_reason = NULL",
+             source = CASE WHEN excluded.source = 'compact' THEN source ELSE excluded.source END,
+             state = CASE WHEN excluded.source = 'compact' THEN state ELSE 'idle' END,
+             ended_at = CASE WHEN excluded.source = 'compact' THEN ended_at ELSE NULL END,
+             end_reason = CASE WHEN excluded.source = 'compact' THEN end_reason ELSE NULL END",
         params![
             event.session_id,
             event.repo_id,
@@ -287,6 +332,11 @@ impl Moment<'_> {
         if let Some(u) = open {
             self.close_unit(u)?;
         }
+        // A prompt after SessionEnd means the session is alive after all.
+        self.tx.execute(
+            "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE session_id = ?1",
+            [&self.session.session_id],
+        )?;
         let unit_count: i64 = self.tx.query_row(
             "SELECT unit_count FROM sessions WHERE session_id = ?1",
             [&self.session.session_id],
@@ -306,10 +356,12 @@ impl Moment<'_> {
         self.set_state(SessionState::Working)
     }
 
-    fn needs_owner(&self, open: Option<Unit>, d: &NeedsOwner) -> Result<()> {
+    /// Every kind is a wait on the owner: a permission prompt, Claude idle at the prompt
+    /// (after an interrupt, which sends no Stop), or an MCP form. Inside a unit, the wait
+    /// lasts until the next activity.
+    fn needs_owner(&self, open: Option<Unit>) -> Result<()> {
         self.set_state(SessionState::NeedsOwner)?;
-        if d.kind == NeedsOwnerKind::PermissionPrompt
-            && let Some(mut u) = open
+        if let Some(mut u) = open
             && u.wait_started_at.is_none()
         {
             u.wait_started_at = Some(self.ts_text.to_string());

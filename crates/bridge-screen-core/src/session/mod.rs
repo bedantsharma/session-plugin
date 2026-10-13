@@ -1,7 +1,8 @@
 //! Sessions, units of work and agent-active time (spec §5.4–5.5).
 //!
 //! A **unit** runs from a `prompt` to its `unit_stopped`. Its active time is wall-clock time
-//! minus time spent waiting on a permission prompt. All durations come from event
+//! minus time spent waiting on the owner (`needs_owner`: a permission prompt, Claude idle
+//! at the prompt, an MCP form). All durations come from event
 //! timestamps, never from "now", so `rebuild` reproduces them exactly.
 
 pub mod project;

@@ -117,9 +117,44 @@ fn rebuild_reproduces_incremental_views() {
 }
 
 /// Two sessions in one repo, interleaved: waits, a missing Stop, a resume and an end.
+/// Compaction mid-unit, a crash and resume with a unit open, and a late hook after an end.
+fn restarts() -> Vec<(&'static str, i64, &'static str, Value)> {
+    vec![
+        // Compaction mid-unit, then a crash and a resume with the unit still open.
+        (
+            "s1",
+            420,
+            "session_started",
+            json!({"cwd": "/a", "source": "compact"}),
+        ),
+        (
+            "s1",
+            430,
+            "needs_owner",
+            json!({"kind": "permission_prompt"}),
+        ),
+        (
+            "s1",
+            5000,
+            "session_started",
+            json!({"cwd": "/a", "source": "resume"}),
+        ),
+        ("s1", 5010, "prompt", json!({"prompt_id": "p3", "chars": 7})),
+        // A late hook after a session ended changes nothing.
+        (
+            "s3",
+            5990,
+            "session_started",
+            json!({"cwd": "/a", "source": "startup"}),
+        ),
+        ("s3", 6000, "session_ended", json!({"reason": "logout"})),
+        ("s3", 6001, "needs_owner", json!({"kind": "idle_prompt"})),
+    ]
+}
+
 fn script_sessions(s: &mut Store) -> usize {
     let t0: Timestamp = "2026-10-13T09:00:00Z".parse().unwrap();
-    let script: Vec<(&str, i64, &str, Value)> = vec![
+    let mut script: Vec<(&str, i64, &str, Value)> = vec![
         (
             "s1",
             0,
@@ -188,6 +223,7 @@ fn script_sessions(s: &mut Store) -> usize {
         ),
         ("s1", 410, "prompt", json!({"prompt_id": "p2", "chars": 3})),
     ];
+    script.extend(restarts());
     let n = script.len();
     s.write(|tx| {
         for (session, secs, kind, data) in script {

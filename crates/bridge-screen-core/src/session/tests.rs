@@ -134,7 +134,9 @@ fn waits_and_idle_gaps_are_not_active_time() {
 }
 
 #[test]
-fn idle_prompt_notification_is_not_a_wait() {
+fn interrupted_unit_does_not_count_the_wait_for_the_next_prompt() {
+    // Esc interrupts the agent: no Stop. Claude Code then reports idle_prompt while it waits
+    // for the owner; the hour before the next prompt is not agent time.
     let mut s = Store::open_in_memory().unwrap();
     start(&mut s, "a", 0);
     prompt(&mut s, "a", 0);
@@ -143,10 +145,16 @@ fn idle_prompt_notification_is_not_a_wait() {
         "a",
         "needs_owner",
         json!({"kind": "idle_prompt"}),
-        5,
+        100,
     );
-    stop(&mut s, "a", 65);
-    assert_eq!(units(s.conn(), "a").unwrap()[0].active_secs, 65);
+    assert_eq!(
+        get(s.conn(), "a").unwrap().unwrap().state,
+        SessionState::NeedsOwner
+    );
+    prompt(&mut s, "a", 3700);
+    let all = units(s.conn(), "a").unwrap();
+    assert_eq!(all[0].active_secs, 100);
+    assert_eq!(all[0].waited_secs, 3600);
 }
 
 #[test]
@@ -277,4 +285,94 @@ fn events_for_unknown_sessions_change_nothing() {
     prompt(&mut s, "ghost", 0);
     assert_eq!(get(s.conn(), "ghost").unwrap(), None);
     assert_eq!(units(s.conn(), "ghost").unwrap(), vec![]);
+}
+
+#[test]
+fn late_events_after_session_end_do_not_revive_it() {
+    let mut s = Store::open_in_memory().unwrap();
+    start(&mut s, "a", 0);
+    prompt(&mut s, "a", 0);
+    stop(&mut s, "a", 30);
+    ev(&mut s, "a", "session_ended", json!({"reason": "other"}), 40);
+    ev(
+        &mut s,
+        "a",
+        "needs_owner",
+        json!({"kind": "idle_prompt"}),
+        50,
+    );
+    stop(&mut s, "a", 60);
+    changed(&mut s, "a", &["x.rs"], 70);
+    let session = get(s.conn(), "a").unwrap().unwrap();
+    assert_eq!(session.state, SessionState::Ended);
+    assert_eq!(session.ended_at, Some(at(40).to_string()));
+    assert_eq!(list_live(s.conn(), None).unwrap(), vec![]);
+
+    // A new prompt does mean the session is alive again.
+    prompt(&mut s, "a", 100);
+    let session = get(s.conn(), "a").unwrap().unwrap();
+    assert_eq!(session.state, SessionState::Working);
+    assert_eq!(session.ended_at, None);
+}
+
+#[test]
+fn compaction_mid_unit_keeps_the_unit_working() {
+    let mut s = Store::open_in_memory().unwrap();
+    start(&mut s, "a", 0);
+    prompt(&mut s, "a", 0);
+    ev(
+        &mut s,
+        "a",
+        "session_started",
+        json!({"cwd": "/repo", "source": "compact"}),
+        50,
+    );
+    assert_eq!(
+        get(s.conn(), "a").unwrap().unwrap().state,
+        SessionState::Working
+    );
+    stop(&mut s, "a", 80);
+    assert_eq!(units(s.conn(), "a").unwrap()[0].active_secs, 80);
+}
+
+#[test]
+fn resume_after_a_crash_closes_the_open_unit_at_its_last_event() {
+    // The process died mid-unit (no Stop, no SessionEnd) and was resumed a day later.
+    let mut s = Store::open_in_memory().unwrap();
+    start(&mut s, "a", 0);
+    prompt(&mut s, "a", 0);
+    changed(&mut s, "a", &["x.rs"], 40);
+    ev(
+        &mut s,
+        "a",
+        "session_started",
+        json!({"cwd": "/repo", "source": "resume"}),
+        86_400,
+    );
+    let all = units(s.conn(), "a").unwrap();
+    assert_eq!(all[0].stopped_at, Some(at(40).to_string()));
+    assert_eq!(all[0].active_secs, 40);
+    let session = get(s.conn(), "a").unwrap().unwrap();
+    assert_eq!(session.state, SessionState::Idle);
+    assert_eq!(session.active_secs, 40);
+
+    // A wait still open at the crash ends with it.
+    prompt(&mut s, "a", 90_000);
+    ev(
+        &mut s,
+        "a",
+        "needs_owner",
+        json!({"kind": "permission_prompt"}),
+        90_030,
+    );
+    ev(
+        &mut s,
+        "a",
+        "session_started",
+        json!({"cwd": "/repo", "source": "resume"}),
+        200_000,
+    );
+    let all = units(s.conn(), "a").unwrap();
+    assert_eq!(all[1].active_secs, 30);
+    assert_eq!(all[1].waited_secs, 0);
 }
