@@ -1,6 +1,10 @@
 //! Core library for bridge-screen.
 //!
-//! Modules are added per sub-project; see `docs/superpowers/specs/2026-10-13-bridge-screen-design.md` §4.2.
+//! See `docs/superpowers/specs/2026-10-13-bridge-screen-design.md` §4.2 for the module map.
+
+pub mod config;
+pub mod error;
+pub mod paths;
 
 /// Crate version, shared by the CLI and the plugin manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
