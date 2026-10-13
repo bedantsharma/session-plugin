@@ -86,6 +86,8 @@ dependencies = [
  "anyhow",
  "bridge-screen-core",
  "clap",
+ "jiff",
+ "serde",
  "serde_json",
  "tempfile",
 ]

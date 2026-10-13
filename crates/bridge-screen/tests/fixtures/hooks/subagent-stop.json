@@ -1,0 +1,13 @@
+{
+  "session_id": "SESSION",
+  "transcript_path": "/tmp/transcripts/SESSION.jsonl",
+  "cwd": "CWD",
+  "permission_mode": "default",
+  "hook_event_name": "SubagentStop",
+  "prompt_id": "PROMPT",
+  "stop_hook_active": false,
+  "agent_id": "def456",
+  "agent_type": "Explore",
+  "agent_transcript_path": "/tmp/transcripts/SESSION/subagents/agent-def456.jsonl",
+  "last_assistant_message": "Found 3 call sites of login()."
+}

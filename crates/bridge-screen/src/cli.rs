@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+use crate::hook::HookEvent;
+
 /// Keeps track of where your Claude Code agents are: progress, tangents, and handoffs.
 #[derive(Debug, Parser)]
 #[command(name = "bridge-screen", version)]
@@ -23,6 +25,11 @@ pub enum Command {
     Rebuild,
     /// Print the effective configuration.
     Config,
+    /// Handle a Claude Code hook event (reads the hook JSON on stdin). Always exits 0.
+    Hook {
+        #[arg(value_enum)]
+        event: HookEvent,
+    },
 }
 
 #[derive(Debug, Subcommand)]
