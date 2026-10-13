@@ -15,6 +15,12 @@ pub struct Store {
     conn: Connection,
 }
 
+/// What a rebuild did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RebuildStats {
+    pub events: usize,
+}
+
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         Self::init(Connection::open(path)?)
@@ -63,6 +69,22 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    /// Empty every view table and replay all events in append order (one transaction).
+    pub fn rebuild(&mut self) -> Result<RebuildStats> {
+        self.write(|tx| {
+            for table in crate::projection::VIEW_TABLES {
+                tx.execute(&format!("DELETE FROM {table}"), [])?;
+            }
+            let events = read_all(tx, None)?;
+            for event in &events {
+                crate::projection::apply(tx, event)?;
+            }
+            Ok(RebuildStats {
+                events: events.len(),
+            })
+        })
     }
 }
 
