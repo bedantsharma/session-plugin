@@ -84,7 +84,7 @@ pub enum PlanError {
     GoalExists { index: usize, id: String },
     #[error("op {index}: a {kind} needs an intent (its purpose and end state)")]
     MissingIntent { index: usize, kind: String },
-    #[error("op {index}: title must be 1 to 200 characters")]
+    #[error("op {index}: title must be 1 to 200 characters on a single line")]
     BadTitle { index: usize },
     #[error("op {index}: estimate must be greater than 0 minutes")]
     BadEstimate { index: usize },
@@ -182,7 +182,7 @@ fn live(conn: &Connection, repo: &str, index: usize, id: &str) -> Result<PlanNod
 
 fn check_title(index: usize, title: &str) -> Result<String> {
     let t = title.trim();
-    if t.is_empty() || t.chars().count() > MAX_TITLE_CHARS {
+    if t.is_empty() || t.chars().count() > MAX_TITLE_CHARS || t.chars().any(char::is_control) {
         return Err(PlanError::BadTitle { index }.into());
     }
     Ok(t.to_string())
@@ -642,6 +642,22 @@ mod tests {
             )),
             PlanError::BadTitle { index: 0 }
         );
+        // Titles end up in one-line places (tree rows, `wip(bridge): <id> <title>` commits).
+        assert_eq!(
+            plan_error(plan_edit(
+                &mut s,
+                &ctx(),
+                &[node("1", NodeKind::Task, "two\nlines")]
+            )),
+            PlanError::BadTitle { index: 0 }
+        );
+        let out = plan_edit(
+            &mut s,
+            &ctx(),
+            &[node("1", NodeKind::Task, &"é".repeat(200))],
+        )
+        .unwrap();
+        assert_eq!(out.added_ids, vec!["1.3"]);
         assert_eq!(
             plan_error(plan_edit(
                 &mut s,
