@@ -55,8 +55,25 @@ fn write_canonical(value: &Value, out: &mut String) {
             }
             out.push(']');
         }
+        Value::Number(n) => write_number(n, out),
         scalar => out.push_str(&scalar.to_string()),
     }
+}
+
+/// Numbers by value, not spelling: `1`, `1.0` and `1e0` all become `1`, so the hook and
+/// the server agree however each side's JSON writer formats them.
+fn write_number(n: &serde_json::Number, out: &mut String) {
+    if n.is_f64()
+        && let Some(f) = n.as_f64()
+        && f.fract() == 0.0
+        && f.abs() < 9_007_199_254_740_992.0
+    {
+        #[allow(clippy::cast_possible_truncation)] // integral and within ±2^53
+        let i = f as i64;
+        let _ = write!(out, "{i}");
+        return;
+    }
+    let _ = write!(out, "{n}");
 }
 
 /// First 16 hex chars of SHA-256 over the canonical JSON of a tool's arguments.
@@ -154,6 +171,19 @@ mod tests {
         assert_eq!(args_hash(&a), args_hash(&b));
         assert_ne!(args_hash(&a), args_hash(&json!({"b": 2})));
         assert_eq!(args_hash(&a).len(), 16);
+    }
+
+    #[test]
+    fn canonical_json_normalises_number_spelling() {
+        let parse = |t: &str| serde_json::from_str::<serde_json::Value>(t).unwrap();
+        assert_eq!(
+            args_hash(&parse(r#"{"confidence":1,"n":[2]}"#)),
+            args_hash(&parse(r#"{"confidence":1.0,"n":[2.0]}"#))
+        );
+        assert_eq!(canonical_json(&parse("1e2")), "100");
+        assert_eq!(canonical_json(&parse("-0.0")), "0");
+        assert_eq!(canonical_json(&parse("0.9")), "0.9");
+        assert_ne!(args_hash(&json!(0.9)), args_hash(&json!(1)));
     }
 
     #[test]
