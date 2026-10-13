@@ -45,7 +45,7 @@ The owner builds 2-day to 2-month projects almost entirely through Claude Code, 
 | Squash timing | Automatic when a PR is opened from Claude Code; manual command otherwise |
 | Needs-you escalation | More than 4 items |
 | Drift thresholds | Auto-tuned per repo, with guard rails and one-click revert |
-| Retention | Older than 15 days is archived and compressed, with search and restore tooling |
+| Retention | Projects inactive 15 days are archived; in active projects, detail over 16 MB and older than 2 days is compacted. Search and restore tooling. |
 
 ## 3. Principles drawn from other domains
 
@@ -540,7 +540,7 @@ All open questions from the first draft were answered by the owner on 2026-10-13
 2. **Squash timing:** automatic when a PR is opened (§8.1).
 3. **Needs-you escalation:** more than 4 items (§10.1).
 4. **Threshold tuning:** auto-tune the drift thresholds (§7.6).
-5. **Retention:** anything older than 15 days is archived and compacted, with retrieval directions and search tooling (§6.5).
+5. **Retention:** inactive projects archived after 15 days; size-triggered compaction (over 16 MB, older than 2 days) in active projects; retrieval directions and search tooling (§6.5).
 6. **Open-sourcing:** nothing chosen with that in mind. Name: `bridge_screen`.
 
 **Retention rules, confirmed:** projects inactive for 15 days are archived whole. In active projects, high-volume detail is compacted once it exceeds 16 MB per project, and only the part older than 2 days. Plan, decision and verification history stays in the main database.
