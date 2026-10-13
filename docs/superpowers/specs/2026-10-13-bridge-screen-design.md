@@ -1,15 +1,15 @@
-# Agent Progress Tracker — Design Spec
+# bridge_screen — Design Spec
 
 - **Date:** 2026-10-13
-- **Status:** Draft for owner review
+- **Status:** Draft for owner review (revision 2: owner answers to open questions applied)
 - **Source brief:** `agent-tracker-brief.md`
-- **Working name:** `tracker`
+- **Name:** `bridge_screen` (binary, CLI, plugin, and data folder `~/.bridge_screen`). It bridges the gap between what the agents are doing and the owner's understanding of the project.
 
 ---
 
 ## 1. Purpose and success criteria
 
-The owner builds 2-day to 2-month projects almost entirely through Claude Code, often with 1–N parallel sessions, each in its own git worktree. The tracker answers three questions at a glance, without the owner nagging agents or reading walls of text:
+The owner builds 2-day to 2-month projects almost entirely through Claude Code, often with 1–N parallel sessions, each in its own git worktree. bridge_screen answers three questions at a glance, without the owner nagging agents or reading walls of text:
 
 1. **Distance:** how close is each project to its goal?
 2. **Direction:** is each session advancing its task, or is it on a tangent?
@@ -19,7 +19,7 @@ The owner builds 2-day to 2-month projects almost entirely through Claude Code, 
 - The owner no longer maintains a `roadmap.md` by hand.
 - The glance screen answers all three questions in under 5 seconds.
 - A new session resumes a crashed session's work without the owner re-explaining it.
-- No tracker state is ever written inside a repo, apart from the WIP commits the owner approved.
+- No bridge_screen state is ever written inside a repo, apart from the WIP commits the owner approved.
 
 **Scope.** The full feature set from brief §3. Implementation is split into sub-projects (§13), but none are cut.
 
@@ -27,11 +27,11 @@ The owner builds 2-day to 2-month projects almost entirely through Claude Code, 
 
 | Topic | Decision |
 |---|---|
-| Steering model | **Navigator.** The tracker records events and puts short notes into the agent's context at key moments. It never blocks work. The one exception is the checkpoint commit (§8.1). |
+| Steering model | **Navigator.** bridge_screen records events and puts short notes into the agent's context at key moments. It never blocks work. The one exception is the checkpoint commit (§8.1). |
 | Claiming the active task | The agent claims it **automatically when confident** and asks the owner only when unsure where the work stands or where to start. Every claim is logged and visible. |
-| Plan source of truth | The **tracker's store**. Superpowers plan files are imported, and later changes to them are recorded as plan-edit or re-plan events. Nothing is ever written back to them. |
+| Plan source of truth | The **bridge_screen's store**. Superpowers plan files are imported, and later changes to them are recorded as plan-edit or re-plan events. Nothing is ever written back to them. |
 | Estimate unit | **Agent-minutes.** Points are a display unit only (default 1 pt = 15 agent-minutes, configurable). Calibration is kept per model. |
-| Checkpoints | **Real WIP commits** on the worktree branch, squashed at the end (`tracker squash` or squash-merge). |
+| Checkpoints | **Real WIP commits** on the worktree branch, squashed at the end (`bridge_screen squash` or squash-merge). |
 | Dashboard | **Can act.** It has a needs-you queue with buttons, and every action is also available in chat and through the CLI. |
 | Dependencies | **Both** plan-level task links (inherited by sessions) and ad-hoc `waiting_on` declarations, which the owner can promote to plan links. |
 | Grouping | Each repo is a project. Worktrees with the **same branch name in different repos** form one group. No ticket regex and no manual tags. |
@@ -40,6 +40,12 @@ The owner builds 2-day to 2-month projects almost entirely through Claude Code, 
 | Stack | **Rust** backend in a single binary. **Svelte 5** SPA (Vite), embedded in the binary. **SQLite** (WAL) data layer. |
 | Drift pause | **Opt-in per repo** and off by default. When on, confirmed drift makes the agent finish its step, commit, and wait for the owner. |
 | Visual theme | Claude Code palette (§10.4). |
+| Name | `bridge_screen` |
+| Crash timeout | 30 minutes of silence |
+| Squash timing | Automatic when a PR is opened from Claude Code; manual command otherwise |
+| Needs-you escalation | More than 4 items |
+| Drift thresholds | Auto-tuned per repo, with guard rails and one-click revert |
+| Retention | Older than 15 days is archived and compressed, with search and restore tooling |
 
 ## 3. Principles drawn from other domains
 
@@ -61,22 +67,22 @@ These ideas from other fields shaped the design. Each was checked against its pr
 
 ### 4.1 Components
 
-A single Rust binary, `tracker`, with four entry points over one core library:
+A single Rust binary, `bridge_screen`, with four entry points over one core library:
 
 | Command | Role | Invoked by |
 |---|---|---|
-| `tracker hook <event>` | Reads the hook JSON from stdin, records events, runs cheap checks, and prints a Navigator note when one is due | Claude Code, on every hook event |
-| `tracker mcp` | MCP server over stdio that provides the agent's tools | Claude Code, once per session |
-| `tracker ui` | Local dashboard on `127.0.0.1`. Single-instance: if one is already running it prints the existing URL. | The owner, by hand |
-| `tracker <cmd>` | CLI: `install`, `init`, `import`, `status`, `squash`, `verify`, `resolve`, `rebuild`, `config` | The owner, or the agent through Bash |
+| `bridge_screen hook <event>` | Reads the hook JSON from stdin, records events, runs cheap checks, and prints a Navigator note when one is due | Claude Code, on every hook event |
+| `bridge_screen mcp` | MCP server over stdio that provides the agent's tools | Claude Code, once per session |
+| `bridge_screen ui` | Local dashboard on `127.0.0.1`. Single-instance: if one is already running it prints the existing URL. | The owner, by hand |
+| `bridge_screen <cmd>` | CLI: `install`, `init`, `import`, `status`, `squash`, `verify`, `resolve`, `rebuild`, `config` | The owner, or the agent through Bash |
 
 **Plugin package**
-- `hooks/hooks.json`: every hook entry runs `tracker hook <event>`.
-- `.mcp.json`: runs `tracker mcp`.
-- `skills/tracker/SKILL.md`: the agent protocol (claiming, detours and resume cues, read-back, decisions, verification, checkpoints).
-- `commands/tracker.md`: the `/tracker` compact status.
+- `hooks/hooks.json`: every hook entry runs `bridge_screen hook <event>`.
+- `.mcp.json`: runs `bridge_screen mcp`.
+- `skills/bridge_screen/SKILL.md`: the agent protocol (claiming, detours and resume cues, read-back, decisions, verification, checkpoints).
+- `commands/bridge_screen.md`: the `/bridge_screen` compact status.
 
-`tracker install` puts the binary on the PATH, registers and enables the plugin, and creates `~/.tracker/`. Nothing is needed per session.
+`bridge_screen install` puts the binary on the PATH, registers and enables the plugin, and creates `~/.bridge_screen/`. Nothing is needed per session.
 
 **Nothing runs between sessions.** Hooks are short-lived processes. The MCP server lives only as long as its session. The dashboard runs only when the owner starts it.
 
@@ -140,6 +146,7 @@ Every state change is one row in `events`:
 - **Dependencies:** `waiting_on`, `wait_cleared`
 - **Telemetry:** `usage` (tokens in/out/cache-read/cache-write, model, cost)
 - **Owner:** `owner_action` (button or CLI action plus target), `config_changed`
+- **Git and archive:** `squashed` (old SHAs, new SHA), `archived`, `restored`
 
 ### 5.3 Plan tree (view)
 
@@ -180,11 +187,12 @@ Active task; suspended items (each with `resume_cue`); state (working, idle, nee
 ### 6.1 Layout
 
 ```
-~/.tracker/
+~/.bridge_screen/
   config.toml          # global settings: points conversion, thresholds, prices, UI port
   ui.lock              # dashboard single-instance guard (pid, port, token)
-  tracker.db           # SQLite, WAL mode, all repos
+  bridge_screen.db     # SQLite, WAL mode, all repos
   snapshots/<repo-id>/ # records of pre-undo stashes and rescue branches
+  archive/<repo-id>/   # compressed monthly archive files (§6.5)
 ```
 
 - `repo_id` = hash of the absolute path from `git rev-parse --git-common-dir`. All worktrees of a repo share it.
@@ -193,22 +201,61 @@ Active task; suspended items (each with `resume_cue`); state (working, idle, nee
 ### 6.2 Tables
 
 - `events`: append-only (§5.1).
-- View tables: `plan_nodes`, `plan_deps`, `sessions`, `suspended_items`, `units`, `decisions`, `verifications`, `usage`, `leftovers`, `waits`, `calibration`, `transcript_cursors`. Each one is updated **in the same transaction** as the event that changes it.
+- View tables: `plan_nodes`, `plan_deps`, `sessions`, `suspended_items`, `units`, `decisions`, `verifications`, `usage`, `leftovers`, `waits`, `calibration`, `transcript_cursors`, `drift_samples`, `rollups`, `archive_index` (plus its FTS5 table). Each one is updated **in the same transaction** as the event that changes it.
 - `repos`, `meta` (schema version, migrations).
-- `tracker rebuild` throws the view tables away and replays `events`.
+- `bridge_screen rebuild` throws the view tables away and replays `events`.
 
 ### 6.3 Concurrency
 
 - WAL mode, `busy_timeout` of 2000 ms, short `BEGIN IMMEDIATE` write transactions.
 - Each hook process opens the database, writes one transaction, and exits. The dashboard and MCP reads never block writers.
 - A hook killed mid-write leaves nothing behind; the transaction rolls back.
-- If the database stays locked past the timeout, the hook logs to `~/.tracker/hook-errors.log` and exits 0, so it never breaks the session.
+- If the database stays locked past the timeout, the hook logs to `~/.bridge_screen/hook-errors.log` and exits 0, so it never breaks the session.
 
 ### 6.4 Privacy
 
 - Fully local, with no network calls.
-- The dashboard binds to `127.0.0.1` only and requires a random token, which `tracker ui` puts in the URL it prints.
+- The dashboard binds to `127.0.0.1` only and requires a random token, which `bridge_screen ui` puts in the URL it prints.
 - Nothing is written inside any repo except the approved WIP commits.
+
+### 6.5 Archive and compaction
+
+Anything older than **15 days** moves to the archive and is compressed. This applies at two levels:
+
+- **Inactive projects:** a repo with no events for 15 days is archived whole. All its events and view rows move to the archive. The main database keeps only a stub row (name, final done%, last activity, archive location). The project leaves the glance screen and appears in a collapsed "Archived" list.
+- **Active projects:** events older than 15 days are compacted. High-volume detail (`prompt`, `tool_intent`, `unit_stopped`, per-unit `usage`) moves to the archive and is replaced in the main database by per-task and per-session **rollups** (time, tokens, cost, label split). Small, long-lived facts stay in the main database: plan events, decisions, verifications, checkpoints, squashes, leftover resolutions and config changes. Views are rebuilt from rollup snapshots plus the remaining events.
+
+**Archive format**
+- One SQLite file per repo per month, `~/.bridge_screen/archive/<repo-id>/<YYYY-MM>.db.zst` (zstd-compressed). It holds the moved events verbatim, the moved view rows, and a `manifest` (repo, date range, row counts, checksum, schema version).
+- The main database keeps an `archive_index` table and an **FTS5 full-text index** over the archived searchable text: task titles and intents, decisions, handoff notes, unit summaries, file paths, branch names. Search never needs to decompress anything; only "show details" and "restore" do.
+
+**Safety**
+- Archiving writes the file, flushes it to disk, re-opens it and checks row counts and the checksum, and only then deletes the rows from the main database, in one transaction. If any step fails, nothing is deleted.
+- Archive files are never modified after they're written. A later compaction for the same month writes a new part file (`<YYYY-MM>.2.db.zst`).
+
+**When it runs**
+- No background process. At most once a day, the first `SessionStart` or `bridge_screen ui` of the day starts `bridge_screen archive run` as a detached, low-priority job guarded by a lock file. It never delays the hook.
+- Starting a new session in an archived project **restores it automatically** before the briefing, so recovery and progress work as if it had never left.
+
+**Retrieval tooling**
+
+| Command | What it does |
+|---|---|
+| `bridge_screen archive list [--repo X]` | Archived projects and months, with date ranges and sizes |
+| `bridge_screen archive search "<query>" [--repo X] [--kind decision\|task\|note\|file] [--since D] [--until D]` | Full-text search over everything archived. Results show repo, date, kind, a snippet and an id. |
+| `bridge_screen archive show <id>` | The full archived item with its surrounding events (decompresses only that month) |
+| `bridge_screen archive restore <repo> [--month YYYY-MM]` | Moves a project, or one month of it, back into the main database |
+| `bridge_screen archive verify` | Checks every archive file against its manifest |
+| `bridge_screen archive help` | Prints the retrieval guide below |
+
+- **MCP tool** `archive_search(query, filters)` lets an agent look up old decisions or how something was done before.
+- **Dashboard:** an Archive page with the same search box, filters, and a Restore button per project.
+
+**Retrieval guide** (shipped as `bridge_screen archive help` and in the README):
+1. Not sure where something is? Run `bridge_screen archive search "<words>"`. It searches all repos and dates.
+2. Open a result with `bridge_screen archive show <id>`.
+3. Want the whole project back on the dashboard? `bridge_screen archive restore <repo>`, or just start a Claude session in that repo.
+4. Archive files are ordinary SQLite once decompressed (`zstd -d <file>`), so they can also be opened with any SQLite tool.
 
 ## 7. Tangent detection and the Navigator
 
@@ -239,7 +286,15 @@ No LLM is called from hooks. Judgement comes from the agent itself, through `lab
 - **Outside tolerance** (amber): one note, e.g. *"You've been on '<reason>' for 40 min (~2× the task estimate). Continue, or should the owner know?"*
 - **Far outside** (> 2× tolerance), or drift with no declared reason (red): a needs-you item with **Continue / Make it a task / Stop**. If the repo has the drift pause turned on, the agent finishes its step, commits, and waits.
 - A detour past tolerance is offered **promotion** to a real task (`detour_promoted` + `node_added`, recorded as scope added mid-stream).
-- The thresholds live in `config.toml`. Owner overrides of labels are recorded so the thresholds can be tuned later (§14).
+- The thresholds start from the values above in `config.toml` and are then **auto-tuned** (§7.6).
+
+### 7.6 Auto-tuning the drift thresholds
+
+- **Training signal:** every time the owner overrides a label (on the dashboard or in chat), and every time the agent's `label_unit` answer disagrees with the heuristic, the unit's drift score and the final label are stored in a `drift_samples` table.
+- **When it runs:** after every 20 new samples for a repo, at the next SessionStart.
+- **What it does:** it moves the 0.3 and 0.7 cut-offs to the values that best separate on-task from detour/drift in that repo's last 200 samples, and adjusts the tolerance percentage the same way from owner Continue/Stop answers.
+- **Guard rails:** each run moves a cut-off by at most 0.05. Cut-offs stay within 0.15–0.5 (lower) and 0.5–0.9 (upper), and the lower always stays below the upper. Tuning is per repo.
+- **Visibility:** every change is a `config_changed` event with old value, new value and sample count, shown in the calibration drill-down with a one-click revert. `bridge_screen config reset-drift` restores the defaults.
 
 ### 7.4 Suspended items and resume cues
 
@@ -260,10 +315,17 @@ No LLM is called from hooks. Judgement comes from the agent itself, through `lab
 ### 8.1 Checkpoints
 
 - A checkpoint is required at every subtask or task boundary (`claimed_done`) and when a detour closes.
-- If the worktree has uncommitted changes at that point, the **Stop hook blocks stopping** with: *commit as `wip(tracker): <id> <title>`* plus the trailers `Tracker-Task`, `Tracker-Next`, `Tracker-Session`. This is the only place the tracker blocks.
+- If the worktree has uncommitted changes at that point, the **Stop hook blocks stopping** with: *commit as `wip(bridge): <id> <title>`* plus the trailers `Bridge-Task`, `Bridge-Next`, `Bridge-Session`. This is the only place bridge_screen blocks.
 - If a pre-commit hook rejects the commit, the agent fixes the problem and commits again.
 - A `checkpoint` event records the SHA.
-- `tracker squash [--onto <base>]` collapses the `wip(tracker):` commits on a branch into one, with a generated summary message. The owner runs it before merging or opening a PR.
+- `bridge_screen squash [--onto <base>]` collapses the `wip(bridge):` commits on a branch into one, with a generated summary message.
+- **Automatic squash when a PR is opened.** A `PreToolUse` hook on Bash matches `gh pr create` (and the GitHub MCP create-pull-request tool, if present). Before the command runs it:
+  1. squashes the branch's `wip(bridge):` commits onto the merge base with the PR's base branch
+  2. if the branch was already pushed, pushes it with `--force-with-lease`, so the PR shows the squashed history
+  3. records a `squashed` event (old SHAs and new SHA), then lets the command proceed
+
+  If the squash fails (conflict, or someone else pushed to the branch), the hook leaves the history untouched, lets the PR open anyway, and puts a needs-you item up saying the WIP commits weren't squashed. PRs opened outside Claude Code (for example on github.com) can't be detected; for those, `bridge_screen squash` stays available by hand.
+- The old SHAs are kept in the `squashed` event, and verifications tied to them are re-pointed to the new SHA.
 
 ### 8.2 How a session ended
 
@@ -291,7 +353,7 @@ No LLM is called from hooks. Judgement comes from the agent itself, through `lab
   - **Action list:** unverified items to check first, leftovers, the next action.
   - **If/then warnings**, from the previous session's `handoff_note`.
   - **Dependencies:** ready or still waiting.
-- **Read-back:** before its first edit the agent calls `handoff_readback(goal, in_flight, next_action)`. The tracker compares it with the log (same task ids, next action matching the cue). On a mismatch it sends one correction note. `PreToolUse` nudges once if an edit starts without a read-back, but **does not block**.
+- **Read-back:** before its first edit the agent calls `handoff_readback(goal, in_flight, next_action)`. bridge_screen compares it with the log (same task ids, next action matching the cue). On a mismatch it sends one correction note. `PreToolUse` nudges once if an edit starts without a read-back, but **does not block**.
 - **Stable sessions with nothing pending** get a 3-line briefing and no read-back.
 - **After compaction** (`SessionStart` with source `compact`): a short re-briefing with the active task, its resume cue and this session's decisions.
 - **Handoff note:** requested whenever a task reaches done or is suspended. It holds what's in flight and the if/then warnings.
@@ -301,10 +363,10 @@ No LLM is called from hooks. Judgement comes from the agent itself, through `lab
 | Level | Meaning | How it's reached |
 |---|---|---|
 | L0 | Claimed | `claim_done(id, evidence)` |
-| L1 | Code exists | The tracker checks the evidence paths and symbols at HEAD. Automatic. |
-| L2 | Unit tests pass | The agent runs the repo's test command and reports a summary and exit code. The tracker re-runs it if it finishes within a configured timeout (default 120 s). |
+| L1 | Code exists | bridge_screen checks the evidence paths and symbols at HEAD. Automatic. |
+| L2 | Unit tests pass | The agent runs the repo's test command and reports a summary and exit code. bridge_screen re-runs it if it finishes within a configured timeout (default 120 s). |
 | L3 | End-to-end | The agent reports what it drove (browser or CLI) and the outcome. Recorded as reported. |
-| L4 | Owner | ✓ on the dashboard, `tracker verify`, or telling any session in chat |
+| L4 | Owner | ✓ on the dashboard, `bridge_screen verify`, or telling any session in chat |
 
 - **Every verification is tied to a commit SHA.** If later commits touch files it depended on, it drops one level (`verification_stale`) and is re-checked at the next session start.
 - **Unverified items** (L0–L1 older than one session) lead the next briefing. After two ignored nudges they appear in the needs-you queue.
@@ -342,6 +404,7 @@ No LLM is called from hooks. Judgement comes from the agent itself, through `lab
 ### 10.1 Glance screen (the first screen; nothing else is shown until clicked)
 
 - **Header:** ✱ mark, session and project counts, a red "N need you" pill (or a green "All clear").
+- **Escalation at more than 4 items:** when the needs-you queue holds more than 4 items, the count pill pulses until the count drops back to 4 or below, the queue shows the 4 most urgent items with a "show all N" link, and the compact `/bridge_screen` view puts the count on its first line.
 - **Needs-you queue**, outlined in red: idle or permission-waiting sessions, red sessions with Continue / Make task / Stop, items awaiting owner verification (✓ Works / ✗ Broken with a note), and recovery questions (Adopt / Resume / Undo). Each click appends an `owner_action`, and the affected session picks it up at its next hook.
 - **One row per project:** done% bar in clay, a lighter clay segment for claimed%, hill pill (amber uphill, green downhill), P50 and P90 dates.
 - **One line per live session**, with a status light (green on task, amber detour or waiting, red needs you), the active task or detour, and the wait target.
@@ -357,7 +420,7 @@ No LLM is called from hooks. Judgement comes from the agent itself, through `lab
 
 ### 10.3 Compact views
 
-- `/tracker` (desktop app and CLI) and `tracker status`: about 6 lines of the glance screen, with ANSI colors in the terminal and the dashboard URL if it's running.
+- `/bridge_screen` (desktop app and CLI) and `bridge_screen status`: about 6 lines of the glance screen, with ANSI colors in the terminal and the dashboard URL if it's running.
 
 ### 10.4 Visual theme (Claude Code palette)
 
@@ -365,7 +428,7 @@ No LLM is called from hooks. Judgement comes from the agent itself, through `lab
 - **Status colors:** green = on task, amber = detour, waiting or uphill, red = needs you.
 - Neutral grays everywhere else. Session ids, branches and file names are in monospace.
 - **Dark mode by default**, matching Claude Code's dark terminal. Light mode follows the system setting.
-- A new red item pulses **once**, then stays still. The tab title shows the count (`(3) tracker`) and the favicon turns red while anything needs the owner.
+- A new red item pulses **once**, then stays still. The tab title shows the count (`(3) bridge_screen`) and the favicon turns red while anything needs the owner.
 
 ## 11. Agent interface
 
@@ -377,6 +440,7 @@ No LLM is called from hooks. Judgement comes from the agent itself, through `lab
 | SessionStart (compact) | `session_started` | Short re-briefing |
 | UserPromptSubmit | `prompt` | First prompt: claim instruction with the top 3 candidates. Later: owner actions, dependency changes |
 | PreToolUse (Edit, Write, MultiEdit, Bash) | `tool_intent` (one per file per unit) | Read-back nudge, once |
+| PreToolUse (Bash `gh pr create`, GitHub MCP create-PR) | `squashed` | Automatic squash before the PR opens (§8.1) |
 | PostToolUse | files touched | none |
 | Stop | `unit_stopped`, `usage`, drift score | One note per §7.5; checkpoint block per §8.1 |
 | SubagentStop | subagent usage and work | none |
@@ -403,10 +467,11 @@ Hooks must finish in **≤ 50 ms** for the common case. Git and transcript work 
 | `resolve_leftover(id, action)` | adopt, resume or undo (undo is always a snapshot) |
 | `waiting_on(target, reason)` | Ad-hoc dependency |
 | `status()` | Compact text state for the agent |
+| `archive_search(query, filters)` | Search archived projects and history (§6.5) |
 
 ### 11.3 Skill
 
-`skills/tracker/SKILL.md` teaches the protocol:
+`skills/bridge_screen/SKILL.md` teaches the protocol:
 - claim the task, or ask if unsure
 - write intents for goals and milestones
 - open a detour with a resume cue before tangent work
@@ -429,45 +494,53 @@ It stays under about 150 lines.
   - the **Files:** list → `expected_files`
   - `- [ ] **Step k: …**` → subtask
   - a checked step → `claimed_done` (never "verified")
-- **Triggers:** `tracker import`, or automatically at SessionStart when a plan file is new or its content hash has changed.
+- **Triggers:** `bridge_screen import`, or automatically at SessionStart when a plan file is new or its content hash has changed.
 - **Changes:** new vs. previous import, matched by task number and title, recorded as `plan_edit` events. If more than 30% of the tasks changed, it's recorded as a `replan`. The file is never written to.
 - Missing estimates are filled in by the agent at its first claim.
 
 ### 12.2 Existing half-built repos
 
-- `tracker init` runs inside a normal Claude session, guided by the skill. The agent scans the README, docs, existing plans and specs, the git log, TODO/FIXME comments, and test results. It drafts a goal (with intent), milestones and tasks, with statuses inferred from the code, and shows the owner the draft once to confirm or edit. The owner can seed it up front ("the goal is X").
+- `bridge_screen init` runs inside a normal Claude session, guided by the skill. The agent scans the README, docs, existing plans and specs, the git log, TODO/FIXME comments, and test results. It drafts a goal (with intent), milestones and tasks, with statuses inferred from the code, and shows the owner the draft once to confirm or edit. The owner can seed it up front ("the goal is X").
 - Tasks inferred as done start at **L1** and climb the ladder over the following sessions.
 
 ## 13. Build order (sub-projects)
 
 All features ship. Each sub-project gets its own implementation plan, built in dependency order:
 
-1. **Core store and plan.** SQLite schema, event append with views, rebuild, plan tree, `plan_edit`, CLI skeleton, `tracker install`.
+1. **Core store and plan.** SQLite schema, event append with views, rebuild, plan tree, `plan_edit`, CLI skeleton, `bridge_screen install`.
 2. **Hooks and sessions.** All hook handlers, units, active time, claiming, the MCP server skeleton with claim/plan tools, the skill.
-3. **Navigator and tangents.** Drift score, labels, tolerance band, suspended items and resume cues, note rules.
-4. **Handoff and recovery.** Checkpoints and the Stop block, end classification, leftover analysis and resolution, briefing, read-back, `tracker squash`.
+3. **Navigator and tangents.** Drift score, labels, tolerance band, suspended items and resume cues, note rules, drift auto-tuning.
+4. **Handoff and recovery.** Checkpoints and the Stop block, end classification, leftover analysis and resolution, briefing, read-back, `bridge_screen squash` and the automatic squash on PR creation.
 5. **Verification and decisions.** Ladder, staleness, decision capture.
-6. **Dashboard.** axum API, Svelte SPA, glance screen, needs-you actions, drill-downs, theme, `/tracker` compact view.
+6. **Dashboard.** axum API, Svelte SPA, glance screen, needs-you actions, drill-downs, theme, `/bridge_screen` compact view.
 7. **Telemetry and forecast.** Transcript parsing, cost, calibration, Monte Carlo.
-8. **Imports and onboarding.** Superpowers import and diff, `tracker init` for existing repos, branch groups and cross-repo dependencies.
+8. **Imports and onboarding.** Superpowers import and diff, `bridge_screen init` for existing repos, branch groups and cross-repo dependencies.
+9. **Archive.** Compaction and rollups, archive files, full-text index, `archive` commands, `archive_search` tool, Archive page, auto-restore.
 
-Sub-projects 1–4 make the tracker useful on its own. The glance view from sub-project 6 can start early as a read-only page.
+Sub-projects 1–4 make bridge_screen useful on its own. The glance view from sub-project 6 can start early as a read-only page.
 
 ## 14. Testing strategy
 
 - **Core modules:** unit tests against an in-memory SQLite, plus property tests checking that rebuilding views from events matches the incrementally maintained views.
-- **Hooks:** golden tests that feed recorded hook JSON payloads to `tracker hook` and compare the events and stdout produced.
+- **Hooks:** golden tests that feed recorded hook JSON payloads to `bridge_screen hook` and compare the events and stdout produced.
 - **Recovery:** temporary git repos and worktrees with scripted crash scenarios (uncommitted edits, claimed-but-unfinished tasks, a live and a dead session side by side).
 - **Concurrency:** N parallel processes appending to the database must lose no events.
 - **MCP:** contract tests for each tool.
 - **Dashboard:** API tests in Rust, plus component tests and one end-to-end smoke test (Playwright) for the glance screen and a needs-you action.
+- **Archive:** archive then search then restore round-trips with no lost rows; a failure injected at each archiving step leaves the main database unchanged; views rebuilt from rollups plus remaining events match the views before compaction.
+- **Auto-squash:** a scripted `gh pr create` in a temporary repo with a fake remote; squash success, conflict fallback, and already-pushed branches.
+- **Auto-tuning:** cut-offs move toward the separating value, never by more than 0.05 per run, and stay inside their bounds.
 - **Performance:** a hook latency check (≤ 50 ms p95 on a database with 100k events).
 
-## 15. Open questions for the owner
+## 15. Resolved questions
 
-1. **Crash timeout:** is 30 minutes of silence right for calling a session crashed, given that long tool runs can be quiet?
-2. **Squash timing:** should `tracker squash` also run automatically when the agent opens a PR, or stay manual only?
-3. **Owner-verification nudges:** how many items may wait in the needs-you queue before the glance screen escalates (for example, the count pill pulses)?
-4. **Threshold tuning:** may the tracker auto-tune the drift thresholds from the owner's overrides, or should it only suggest new values?
-5. **Retention:** should events be kept forever, or should old projects be archivable or compactable?
-6. **Open-sourcing later:** should anything (naming, config locations) be chosen now with that in mind?
+All open questions from the first draft were answered by the owner on 2026-10-13:
+
+1. **Crash timeout:** 30 minutes of silence (§8.2).
+2. **Squash timing:** automatic when a PR is opened (§8.1).
+3. **Needs-you escalation:** more than 4 items (§10.1).
+4. **Threshold tuning:** auto-tune the drift thresholds (§7.6).
+5. **Retention:** anything older than 15 days is archived and compacted, with retrieval directions and search tooling (§6.5).
+6. **Open-sourcing:** nothing chosen with that in mind. Name: `bridge_screen`.
+
+**Interpretation to confirm:** "older than 15 days" is applied two ways in §6.5: whole projects inactive for 15 days are archived, and inside active projects only high-volume detail older than 15 days is compacted, while plan, decision and verification history stays in the main database.
