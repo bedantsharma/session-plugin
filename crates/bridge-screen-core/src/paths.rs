@@ -39,6 +39,11 @@ impl Home {
         self.root.join("config.toml")
     }
 
+    /// Where undo snapshot records for a repo's leftovers go (spec §8.3).
+    pub fn snapshots_dir(&self, repo_id: &str) -> PathBuf {
+        self.root.join("snapshots").join(repo_id)
+    }
+
     /// Create the data folder if it doesn't exist.
     pub fn ensure(&self) -> Result<()> {
         std::fs::create_dir_all(&self.root)?;

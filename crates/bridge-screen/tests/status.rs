@@ -49,6 +49,11 @@ fn register(s: &Store, id: &str, name: &str) {
 }
 
 fn status(env: &Env) -> String {
+    // The scripted sessions are dated in the past: keep the crash scan away from them.
+    let config = env.home.path().join("config.toml");
+    if !config.exists() {
+        std::fs::write(&config, "crash_timeout_min = 100000000\n").unwrap();
+    }
     let out = env.run(&["status"], "");
     assert!(
         out.status.success(),

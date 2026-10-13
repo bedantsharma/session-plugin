@@ -3,9 +3,11 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use bridge_screen_core::config::Config;
+use bridge_screen_core::handoff::LeftoverAction;
 use bridge_screen_core::navigator::{self, Channel};
 use bridge_screen_core::paths::Home;
 use bridge_screen_core::plan::{EditContext, PlanOp, load_tree, plan_edit, render_text};
+use bridge_screen_core::recovery::{self, Caller};
 use bridge_screen_core::repo;
 use bridge_screen_core::session::{self, Session};
 use bridge_screen_core::store::{Actor, EventDraft, OWNER_SESSION, Store, append_in};
@@ -40,6 +42,7 @@ pub fn run(cli: Cli) -> Result<()> {
             unit_no,
             label,
         } => label_cmd(&session, unit_no, label),
+        Command::Resolve { args, dir } => resolve(&dir, &args),
         Command::Rebuild => rebuild(),
         Command::Config { action: None, dir } => config(&dir),
         Command::Config {
@@ -49,8 +52,23 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Mcp => crate::mcp::run(),
         Command::Status => {
             let home = Home::resolve()?;
-            let store = open_store(&home)?;
+            let mut store = open_store(&home)?;
             let cfg = Config::load(&home.config_path())?;
+            // Sessions silent past the crash timeout are shown as crashed, not live.
+            let mut repos: Vec<String> = session::list_live(store.conn(), None)?
+                .into_iter()
+                .map(|s| s.repo_id)
+                .collect();
+            repos.sort();
+            repos.dedup();
+            for repo_id in repos {
+                recovery::scan_crashed(
+                    &mut store,
+                    &repo_id,
+                    jiff::Timestamp::now(),
+                    cfg.crash_timeout_min,
+                )?;
+            }
             print!("{}", crate::status::render(&store, &cfg)?);
             Ok(())
         }
@@ -130,6 +148,29 @@ fn plan_edit_cmd(
     for id in outcome.added_ids {
         println!("added {id}");
     }
+    Ok(())
+}
+
+fn resolve(dir: &Path, args: &[String]) -> Result<()> {
+    let (action, ids) = args
+        .split_last()
+        .context("give leftover ids and an action")?;
+    let action = LeftoverAction::parse(action).with_context(|| {
+        format!("the last argument must be adopt, resume or undo, not {action}")
+    })?;
+    let repo = repo::identify(dir)?;
+    let home = Home::resolve()?;
+    let mut store = open_store(&home)?;
+    store.register_repo(&repo)?;
+    let res = recovery::resolve(
+        &mut store,
+        &repo.id,
+        &home.snapshots_dir(&repo.id),
+        ids,
+        action,
+        &Caller::Owner,
+    )?;
+    println!("{}", crate::mcp::resolution_text(&store, &repo.id, &res)?);
     Ok(())
 }
 

@@ -14,6 +14,7 @@ pub mod navigator;
 pub mod paths;
 pub mod plan;
 pub mod projection;
+pub mod recovery;
 pub mod repo;
 pub mod session;
 pub mod store;

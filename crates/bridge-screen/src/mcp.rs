@@ -14,8 +14,10 @@ use bridge_screen_core::binding;
 use bridge_screen_core::checkpoint::{self, ClaimDoneRequest};
 use bridge_screen_core::claim::{self, ClaimMode, ClaimRequest, ClaimTarget};
 use bridge_screen_core::config::Config;
+use bridge_screen_core::handoff::LeftoverAction;
 use bridge_screen_core::paths::Home;
 use bridge_screen_core::plan::{EditContext, NodeKind, NodeStatus, PlanOp, get_node, load_tree};
+use bridge_screen_core::recovery::{self, Caller, Resolution};
 use bridge_screen_core::session::{self, Session, SessionState};
 use bridge_screen_core::store::{Actor, Store};
 use bridge_screen_core::tangent::{
@@ -190,6 +192,17 @@ pub struct ClaimDoneInput {
     pub evidence: String,
 }
 
+/// Resolve leftovers a dead session left in a worktree.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResolveLeftoverInput {
+    /// Leftover ids as the briefing or status lists them.
+    pub ids: Vec<String>,
+    /// "adopt" (commit them as they are), "resume" (claim their task and finish them) or
+    /// "undo" (stash them; nothing is lost).
+    pub action: LeftoverAction,
+}
+
 #[derive(Clone)]
 pub struct Bridge {
     home: Home,
@@ -259,6 +272,16 @@ impl Bridge {
         Parameters(args): Parameters<Args<ClaimDoneInput>>,
     ) -> CallToolResult {
         text(self.do_claim_done(&args))
+    }
+
+    #[tool(
+        description = "Resolve leftovers a dead session left uncommitted: adopt (commit them), resume (claim their task and continue; only in their worktree) or undo (stash them with a snapshot record; nothing is lost). Prefer the suggested action; ask the owner when unsure."
+    )]
+    async fn resolve_leftover(
+        &self,
+        Parameters(args): Parameters<Args<ResolveLeftoverInput>>,
+    ) -> CallToolResult {
+        text(self.do_resolve_leftover(&args))
     }
 
     #[tool(
@@ -382,6 +405,24 @@ impl Bridge {
         Ok(format!(
             "Marked {task} claimed done. Commit a checkpoint before you stop, then leave a handoff_note if work remains in flight."
         ))
+    }
+
+    fn do_resolve_leftover(&self, args: &Args<ResolveLeftoverInput>) -> Result<String, String> {
+        let mut store = self.open()?;
+        let session = self.caller(&store, "resolve_leftover", &args.raw)?;
+        let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        let res = recovery::resolve(
+            &mut store,
+            &session.repo_id,
+            &self.home.snapshots_dir(&session.repo_id),
+            &input.ids,
+            input.action,
+            &Caller::Agent {
+                session_id: session.session_id.clone(),
+            },
+        )
+        .map_err(msg)?;
+        resolution_text(&store, &session.repo_id, &res).map_err(msg)
     }
 
     fn do_plan_edit(&self, args: &Args<PlanEditInput>) -> Result<String, String> {
@@ -559,6 +600,45 @@ impl ServerHandler for Bridge {
                 "bridge-screen tracks this session's task and time. Claim your task with claim_task before working; use plan_edit for plan changes; status shows where things stand.",
             )
     }
+}
+
+/// What a leftover resolution did, in one line.
+pub fn resolution_text(
+    store: &Store,
+    repo_id: &str,
+    res: &Resolution,
+) -> bridge_screen_core::error::Result<String> {
+    let n = res.ids.len();
+    let what = format!("{n} leftover{}", if n == 1 { "" } else { "s" });
+    let short = |sha: &str| sha.chars().take(8).collect::<String>();
+    Ok(match res.action {
+        LeftoverAction::Adopt => match &res.commit {
+            Some(sha) => format!("Adopted {what}: committed {}.", short(sha)),
+            None => format!("Adopted {what}: nothing was left uncommitted."),
+        },
+        LeftoverAction::Undo => match &res.stash {
+            Some(st) => format!(
+                "Undid {what}: stashed as {} (`git stash apply {}` in {} brings them back).",
+                short(&st.sha),
+                st.sha,
+                res.worktree
+            ),
+            None => format!("Undid {what}: nothing was left uncommitted."),
+        },
+        LeftoverAction::Resume => match &res.claimed {
+            Some(task) => {
+                let title = claim::task_title(store.conn(), repo_id, task)?.unwrap_or_default();
+                format!(
+                    "Resumed {task} {title}: {what} in {} are yours to finish.",
+                    res.worktree
+                )
+            }
+            None => format!(
+                "Marked {what} to resume: the next session in {} continues them.",
+                res.worktree
+            ),
+        },
+    })
 }
 
 /// The newest live session whose working directory is inside `dir`.

@@ -160,6 +160,7 @@ fn lists_three_tools_with_schemas() {
             "label_unit",
             "plan_edit",
             "promote_detour",
+            "resolve_leftover",
             "resume",
             "start_detour",
             "status"
@@ -747,4 +748,47 @@ fn claim_done_marks_the_task_and_asks_for_a_checkpoint() {
     let (is_error, text) = mcp.call("claim_done", &args);
     assert!(is_error);
     assert_eq!(text, "no active task; give the id of the task you finished");
+}
+
+#[test]
+fn resolve_leftover_undoes_into_a_stash() {
+    let env = setup();
+    // s1 leaves an untracked file behind and ends; s3 starts in the same worktree.
+    env.hook("user-prompt-submit", "s1");
+    let path = env.repo.path().join("scratch.txt");
+    std::fs::write(&path, "half a thought\n").unwrap();
+    let mut p = fixture_json("post-tool-use", "s1", &env.repo_path());
+    p["tool_input"]["file_path"] = json!(path.to_str().unwrap());
+    env.hook_raw("post-tool-use", &p.to_string());
+    env.hook("session-end", "s1");
+    env.hook("session-end", "s2");
+    env.hook("session-start", "s3");
+    let store = Store::open(&env.db_path()).unwrap();
+    let repo_id = session::get(store.conn(), "s3").unwrap().unwrap().repo_id;
+    let found = bridge_screen_core::handoff::leftovers(store.conn(), &repo_id, true).unwrap();
+    assert_eq!(found.len(), 1);
+    let id = found[0].leftover_id.clone();
+
+    let args = json!({"ids": [id], "action": "undo"});
+    bind(&env, "s3", "resolve_leftover", &args, "toolu_1");
+    let mut mcp = Mcp::start(&env, "/nonexistent");
+    let (is_error, text) = mcp.call("resolve_leftover", &args);
+    assert!(!is_error, "{text}");
+    assert!(text.starts_with("Undid 1 leftover: stashed as "), "{text}");
+    assert!(text.contains("git stash apply"), "{text}");
+    assert!(!path.exists());
+    let snap = env
+        .home
+        .path()
+        .join("snapshots")
+        .join(&repo_id)
+        .join(format!("{id}.json"));
+    assert!(snap.exists(), "{}", snap.display());
+
+    // A bad action is a tool error the agent can read.
+    let args = json!({"ids": [id], "action": "delete"});
+    bind(&env, "s3", "resolve_leftover", &args, "toolu_2");
+    let (is_error, text) = mcp.call("resolve_leftover", &args);
+    assert!(is_error);
+    assert!(text.starts_with("invalid arguments"), "{text}");
 }

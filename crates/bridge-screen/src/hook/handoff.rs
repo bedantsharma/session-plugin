@@ -5,9 +5,13 @@
 use std::path::{Path, PathBuf};
 
 use bridge_screen_core::checkpoint::{self, StopGit};
+use bridge_screen_core::config::Config;
 use bridge_screen_core::error::Result;
 use bridge_screen_core::git::{self, HeadCommit};
+use bridge_screen_core::handoff::EndKind;
+use bridge_screen_core::recovery;
 use bridge_screen_core::session::{self, Session};
+use bridge_screen_core::store::Store;
 use bridge_screen_core::store::{Actor, append_in};
 use rusqlite::Transaction;
 
@@ -97,4 +101,30 @@ pub fn apply(
         append_in(tx, draft.actor(actor.clone()))?;
     }
     Ok(step.note)
+}
+
+/// At SessionEnd: the end kind and uncommitted files, from `git status` in the session's
+/// worktree; nothing known if git can't read it.
+pub fn end_state(conn: &rusqlite::Connection, session: &Session) -> (Option<EndKind>, Vec<String>) {
+    let Ok(status) = git::status(&worktree_of(session)) else {
+        return (None, Vec::new());
+    };
+    let dirty = status.dirty_paths();
+    let kind = recovery::end_kind(conn, session, &dirty).ok();
+    (kind, dirty)
+}
+
+/// At SessionStart: mark silent sessions crashed, then analyse dead sessions' leftovers.
+pub fn recover(store: &mut Store, config: &Config, repo_id: &str, session_id: &str) -> Result<()> {
+    recovery::scan_crashed(
+        store,
+        repo_id,
+        jiff::Timestamp::now(),
+        config.crash_timeout_min,
+    )?;
+    let Some(me) = session::get(store.conn(), session_id)? else {
+        return Ok(());
+    };
+    recovery::analyse(store, repo_id, session_id, &worktree_of(&me))?;
+    Ok(())
 }

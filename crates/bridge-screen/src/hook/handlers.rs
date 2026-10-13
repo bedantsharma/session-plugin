@@ -127,6 +127,10 @@ pub fn handle(
             jiff::Timestamp::now(),
         )?;
     }
+    if event == HookEvent::SessionStart && input.source.as_deref() != Some("compact") {
+        // Recovery (spec §8.3): crashed sessions, then leftovers of dead ones.
+        handoff::recover(store, config, &ctx.repo_id, &input.session_id)?;
+    }
     if event == HookEvent::SessionStart && tuning::due(store.conn(), &ctx.repo_id)? {
         // Enough new drift samples: tune this repo's thresholds (spec §7.6).
         store.write(|tx| tuning::run(tx, &ctx.repo_id, config))?;
@@ -314,14 +318,21 @@ fn drafts_for(
             };
             ctx.draft("needs_owner", &NeedsOwner { kind })?
         }
-        HookEvent::SessionEnd => ctx.draft(
-            "session_ended",
-            &SessionEnded {
-                reason: input.reason.clone(),
-                end_kind: None,
-                dirty_files: Vec::new(),
-            },
-        )?,
+        HookEvent::SessionEnd => {
+            // How it ended (spec §8.2): git runs here, once per session.
+            let (end_kind, dirty_files) = match &ctx.known {
+                Some(known) => handoff::end_state(store.conn(), known),
+                None => (None, Vec::new()),
+            };
+            ctx.draft(
+                "session_ended",
+                &SessionEnded {
+                    reason: input.reason.clone(),
+                    end_kind,
+                    dirty_files,
+                },
+            )?
+        }
     };
     Ok(vec![draft])
 }
