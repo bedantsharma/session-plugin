@@ -6,6 +6,7 @@ use anyhow::Result;
 use bridge_screen_core::binding;
 use bridge_screen_core::config::Config;
 use bridge_screen_core::error::Error;
+use bridge_screen_core::handoff::EndKind;
 use bridge_screen_core::repo;
 use bridge_screen_core::session::{
     self, FileEvent, NeedsOwner, NeedsOwnerKind, Prompt, Session, SessionEnded, SessionStarted,
@@ -360,15 +361,21 @@ fn drafts_for(
 
 /// A tool running while the session waits on the owner (e.g. a Bash call just approved)
 /// ends the wait. Edit tools record their own events; any other tool records an empty
-/// `kind` event only then, so the common path still writes nothing.
+/// `kind` event only then, so the common path still writes nothing. A session marked
+/// crashed that runs a tool was only quiet (a long build, an absent owner): the event
+/// brings it back to life (spec §8.2).
 fn wait_over(ctx: &Ctx, store: &Store, kind: &str) -> Result<Vec<EventDraft>> {
+    let crashed = ctx
+        .known
+        .as_ref()
+        .is_some_and(|s| s.end_kind == Some(EndKind::Crashed));
     let waiting = ctx
         .known
         .as_ref()
         .is_some_and(|s| s.state == SessionState::NeedsOwner)
         && session::current_unit(store.conn(), &ctx.input.session_id)?
             .is_some_and(|u| u.wait_started_at.is_some());
-    if !waiting {
+    if !crashed && !waiting {
         return Ok(Vec::new());
     }
     let tool = ctx.input.tool_name.clone().unwrap_or_default();

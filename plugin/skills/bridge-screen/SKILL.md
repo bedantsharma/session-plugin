@@ -92,7 +92,8 @@ The briefing lists uncommitted files a crashed or abandoned session left, each w
 suggestion. Prefer it: `resolve_leftover {"ids": ["l3f9a2c1"], "action": "undo"}`.
 `adopt` commits them, `resume` claims their task (only in their worktree), `undo` stashes
 them with a snapshot — nothing is lost. Ask the owner when unsure. Leftovers marked
-report-only belong to a live session: leave them alone.
+report-only belong to a live session, or to a crashed one in another worktree that may
+only be waiting for its owner (for 24 h): leave them alone.
 
 ## 7. Check where things stand
 

@@ -150,6 +150,11 @@ fn by_path(found: &[Leftover], path: &str) -> Leftover {
         .clone()
 }
 
+/// Shortly after the scenarios' events: well inside the 24-hour takeover wait.
+fn soon() -> Takeover {
+    Takeover::new(at(3600), 24)
+}
+
 fn agent(id: &str) -> Caller {
     Caller::Agent {
         session_id: id.into(),
@@ -240,7 +245,7 @@ fn analysis_attributes_files_and_suggests() {
     let tmp = repo();
     let wt = tmp.path();
     let mut s = scenario(wt);
-    let out = analyse(&mut s, "r", "me", wt).unwrap();
+    let out = analyse(&mut s, "r", "me", wt, &soon()).unwrap();
     assert_eq!(out.found.len(), 4, "{out:?}");
     let la = by_path(&out.found, "a.rs");
     assert_eq!(
@@ -274,7 +279,10 @@ fn analysis_attributes_files_and_suggests() {
             .leftovers_analysed
     );
     // Never triaged twice.
-    assert_eq!(analyse(&mut s, "r", "me", wt).unwrap(), Analysis::default());
+    assert_eq!(
+        analyse(&mut s, "r", "me", wt, &soon()).unwrap(),
+        Analysis::default()
+    );
     assert_eq!(leftovers(s.conn(), "r", true).unwrap().len(), 4);
 }
 
@@ -283,7 +291,7 @@ fn undo_is_reversible() {
     let tmp = repo();
     let wt = tmp.path();
     let mut s = scenario(wt);
-    let out = analyse(&mut s, "r", "me", wt).unwrap();
+    let out = analyse(&mut s, "r", "me", wt, &soon()).unwrap();
     let ids = vec![
         by_path(&out.found, "a.rs").leftover_id,
         by_path(&out.found, "new dir/d.rs").leftover_id,
@@ -296,6 +304,7 @@ fn undo_is_reversible() {
         &ids,
         LeftoverAction::Undo,
         &agent("me"),
+        &soon(),
     )
     .unwrap();
     let stash = res.stash.unwrap();
@@ -333,7 +342,7 @@ fn adopt_commits_only_those_paths() {
     let tmp = repo();
     let wt = tmp.path();
     let mut s = scenario(wt);
-    let out = analyse(&mut s, "r", "me", wt).unwrap();
+    let out = analyse(&mut s, "r", "me", wt, &soon()).unwrap();
     let b = by_path(&out.found, "b.rs");
     let snaps = tempfile::tempdir().unwrap();
     let res = resolve(
@@ -343,6 +352,7 @@ fn adopt_commits_only_those_paths() {
         std::slice::from_ref(&b.leftover_id),
         LeftoverAction::Adopt,
         &agent("me"),
+        &soon(),
     )
     .unwrap();
     let sha = res.commit.unwrap();
@@ -365,7 +375,7 @@ fn resume_claims_from_the_same_worktree_only() {
     let tmp = repo();
     let wt = tmp.path();
     let mut s = scenario(wt);
-    let out = analyse(&mut s, "r", "me", wt).unwrap();
+    let out = analyse(&mut s, "r", "me", wt, &soon()).unwrap();
     let a = by_path(&out.found, "a.rs");
     let elsewhere = tempfile::tempdir().unwrap();
     start(&mut s, "far", elsewhere.path(), 70);
@@ -378,6 +388,7 @@ fn resume_claims_from_the_same_worktree_only() {
         id,
         LeftoverAction::Resume,
         &agent("far"),
+        &soon(),
     )
     .unwrap_err();
     assert!(e.to_string().starts_with("resume it from "), "{e}");
@@ -388,6 +399,7 @@ fn resume_claims_from_the_same_worktree_only() {
         id,
         LeftoverAction::Resume,
         &agent("me"),
+        &soon(),
     )
     .unwrap();
     assert_eq!(res.claimed.as_deref(), Some("1.1"));
@@ -404,7 +416,7 @@ fn owner_resolution_stands() {
     let tmp = repo();
     let wt = tmp.path();
     let mut s = scenario(wt);
-    let out = analyse(&mut s, "r", "me", wt).unwrap();
+    let out = analyse(&mut s, "r", "me", wt, &soon()).unwrap();
     let c = by_path(&out.found, "c.rs");
     let snaps = tempfile::tempdir().unwrap();
     // Prefixes work for the owner's CLI.
@@ -426,6 +438,7 @@ fn owner_resolution_stands() {
         &[which],
         LeftoverAction::Undo,
         &Caller::Owner,
+        &soon(),
     )
     .unwrap();
     let e = resolve(
@@ -435,6 +448,7 @@ fn owner_resolution_stands() {
         std::slice::from_ref(&c.leftover_id),
         LeftoverAction::Adopt,
         &agent("me"),
+        &soon(),
     )
     .unwrap_err();
     assert_eq!(
@@ -482,7 +496,7 @@ fn live_worktree_is_report_only() {
     start(&mut s, "b", &side, 40);
     write(&side, "s.rs", "precious\n");
     start(&mut s, "me", main, 50);
-    let out = analyse(&mut s, "r", "me", main).unwrap();
+    let out = analyse(&mut s, "r", "me", main, &soon()).unwrap();
     assert_eq!(out.found.len(), 1);
     assert_eq!(out.found[0].state, LeftoverState::ReportOnly);
     let snaps = tempfile::tempdir().unwrap();
@@ -492,9 +506,18 @@ fn live_worktree_is_report_only() {
         LeftoverAction::Adopt,
         LeftoverAction::Resume,
     ] {
-        let e = resolve(&mut s, "r", snaps.path(), id, action, &agent("me")).unwrap_err();
+        let e = resolve(&mut s, "r", snaps.path(), id, action, &agent("me"), &soon()).unwrap_err();
         assert!(e.to_string().contains("live session b"), "{e}");
-        let e = resolve(&mut s, "r", snaps.path(), id, action, &Caller::Owner).unwrap_err();
+        let e = resolve(
+            &mut s,
+            "r",
+            snaps.path(),
+            id,
+            action,
+            &Caller::Owner,
+            &soon(),
+        )
+        .unwrap_err();
         assert!(e.to_string().contains("live session b"), "{e}");
     }
     assert_eq!(
@@ -522,7 +545,7 @@ fn removed_worktree_is_noted_without_errors() {
     );
     drop(gone);
     start(&mut s, "me", r.path(), 30);
-    let out = analyse(&mut s, "r", "me", r.path()).unwrap();
+    let out = analyse(&mut s, "r", "me", r.path(), &soon()).unwrap();
     assert_eq!(out.found, Vec::new());
     assert_eq!(out.removed.len(), 1);
     assert_eq!(out.removed[0].0, "d");
@@ -532,4 +555,166 @@ fn removed_worktree_is_noted_without_errors() {
             .unwrap()
             .leftovers_analysed
     );
+}
+
+/// D worked in a side worktree, left s.rs uncommitted and went silent at 24 s; at 3600 s
+/// `me` starts in the main worktree and the scan marks D crashed. Returns (repo, parent
+/// of side, side, store).
+fn crashed_elsewhere() -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    std::path::PathBuf,
+    Store,
+) {
+    let r = repo();
+    let mut s = plan();
+    let parent = tempfile::tempdir().unwrap();
+    let side = parent.path().join("side");
+    sh(
+        r.path(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "side",
+            side.to_str().unwrap(),
+        ],
+    );
+    start(&mut s, "d", &side, 10);
+    unit(&mut s, "d", "1.1", &["s.rs"], Some("on_task"), 20);
+    write(&side, "s.rs", "precious\n");
+    start(&mut s, "me", r.path(), 3600);
+    assert_eq!(scan_crashed(&mut s, "r", at(3600), 30).unwrap(), vec!["d"]);
+    (r, parent, side, s)
+}
+
+fn untouched(main: &Path, side: &Path) {
+    assert_eq!(
+        std::fs::read_to_string(side.join("s.rs")).unwrap(),
+        "precious\n"
+    );
+    assert_eq!(sh(main, &["stash", "list"]), "");
+    assert_eq!(sh(side, &["log", "--format=%s"]), "init");
+}
+
+#[test]
+fn crashed_session_elsewhere_is_report_only_until_the_takeover_wait() {
+    let (r, _parent, side, mut s) = crashed_elsewhere();
+    let out = analyse(&mut s, "r", "me", r.path(), &soon()).unwrap();
+    assert_eq!(out.found.len(), 1);
+    assert_eq!(out.found[0].state, LeftoverState::ReportOnly);
+    let id = std::slice::from_ref(&out.found[0].leftover_id);
+    let snaps = tempfile::tempdir().unwrap();
+    for action in [LeftoverAction::Undo, LeftoverAction::Adopt] {
+        let e = resolve(&mut s, "r", snaps.path(), id, action, &agent("me"), &soon()).unwrap_err();
+        assert!(e.to_string().contains("crashed"), "{e}");
+    }
+    untouched(r.path(), &side);
+    // A minute short of a day of silence: still hands-off.
+    let almost = Takeover::new(at(24 + 24 * 3600 - 60), 24);
+    resolve(
+        &mut s,
+        "r",
+        snaps.path(),
+        id,
+        LeftoverAction::Undo,
+        &agent("me"),
+        &almost,
+    )
+    .unwrap_err();
+    untouched(r.path(), &side);
+    // A day after its last event, an agent may take over.
+    let day = Takeover::new(at(24 + 24 * 3600), 24);
+    let res = resolve(
+        &mut s,
+        "r",
+        snaps.path(),
+        id,
+        LeftoverAction::Undo,
+        &agent("me"),
+        &day,
+    )
+    .unwrap();
+    assert!(res.stash.is_some());
+    assert!(!side.join("s.rs").exists());
+}
+
+#[test]
+fn owner_may_resolve_a_crashed_sessions_leftovers_at_once() {
+    let (r, _parent, side, mut s) = crashed_elsewhere();
+    let out = analyse(&mut s, "r", "me", r.path(), &soon()).unwrap();
+    let id = std::slice::from_ref(&out.found[0].leftover_id);
+    let snaps = tempfile::tempdir().unwrap();
+    resolve(
+        &mut s,
+        "r",
+        snaps.path(),
+        id,
+        LeftoverAction::Undo,
+        &Caller::Owner,
+        &soon(),
+    )
+    .unwrap();
+    assert!(!side.join("s.rs").exists());
+}
+
+#[test]
+fn crashed_session_in_my_own_worktree_stays_resolvable() {
+    let (_r, _parent, side, mut s) = crashed_elsewhere();
+    start(&mut s, "me2", &side, 3601);
+    let out = analyse(&mut s, "r", "me2", &side, &soon()).unwrap();
+    assert_eq!(out.found.len(), 1);
+    assert_eq!(out.found[0].state, LeftoverState::Open);
+    let id = std::slice::from_ref(&out.found[0].leftover_id);
+    let snaps = tempfile::tempdir().unwrap();
+    resolve(
+        &mut s,
+        "r",
+        snaps.path(),
+        id,
+        LeftoverAction::Undo,
+        &agent("me2"),
+        &soon(),
+    )
+    .unwrap();
+    assert!(!side.join("s.rs").exists());
+}
+
+#[test]
+fn a_crashed_session_that_speaks_again_is_live_and_its_leftovers_are_withdrawn() {
+    let (r, _parent, side, mut s) = crashed_elsewhere();
+    let out = analyse(&mut s, "r", "me", r.path(), &soon()).unwrap();
+    let id = out.found[0].leftover_id.clone();
+    // Its owner was only away: a long tool call finishes.
+    ev(
+        &mut s,
+        "d",
+        "file_changed",
+        json!({"tool": "Bash", "files": []}),
+        3700,
+    );
+    let d = session::get(s.conn(), "d").unwrap().unwrap();
+    assert_ne!(d.state, session::SessionState::Ended);
+    assert_eq!((d.end_kind, d.ended_at), (None, None));
+    assert_eq!(leftovers(s.conn(), "r", true).unwrap(), Vec::new());
+    let day = Takeover::new(at(48 * 3600), 24);
+    let snaps = tempfile::tempdir().unwrap();
+    for caller in [agent("me"), Caller::Owner] {
+        resolve(
+            &mut s,
+            "r",
+            snaps.path(),
+            std::slice::from_ref(&id),
+            LeftoverAction::Undo,
+            &caller,
+            &day,
+        )
+        .unwrap_err();
+    }
+    untouched(r.path(), &side);
+    // The views rebuild to the same state.
+    s.rebuild().unwrap();
+    assert_eq!(leftovers(s.conn(), "r", true).unwrap(), Vec::new());
+    assert_eq!(session::get(s.conn(), "d").unwrap().unwrap().end_kind, None);
 }

@@ -463,6 +463,12 @@ impl Bridge {
             &Caller::Agent {
                 session_id: session.session_id.clone(),
             },
+            &recovery::Takeover::new(
+                jiff::Timestamp::now(),
+                Config::load(&self.home.config_path())
+                    .unwrap_or_default()
+                    .crash_takeover_hours,
+            ),
         )
         .map_err(msg)?;
         resolution_text(&store, &session.repo_id, &res).map_err(msg)

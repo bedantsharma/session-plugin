@@ -119,16 +119,13 @@ pub fn end_state(conn: &rusqlite::Connection, session: &Session) -> (Option<EndK
 
 /// At SessionStart: mark silent sessions crashed, then analyse dead sessions' leftovers.
 pub fn recover(store: &mut Store, config: &Config, repo_id: &str, session_id: &str) -> Result<()> {
-    recovery::scan_crashed(
-        store,
-        repo_id,
-        jiff::Timestamp::now(),
-        config.crash_timeout_min,
-    )?;
+    let now = jiff::Timestamp::now();
+    recovery::scan_crashed(store, repo_id, now, config.crash_timeout_min)?;
     let Some(me) = session::get(store.conn(), session_id)? else {
         return Ok(());
     };
-    recovery::analyse(store, repo_id, session_id, &worktree_of(&me))?;
+    let takeover = recovery::Takeover::new(now, config.crash_takeover_hours);
+    recovery::analyse(store, repo_id, session_id, &worktree_of(&me), &takeover)?;
     Ok(())
 }
 

@@ -224,3 +224,45 @@ fn cli_resolve_rejects_a_bad_action() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[test]
+fn a_crashed_session_running_only_bash_comes_back_on_its_next_tool_call() {
+    let env = env();
+    env.hook("session-start", "other");
+    // `slow` last spoke two hours ago (a long build, say): the next start marks it crashed.
+    {
+        let mut s = store(&env);
+        let repo_id = session::get(s.conn(), "other").unwrap().unwrap().repo_id;
+        let then = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(2);
+        s.write(|tx| {
+            append_in_at(
+                tx,
+                EventDraft::new(
+                    &repo_id,
+                    "slow",
+                    "session_started",
+                    json!({"cwd": env.repo_path(), "source": "startup"}),
+                ),
+                then,
+            )?;
+            append_in_at(
+                tx,
+                EventDraft::new(&repo_id, "slow", "prompt", json!({"chars": 1})),
+                then,
+            )
+        })
+        .unwrap();
+    }
+    env.hook("session-start", "other2");
+    let get = || session::get(store(&env).conn(), "slow").unwrap().unwrap();
+    assert_eq!(get().end_kind, Some(EndKind::Crashed));
+    // The build finishes: a Bash call, no edit.
+    hook_with(&env, "post-tool-use", "slow", |p| {
+        p["tool_name"] = json!("Bash");
+        p["tool_input"] = json!({"command": "cargo build"});
+    });
+    let s = get();
+    assert_eq!((s.end_kind, s.ended_at), (None, None));
+    assert_ne!(s.state, session::SessionState::Ended);
+    assert_eq!(env.log(), "");
+}

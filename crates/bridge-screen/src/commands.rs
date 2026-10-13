@@ -172,6 +172,8 @@ fn resolve(dir: &Path, args: &[String]) -> Result<()> {
         ids,
         action,
         &Caller::Owner,
+        // The owner's choice needs no waiting.
+        &recovery::Takeover::new(jiff::Timestamp::now(), 0),
     )?;
     println!("{}", crate::mcp::resolution_text(&store, &repo.id, &res)?);
     Ok(())

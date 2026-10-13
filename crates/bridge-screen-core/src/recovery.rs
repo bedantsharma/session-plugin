@@ -212,6 +212,45 @@ fn suggest(
     Ok((task, action))
 }
 
+/// When an agent may take over a crashed session's leftovers in another worktree.
+///
+/// A session marked crashed may only be one whose owner stepped away (a long tool run
+/// or an unanswered prompt writes no events), so its worktree stays hands-off for agents
+/// in other worktrees until it has been silent for `after`; the owner may resolve its
+/// leftovers at any time. Leftovers in the caller's own worktree are not affected: the
+/// caller is already working on those files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Takeover {
+    pub now: Timestamp,
+    pub after: SignedDuration,
+}
+
+impl Takeover {
+    pub fn new(now: Timestamp, hours: u32) -> Self {
+        Self {
+            now,
+            after: SignedDuration::from_hours(i64::from(hours)),
+        }
+    }
+}
+
+/// Is `dead` a crashed session whose worktree `wt` is still hands-off for a caller in
+/// `caller_wt` (spec §8.3: never touch a live session's worktree)? Only when `wt` is
+/// another worktree and the session hasn't yet been silent for the takeover wait.
+fn hands_off(dead: &Session, wt: &Path, caller_wt: Option<&Path>, takeover: &Takeover) -> bool {
+    if dead.end_kind != Some(EndKind::Crashed) || dead.state != session::SessionState::Ended {
+        return false;
+    }
+    if caller_wt.is_some_and(|w| same_path(w, wt)) {
+        return false;
+    }
+    // A crashed session's `ended_at` is its last activity.
+    match dead.ended_at.as_deref().map(str::parse::<Timestamp>) {
+        Some(Ok(last)) => takeover.now < last + takeover.after,
+        _ => true,
+    }
+}
+
 /// What one analysis found.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Analysis {
@@ -235,7 +274,13 @@ fn new_id(conn: &Connection) -> Result<String> {
 /// analysed (this worktree first), record each uncommitted file in its worktree as a
 /// `leftover_found` with a task and a suggestion, then `leftovers_analysed`. Files in a
 /// live session's worktree are report-only. Git runs before the write transaction.
-pub fn analyse(store: &mut Store, repo_id: &str, me: &str, my_worktree: &Path) -> Result<Analysis> {
+pub fn analyse(
+    store: &mut Store,
+    repo_id: &str,
+    me: &str,
+    my_worktree: &Path,
+    takeover: &Takeover,
+) -> Result<Analysis> {
     let dead = unanalysed_dead(store.conn(), repo_id, my_worktree)?;
     if dead.is_empty() {
         return Ok(Analysis::default());
@@ -265,7 +310,8 @@ pub fn analyse(store: &mut Store, repo_id: &str, me: &str, my_worktree: &Path) -
             match status {
                 None => out.removed.push((d.session_id.clone(), wt_text.clone())),
                 Some(st) => {
-                    let report_only = live_owner(tx, repo_id, &wt, Some(me))?.is_some();
+                    let report_only = live_owner(tx, repo_id, &wt, Some(me))?.is_some()
+                        || hands_off(&d, &wt, Some(my_worktree), takeover);
                     let known: HashSet<String> = leftovers(tx, repo_id, true)?
                         .into_iter()
                         .filter(|l| same_path(Path::new(&l.worktree), &wt))
@@ -383,13 +429,16 @@ struct Snapshot<'a> {
 /// - an agent resuming work that lives in another worktree;
 /// - a worktree where another live session works: report-only leftovers are never
 ///   touched, and an agent never touches another live session's worktree (the owner may
-///   still decide on leftovers that aren't report-only).
+///   still decide on leftovers that aren't report-only);
+/// - an agent acting on a crashed session's files in another worktree before the takeover
+///   wait: that session may only have an absent owner (the owner may decide at once).
 fn check(
     conn: &Connection,
     items: &[Leftover],
     action: LeftoverAction,
     caller: &Caller,
     caller_worktree: Option<&Path>,
+    takeover: &Takeover,
 ) -> Result<()> {
     for l in items {
         if l.state == LeftoverState::Resolved {
@@ -437,6 +486,19 @@ fn check(
     {
         return Err(refuse(owner));
     }
+    if me.is_some() {
+        for l in items {
+            if let Some(dead) = session::get(conn, &l.from_session)?
+                && hands_off(&dead, Path::new(wt), caller_worktree, takeover)
+            {
+                return Err(err(format!(
+                    "{wt} belongs to session {}, marked crashed but possibly only waiting for its owner; its files stay report-only for agents until it has been silent {} h. The owner can resolve them now with bridge-screen resolve",
+                    dead.session_id,
+                    takeover.after.as_hours()
+                )));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -455,6 +517,7 @@ pub fn resolve(
     which: &[String],
     action: LeftoverAction,
     caller: &Caller,
+    takeover: &Takeover,
 ) -> Result<Resolution> {
     let items = find(store.conn(), repo_id, which)?;
     let caller_session = match caller {
@@ -471,6 +534,7 @@ pub fn resolve(
         action,
         caller,
         caller_worktree.as_deref(),
+        takeover,
     )?;
     let wt_text = items[0].worktree.clone();
     let wt = PathBuf::from(&wt_text);

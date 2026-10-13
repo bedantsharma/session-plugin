@@ -162,22 +162,27 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
         let d: SessionStarted = payload(event)?;
         if d.source != COMPACT
             && let Some(before) = get(tx, &event.session_id)?
-            && let Some(open) = current_unit(tx, &event.session_id)?
         {
-            close_crashed_unit(tx, &before, open, ts)?;
+            if let Some(open) = current_unit(tx, &event.session_id)? {
+                close_crashed_unit(tx, &before, open, ts)?;
+            }
+            if before.state == SessionState::Ended {
+                withdraw_leftovers(tx, &before.session_id)?;
+            }
         }
         upsert_session(tx, event, &d)?;
     }
     // Events for a session bridge-screen never saw start change nothing.
-    let Some(session) = get(tx, &event.session_id)? else {
+    let Some(mut session) = get(tx, &event.session_id)? else {
         return Ok(());
     };
-    // Late hooks after SessionEnd don't bring an ended session back; a new start or a new
-    // prompt does.
-    if session.state == SessionState::Ended
-        && !matches!(event.kind.as_str(), "session_started" | "prompt")
-    {
-        return Ok(());
+    if session.state == SessionState::Ended {
+        if !revives(&session, event)? {
+            return Ok(());
+        }
+        revive(tx, &session.session_id)?;
+        session = get(tx, &event.session_id)?
+            .ok_or_else(|| Error::BadEvent(format!("session {} vanished", event.session_id)))?;
     }
     let mut unit = current_unit(tx, &session.session_id)?;
     if event.kind == "session_crashed" {
@@ -278,6 +283,45 @@ fn crashed(
         }
         .release(task)?;
     }
+    Ok(())
+}
+
+/// Does `event` bring the ended `session` back? Late hooks after SessionEnd don't; a new
+/// start or a new prompt does. A session marked crashed was only presumed dead (its owner
+/// may just have been away, or a tool ran long), so any sign of activity from it does —
+/// except an idle notification, which isn't activity.
+fn revives(session: &Session, event: &Event) -> Result<bool> {
+    let crashed = session.end_kind == Some(EndKind::Crashed);
+    Ok(match event.kind.as_str() {
+        "session_started" | "prompt" => true,
+        "session_crashed" => false,
+        "needs_owner" => {
+            let d: NeedsOwner = payload(event)?;
+            crashed && d.kind != NeedsOwnerKind::IdlePrompt
+        }
+        _ => crashed,
+    })
+}
+
+/// The session is alive after all: it hasn't ended, and its worktree is its own again.
+fn revive(tx: &Transaction, session_id: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE sessions SET state = 'idle', ended_at = NULL, end_reason = NULL,
+                             end_kind = NULL, leftovers_analysed = 0
+         WHERE session_id = ?1",
+        [session_id],
+    )?;
+    withdraw_leftovers(tx, session_id)
+}
+
+/// A session that comes back owns its files again: the leftovers found in its worktree
+/// while it was presumed dead, and not yet resolved, are withdrawn (nobody may act on
+/// them). If it dies again, a later start finds them afresh.
+fn withdraw_leftovers(tx: &Transaction, session_id: &str) -> Result<()> {
+    tx.execute(
+        "DELETE FROM leftovers WHERE from_session = ?1 AND state != 'resolved'",
+        [session_id],
+    )?;
     Ok(())
 }
 

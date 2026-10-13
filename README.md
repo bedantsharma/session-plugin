@@ -19,8 +19,9 @@ When a session ends, crashes or is abandoned, the next one picks up where it sto
   unstable) and, unless stable, reads it back before its first edit.
 - **Leftovers.** Uncommitted files of a dead session are found, attributed to tasks and
   resolved by adopt (commit), resume (claim the task) or undo (a stash plus a snapshot —
-  nothing is ever thrown away). A live session's worktree is never touched. Resolve them
-  yourself with `bridge-screen resolve <leftover-id>… adopt|resume|undo`.
+  nothing is ever thrown away). A live session's worktree is never touched, and agents leave a
+  crashed session's other worktree alone for 24 h (`crash_takeover_hours`): its owner may
+  only be away. Resolve them yourself with `bridge-screen resolve <leftover-id>… adopt|resume|undo`.
 - **Squash.** `bridge-screen squash [--onto BASE] [--dry-run]` collapses a branch's WIP
   commits into one (leaving a backup ref), and it happens automatically before
   `gh pr create`.
