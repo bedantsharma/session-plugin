@@ -72,7 +72,9 @@ pub fn handle(
         .then(|| our_mcp_call(input))
         .flatten();
     let drafts = drafts_for(event, &ctx, store)?;
-    if drafts.is_empty() && call.is_none() {
+    // A known session with nothing to record writes nothing. An unknown one is tracked
+    // from first sight (below), so its later hooks take the fast path without git.
+    if drafts.is_empty() && call.is_none() && ctx.known.is_some() {
         return Ok(None);
     }
     let mut all = Vec::with_capacity(drafts.len() + 1);

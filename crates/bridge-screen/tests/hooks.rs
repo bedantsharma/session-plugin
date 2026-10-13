@@ -293,6 +293,14 @@ fn unknown_session_is_created_implicitly() {
     let s = session::get(store.conn(), "late").unwrap().unwrap();
     assert_eq!(s.source, "unknown");
     assert_eq!(s.state, SessionState::Working);
+
+    // First seen on a tool that records nothing: still tracked from then on, so later
+    // hooks take the known-session path and don't run git again.
+    hook_with(&env, "pre-tool-use", "later", |p| {
+        p["tool_name"] = json!("Read");
+        p["tool_input"] = json!({"file_path": "/etc/hosts"});
+    });
+    assert_eq!(kinds(&env, "later"), vec!["session_started"]);
 }
 
 #[test]
