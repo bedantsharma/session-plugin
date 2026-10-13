@@ -437,3 +437,18 @@ fn no_upstream_is_none() {
     let r = repo();
     assert_eq!(upstream(r.path()).unwrap(), None);
 }
+
+#[test]
+fn pathspecs_are_literal() {
+    let r = repo();
+    let wt = r.path();
+    write(wt, "x[1].rs", "glob-looking\n");
+    write(wt, "x1.rs", "matches the glob\n");
+    write(wt, "star*.rs", "star\n");
+    write(wt, "starry.rs", "matches the star\n");
+    stash_paths(wt, &["x[1].rs".into(), "star*.rs".into()], "literal").unwrap();
+    assert!(!wt.join("x[1].rs").exists());
+    assert!(!wt.join("star*.rs").exists());
+    assert!(wt.join("x1.rs").exists(), "a glob match was stashed");
+    assert!(wt.join("starry.rs").exists(), "a glob match was stashed");
+}

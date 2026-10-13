@@ -718,3 +718,143 @@ fn a_crashed_session_that_speaks_again_is_live_and_its_leftovers_are_withdrawn()
     assert_eq!(leftovers(s.conn(), "r", true).unwrap(), Vec::new());
     assert_eq!(session::get(s.conn(), "d").unwrap().unwrap().end_kind, None);
 }
+
+#[test]
+fn agent_never_touches_a_worktree_a_live_session_took_over_after_analysis() {
+    let r = repo();
+    let mut s = plan();
+    let parent = tempfile::tempdir().unwrap();
+    let side = parent.path().join("side");
+    sh(
+        r.path(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "side",
+            side.to_str().unwrap(),
+        ],
+    );
+    start(&mut s, "d", &side, 10);
+    unit(&mut s, "d", "1.1", &["s.rs"], Some("on_task"), 20);
+    ev(
+        &mut s,
+        "d",
+        "session_ended",
+        json!({"end_kind": "dirty"}),
+        30,
+    );
+    write(&side, "s.rs", "precious\n");
+    start(&mut s, "me", r.path(), 40);
+    let out = analyse(&mut s, "r", "me", r.path(), &soon()).unwrap();
+    assert_eq!(out.found[0].state, LeftoverState::Open);
+    // Then b starts working in that worktree.
+    start(&mut s, "b", &side, 50);
+    let id = std::slice::from_ref(&out.found[0].leftover_id);
+    let snaps = tempfile::tempdir().unwrap();
+    for action in [LeftoverAction::Undo, LeftoverAction::Adopt] {
+        let e = resolve(&mut s, "r", snaps.path(), id, action, &agent("me"), &soon()).unwrap_err();
+        assert!(e.to_string().contains("live session b"), "{e}");
+    }
+    untouched(r.path(), &side);
+}
+
+#[test]
+fn a_crash_cut_edit_is_attributed_by_its_intent() {
+    let tmp = repo();
+    let wt = tmp.path();
+    let mut s = plan();
+    start(&mut s, "d", wt, 10);
+    unit(&mut s, "d", "1.1", &["a.rs"], Some("on_task"), 20);
+    // The next unit announced an edit to x.rs and died before PostToolUse.
+    ev(&mut s, "d", "prompt", json!({"chars": 1}), 40);
+    ev(
+        &mut s,
+        "d",
+        "tool_intent",
+        json!({"tool": "Write", "files": ["x.rs"]}),
+        41,
+    );
+    write(wt, "x.rs", "half written\n");
+    start(&mut s, "me", wt, 3600);
+    scan_crashed(&mut s, "r", at(3600), 30).unwrap();
+    let out = analyse(&mut s, "r", "me", wt, &soon()).unwrap();
+    let x = by_path(&out.found, "x.rs");
+    assert_eq!(
+        (x.task_id.as_deref(), x.suggested),
+        (Some("1.1"), LeftoverAction::Resume)
+    );
+}
+
+#[test]
+fn files_of_an_abandoned_detour_suggest_undo() {
+    let tmp = repo();
+    let wt = tmp.path();
+    let mut s = plan();
+    start(&mut s, "d", wt, 10);
+    ev(
+        &mut s,
+        "d",
+        "task_claimed",
+        json!({"task_id": "1.1", "mode": "auto", "confidence": 0.9}),
+        11,
+    );
+    ev(
+        &mut s,
+        "d",
+        "detour_opened",
+        json!({"detour_id": "D1", "reason": "try a new lib", "blocks": "1.1", "resume_cue": "back to the form"}),
+        12,
+    );
+    ev(&mut s, "d", "prompt", json!({"chars": 1}), 13);
+    ev(
+        &mut s,
+        "d",
+        "file_changed",
+        json!({"tool": "Edit", "files": ["e.rs"]}),
+        14,
+    );
+    ev(&mut s, "d", "unit_stopped", json!({}), 15);
+    ev(
+        &mut s,
+        "d",
+        "detour_closed",
+        json!({"detour_id": "D1", "outcome": "abandoned"}),
+        16,
+    );
+    ev(
+        &mut s,
+        "d",
+        "session_ended",
+        json!({"end_kind": "dirty"}),
+        17,
+    );
+    write(wt, "e.rs", "experiment\n");
+    start(&mut s, "me", wt, 20);
+    let out = analyse(&mut s, "r", "me", wt, &soon()).unwrap();
+    assert_eq!(by_path(&out.found, "e.rs").suggested, LeftoverAction::Undo);
+}
+
+#[test]
+fn a_file_two_dead_sessions_left_is_reported_once() {
+    let tmp = repo();
+    let wt = tmp.path();
+    let mut s = plan();
+    for (d, t) in [("d1", 10), ("d2", 100)] {
+        start(&mut s, d, wt, t);
+        unit(&mut s, d, "1.1", &["a.rs"], Some("on_task"), t + 1);
+        ev(
+            &mut s,
+            d,
+            "session_ended",
+            json!({"end_kind": "dirty"}),
+            t + 10,
+        );
+    }
+    write(wt, "a.rs", "work\n");
+    start(&mut s, "me", wt, 200);
+    let out = analyse(&mut s, "r", "me", wt, &soon()).unwrap();
+    assert_eq!(out.found.len(), 1, "{out:?}");
+    assert_eq!(leftovers(s.conn(), "r", true).unwrap().len(), 1);
+}

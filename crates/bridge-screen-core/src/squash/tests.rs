@@ -268,3 +268,25 @@ fn squash_runs_no_commit_hooks_and_leaves_index_and_worktree_alone() {
     assert_eq!(sh(&ours, &["rev-parse", &sq.backup_ref]), old);
     assert_eq!(sh(&ours, &["symbolic-ref", "--short", "HEAD"]), "feat");
 }
+
+#[test]
+fn a_bridge_task_trailer_alone_marks_a_wip_commit() {
+    let s = plan();
+    let (_root, ours, _) = setup();
+    sh(&ours, &["checkout", "-q", "-b", "trailer-only", "main"]);
+    commit(&ours, "t.rs", &["login form, part 1", "Bridge-Task: 1.1"]);
+    let Outcome::DryRun(p) = squash(
+        &ours,
+        &Options {
+            onto: Some("main".into()),
+            dry_run: true,
+        },
+        s.conn(),
+        "r",
+    )
+    .unwrap() else {
+        panic!()
+    };
+    assert_eq!(p.wips, 1);
+    assert!(p.message.contains("\n1.1 Login form"), "{}", p.message);
+}
