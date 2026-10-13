@@ -218,6 +218,7 @@ fn drafts_for(event: HookEvent, ctx: &Ctx, store: &Store) -> Result<Vec<EventDra
                 &UnitStopped {
                     unit_no,
                     summary: summary(input),
+                    score: None,
                 },
             )?
         }

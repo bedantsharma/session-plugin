@@ -13,6 +13,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
 
 use crate::error::Result;
+use crate::tangent::{Label, LabelSource, NavState};
 
 pub use project::{
     FileEvent, NeedsOwner, NeedsOwnerKind, Prompt, SESSION_KINDS, SessionEnded, SessionStarted,
@@ -68,10 +69,22 @@ pub struct Session {
     pub active_secs: i64,
     pub ended_at: Option<String>,
     pub end_reason: Option<String>,
+    /// The detour the session is focused on, if any (spec §7.4).
+    pub current_detour: Option<String>,
+    /// Consecutive unit time not on-task (spec §7.3), from labelled units.
+    pub away_secs: i64,
+    pub away_since: Option<String>,
+    pub nav_state: NavState,
+    /// Away time the owner already said "continue" to.
+    pub ack_away_secs: i64,
+    /// The last unit when the owner said "continue": drift flags up to it are acknowledged.
+    pub ack_unit: i64,
+    /// An owner answer waiting to be delivered: `<answer>:<owner_action event id>`.
+    pub pending_reply: Option<String>,
 }
 
 /// One row of the `units` view.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Unit {
     pub session_id: String,
     pub unit_no: i64,
@@ -83,14 +96,26 @@ pub struct Unit {
     pub wait_started_at: Option<String>,
     pub active_secs: i64,
     pub files: Vec<String>,
+    pub label: Option<Label>,
+    pub label_source: Option<LabelSource>,
+    /// The drift heuristic's score for the unit (0..=1), if it was scored.
+    pub drift_score: Option<f64>,
+    /// The detour open during the unit; its time is charged there too.
+    pub detour_id: Option<String>,
+    /// The agent's or owner's label differs from the heuristic's.
+    pub disagreement: bool,
+    /// The heuristic flagged the unit as possible drift.
+    pub flagged: bool,
 }
 
 const SESSION_COLUMNS: &str = "session_id, repo_id, cwd, branch, source, model, transcript_path,
      started_at, last_event_at, state, active_task, active_since, unit_count, active_secs,
-     ended_at, end_reason";
+     ended_at, end_reason, current_detour, away_secs, away_since, nav_state, ack_away_secs,
+     ack_unit, pending_reply";
 
 const UNIT_COLUMNS: &str = "session_id, unit_no, prompt_id, task_id, started_at, stopped_at,
-     waited_secs, wait_started_at, active_secs, files";
+     waited_secs, wait_started_at, active_secs, files, label, label_source, drift_score,
+     detour_id, disagreement, flagged";
 
 fn read_session(r: &Row) -> rusqlite::Result<Session> {
     let state: String = r.get(9)?;
@@ -111,6 +136,13 @@ fn read_session(r: &Row) -> rusqlite::Result<Session> {
         active_secs: r.get(13)?,
         ended_at: r.get(14)?,
         end_reason: r.get(15)?,
+        current_detour: r.get(16)?,
+        away_secs: r.get(17)?,
+        away_since: r.get(18)?,
+        nav_state: NavState::parse(&r.get::<_, String>(19)?).unwrap_or(NavState::Green),
+        ack_away_secs: r.get(20)?,
+        ack_unit: r.get(21)?,
+        pending_reply: r.get(22)?,
     })
 }
 
@@ -127,6 +159,18 @@ fn read_unit(r: &Row) -> rusqlite::Result<(Unit, String)> {
             wait_started_at: r.get(7)?,
             active_secs: r.get(8)?,
             files: Vec::new(),
+            label: r
+                .get::<_, Option<String>>(10)?
+                .as_deref()
+                .and_then(Label::parse),
+            label_source: r
+                .get::<_, Option<String>>(11)?
+                .as_deref()
+                .and_then(LabelSource::parse),
+            drift_score: r.get(12)?,
+            detour_id: r.get(13)?,
+            disagreement: r.get(14)?,
+            flagged: r.get(15)?,
         },
         r.get(9)?,
     ))
@@ -152,6 +196,28 @@ pub fn current_unit(conn: &Connection, session_id: &str) -> Result<Option<Unit>>
     conn.prepare_cached(&format!(
         "SELECT {UNIT_COLUMNS} FROM units WHERE session_id = ?1 AND stopped_at IS NULL
          ORDER BY unit_no DESC LIMIT 1"
+    ))?
+    .query_row([session_id], read_unit)
+    .optional()?
+    .map(with_files)
+    .transpose()
+}
+
+/// One unit of a session.
+pub fn unit(conn: &Connection, session_id: &str, unit_no: i64) -> Result<Option<Unit>> {
+    conn.prepare_cached(&format!(
+        "SELECT {UNIT_COLUMNS} FROM units WHERE session_id = ?1 AND unit_no = ?2"
+    ))?
+    .query_row(params![session_id, unit_no], read_unit)
+    .optional()?
+    .map(with_files)
+    .transpose()
+}
+
+/// The session's most recent unit, open or stopped.
+pub fn last_unit(conn: &Connection, session_id: &str) -> Result<Option<Unit>> {
+    conn.prepare_cached(&format!(
+        "SELECT {UNIT_COLUMNS} FROM units WHERE session_id = ?1 ORDER BY unit_no DESC LIMIT 1"
     ))?
     .query_row([session_id], read_unit)
     .optional()?

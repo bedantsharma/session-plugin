@@ -170,6 +170,9 @@ fn migrate(conn: &mut Connection) -> Result<()> {
     if current < 2 {
         tx.execute_batch(schema::V2)?;
     }
+    if current < 3 {
+        tx.execute_batch(schema::V3)?;
+    }
     tx.execute(
         "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
         [SCHEMA_VERSION.to_string()],
@@ -202,7 +205,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(version, "2");
+        assert_eq!(version, super::SCHEMA_VERSION.to_string());
     }
 
     #[test]
@@ -233,11 +236,70 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(version, "2");
+        assert_eq!(version, super::SCHEMA_VERSION.to_string());
         let events = read_all(store.conn(), None).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "note");
         for table in ["sessions", "units", "task_time", "mcp_bindings"] {
+            let n: i64 = store
+                .conn()
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0, "{table}");
+        }
+    }
+
+    #[test]
+    fn migrates_v2_database_to_v3_keeping_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(super::schema::V1).unwrap();
+            conn.execute_batch(super::schema::V2).unwrap();
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('schema_version', '2')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions (session_id, repo_id, cwd, source, started_at, last_event_at,
+                                       state, unit_count, active_secs)
+                 VALUES ('s', 'r', '/x', 'startup', 't0', 't1', 'idle', 1, 42)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO units (session_id, unit_no, started_at, stopped_at, active_secs, files)
+                 VALUES ('s', 1, 't0', 't1', 42, '[\"a.rs\"]')",
+                [],
+            )
+            .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let version: String = store
+            .conn()
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, "3");
+        let s = crate::session::get(store.conn(), "s").unwrap().unwrap();
+        assert_eq!((s.active_secs, s.unit_count), (42, 1));
+        assert_eq!(s.nav_state, crate::tangent::NavState::Green);
+        assert_eq!((s.away_secs, s.current_detour), (0, None));
+        let u = crate::session::units(store.conn(), "s").unwrap();
+        assert_eq!(u[0].files, vec!["a.rs"]);
+        assert_eq!((u[0].label, u[0].disagreement), (None, false));
+        for table in [
+            "detours",
+            "suspended_items",
+            "drift_samples",
+            "repo_tuning",
+            "notes_sent",
+        ] {
             let n: i64 = store
                 .conn()
                 .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
@@ -263,7 +325,7 @@ mod tests {
             Store::open(&path),
             Err(Error::SchemaTooNew {
                 found: 99,
-                supported: 2
+                supported: super::SCHEMA_VERSION
             })
         ));
     }
