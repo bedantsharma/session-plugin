@@ -603,6 +603,22 @@ fn disagreement_is_recorded_not_argued() {
         (1, "on_task", "agent")
     );
     drop(store);
+    // The agent's word stands: no red, no needs-you, no red note on the next tool call.
+    let p = fixture_json("post-tool-use", "s1", &env.repo_path());
+    assert_eq!(env.hook_raw("post-tool-use", &p.to_string()), "");
+    let store = Store::open(&env.db_path()).unwrap();
+    let s = session::get(store.conn(), "s1").unwrap().unwrap();
+    assert_eq!(s.nav_state.as_str(), "green");
+    let drift_asks: i64 = store
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM events WHERE kind IN ('needs_owner', 'nav_state_changed')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(drift_asks, 0);
+    drop(store);
 
     // All units labelled: a second call corrects the last one.
     let (_, text) = call_as(

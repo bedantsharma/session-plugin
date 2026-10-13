@@ -136,9 +136,7 @@ fn nav_text(store: &Store, s: &Session) -> Result<String> {
         .rev()
         .find(|u| u.stopped_at.is_some());
     let away = s.away_secs / 60;
-    let drifting = last.as_ref().is_some_and(|u| {
-        u.label == Some(Label::Drift) || (u.flagged && s.nav_state == NavState::Red)
-    });
+    let drifting = last.as_ref().is_some_and(|u| u.label == Some(Label::Drift));
     let mut text = if s.current_detour.is_none() && drifting {
         format!("drift ⚠ {away}m")
     } else if s.current_detour.is_some() || s.away_secs > 0 {

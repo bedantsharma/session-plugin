@@ -241,7 +241,7 @@ fn detours_drift_and_disagreements_show() {
         json!({"unit_no": 1, "label": "detour", "source": "declared"}),
         1510,
     );
-    // dri: 40 minutes of drift, flagged red; the agent called the last unit on-task.
+    // dri: 40 minutes of drift, labelled drift by the owner and red.
     start(&mut s, "r1", "dri00bbb", 5);
     ev(&mut s, "r1", "dri00bbb", "prompt", json!({}), 10);
     ev(

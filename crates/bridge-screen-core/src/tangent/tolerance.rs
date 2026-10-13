@@ -29,7 +29,7 @@ pub struct NavEval {
     pub tol_secs: i64,
     /// The active task's estimate, if it has one.
     pub estimate_min: Option<u32>,
-    /// The last finished unit was flagged as drift with no declared reason.
+    /// The last finished unit is labelled drift with no declared reason.
     pub drift_flag: bool,
 }
 
@@ -54,7 +54,7 @@ pub fn evaluate(
         }
         away += (now.duration_since(start).as_secs() - waited).max(0);
     }
-    let drift_flag = last_unit_flagged(conn, session)?;
+    let drift_flag = last_unit_drift(conn, session)?;
     let floor = tolerance_secs(th, None);
     // The plan is only read when the floor alone doesn't decide.
     let estimate_min = if away > floor {
@@ -82,22 +82,23 @@ pub fn evaluate(
     })
 }
 
-/// The last finished unit was flagged, the agent didn't call it a detour, and the owner
-/// hasn't said "continue" since.
-fn last_unit_flagged(conn: &Connection, session: &Session) -> Result<bool> {
-    let row: Option<(i64, bool, Option<String>, Option<String>)> = conn
+/// The last finished unit is labelled drift (by the agent, the owner or the heuristic
+/// fallback), had no declared detour, and the owner hasn't said "continue" since. A flagged
+/// unit the agent calls on-task is not drift: the disagreement is recorded, never argued
+/// (spec §7.2).
+fn last_unit_drift(conn: &Connection, session: &Session) -> Result<bool> {
+    let row: Option<(i64, Option<String>, Option<String>)> = conn
         .prepare_cached(
-            "SELECT unit_no, flagged, label, detour_id FROM units
+            "SELECT unit_no, label, detour_id FROM units
              WHERE session_id = ?1 AND stopped_at IS NOT NULL ORDER BY unit_no DESC LIMIT 1",
         )?
         .query_row([&session.session_id], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
         })
         .optional()?;
-    Ok(row.is_some_and(|(unit_no, flagged, label, detour)| {
-        flagged
-            && detour.is_none()
-            && label.as_deref().and_then(Label::parse) != Some(Label::Detour)
+    Ok(row.is_some_and(|(unit_no, label, detour)| {
+        detour.is_none()
+            && label.as_deref().and_then(Label::parse) == Some(Label::Drift)
             && unit_no > session.ack_unit
     }))
 }

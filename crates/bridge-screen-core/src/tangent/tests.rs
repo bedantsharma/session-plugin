@@ -493,7 +493,7 @@ mod tolerance {
     }
 
     #[test]
-    fn a_flagged_unit_without_a_declared_detour_is_red_until_acknowledged() {
+    fn only_a_unit_labelled_drift_without_a_detour_is_red() {
         let mut s = planned(Some("1.1"));
         ev(&mut s, "prompt", json!({"chars": 1}), 0);
         ev(&mut s, "unit_stopped", json!({"score": 0.9}), 60);
@@ -503,19 +503,29 @@ mod tolerance {
             json!({"unit_no": 1, "score": 0.9}),
             60,
         );
-        assert_eq!(eval(&s, 100).0, NavState::Red);
-        // Labelled a detour by the agent: a declared reason after all.
-        ev(
-            &mut s,
-            "unit_labeled",
-            json!({"unit_no": 1, "label": "detour", "source": "agent", "heuristic": "drift"}),
-            70,
-        );
+        // Flagged but not yet labelled: the agent is being asked, nothing is red yet.
         assert_eq!(eval(&s, 100).0, NavState::Green);
+        // The agent says on-task: the disagreement is recorded, never argued (spec §7.2).
         ev(
             &mut s,
             "unit_labeled",
             json!({"unit_no": 1, "label": "on_task", "source": "agent", "heuristic": "drift"}),
+            70,
+        );
+        assert_eq!(eval(&s, 100).0, NavState::Green);
+        // Labelled a detour by the agent: a declared reason.
+        ev(
+            &mut s,
+            "unit_labeled",
+            json!({"unit_no": 1, "label": "detour", "source": "agent", "heuristic": "drift"}),
+            75,
+        );
+        assert_eq!(eval(&s, 100).0, NavState::Green);
+        // Labelled drift (by the agent, the owner or the fallback): red until acknowledged.
+        ev(
+            &mut s,
+            "unit_labeled",
+            json!({"unit_no": 1, "label": "drift", "source": "agent", "heuristic": "drift"}),
             80,
         );
         assert_eq!(eval(&s, 100).0, NavState::Red);
@@ -526,6 +536,16 @@ mod tolerance {
             90,
         );
         assert_eq!(eval(&s, 100).0, NavState::Green);
+        // A middle-band unit the agent calls drift is red too.
+        ev(&mut s, "prompt", json!({"chars": 1}), 100);
+        ev(&mut s, "unit_stopped", json!({"score": 0.5}), 160);
+        ev(
+            &mut s,
+            "unit_labeled",
+            json!({"unit_no": 2, "label": "drift", "source": "agent"}),
+            170,
+        );
+        assert_eq!(eval(&s, 200).0, NavState::Red);
     }
 
     fn step(s: &mut Store, channel: Channel, now: i64) -> (Vec<String>, Option<String>) {
