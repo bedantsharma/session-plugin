@@ -63,18 +63,15 @@ impl HookEvent {
     }
 }
 
-/// The hook payload. Unknown fields are ignored; optional fields that are missing or of an
+/// The hook payload. The event itself comes from the command line, so `hook_event_name`
+/// isn't read. Unknown fields are ignored; optional fields that are missing or of an
 /// unexpected type are read as `None` rather than failing the whole payload.
-// Until the event handlers land (next task) most fields are parsed but not yet read.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct HookInput {
     pub session_id: String,
     pub cwd: PathBuf,
     #[serde(default, deserialize_with = "lenient_string")]
     pub transcript_path: Option<String>,
-    #[serde(default, deserialize_with = "lenient_string")]
-    pub hook_event_name: Option<String>,
     #[serde(default, deserialize_with = "lenient_string")]
     pub prompt_id: Option<String>,
     #[serde(default, deserialize_with = "lenient_string")]
@@ -93,8 +90,6 @@ pub struct HookInput {
     pub tool_name: Option<String>,
     #[serde(default)]
     pub tool_input: Option<Value>,
-    #[serde(default, deserialize_with = "lenient_string")]
-    pub tool_use_id: Option<String>,
     /// Stop and SubagentStop.
     #[serde(default, deserialize_with = "lenient_string")]
     pub last_assistant_message: Option<String>,

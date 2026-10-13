@@ -6,6 +6,8 @@
 
 pub mod project;
 
+use std::collections::HashSet;
+
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
 
@@ -163,6 +165,32 @@ pub fn units(conn: &Connection, session_id: &str) -> Result<Vec<Unit>> {
     ))?;
     let rows = stmt.query_map([session_id], read_unit)?;
     rows.map(|r| with_files(r?)).collect()
+}
+
+/// How far back [`open_unit_intents`] looks for the unit's prompt.
+const INTENT_SCAN_LIMIT: i64 = 2000;
+
+/// Files that already have a `tool_intent` in the session's current unit (since its last
+/// `prompt`). Reads the event log backwards, so it stays cheap on large databases.
+pub fn open_unit_intents(conn: &Connection, session_id: &str) -> Result<HashSet<String>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT kind, data FROM events WHERE session_id = ?1 ORDER BY seq DESC LIMIT ?2",
+    )?;
+    let mut rows = stmt.query(params![session_id, INTENT_SCAN_LIMIT])?;
+    let mut files = HashSet::new();
+    while let Some(row) = rows.next()? {
+        let kind: String = row.get(0)?;
+        match kind.as_str() {
+            "prompt" => break,
+            "tool_intent" => {
+                let data: String = row.get(1)?;
+                let d: FileEvent = serde_json::from_str(&data)?;
+                files.extend(d.files);
+            }
+            _ => {}
+        }
+    }
+    Ok(files)
 }
 
 /// Sessions that haven't ended (optionally in one repo), newest first.
