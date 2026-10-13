@@ -224,3 +224,47 @@ fn pr_commands_and_bases() {
     );
     assert_eq!(pr_base("gh pr create --fill"), None);
 }
+
+#[test]
+fn squash_runs_no_commit_hooks_and_leaves_index_and_worktree_alone() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = plan();
+    let (root, ours, _) = setup();
+    // Commit hooks that would fail (and leave a mark) if they ran.
+    let hooks = root.path().join("hooks");
+    std::fs::create_dir(&hooks).unwrap();
+    let mark = root.path().join("hook-ran");
+    for name in [
+        "pre-commit",
+        "commit-msg",
+        "prepare-commit-msg",
+        "post-commit",
+    ] {
+        let path = hooks.join(name);
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", mark.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    sh(
+        &ours,
+        &["config", "core.hooksPath", hooks.to_str().unwrap()],
+    );
+    let old = head(&ours);
+    let index = sh(&ours, &["ls-files", "--stage"]);
+    let Outcome::Squashed(sq) = squash(&ours, &Options::default(), s.conn(), "r").unwrap() else {
+        panic!()
+    };
+    assert!(!mark.exists(), "a commit hook ran");
+    assert_eq!(head(&ours), sq.new_sha);
+    assert_eq!(
+        sh(&ours, &["rev-parse", "HEAD^{tree}"]),
+        sh(&ours, &["rev-parse", &format!("{old}^{{tree}}")])
+    );
+    assert_eq!(sh(&ours, &["status", "--porcelain"]), "");
+    assert_eq!(sh(&ours, &["ls-files", "--stage"]), index);
+    assert_eq!(sh(&ours, &["rev-parse", &sq.backup_ref]), old);
+    assert_eq!(sh(&ours, &["symbolic-ref", "--short", "HEAD"]), "feat");
+}

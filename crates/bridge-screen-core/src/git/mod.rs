@@ -3,7 +3,8 @@
 //! (hooks may run inside another git process), no terminal prompts, literal pathspecs,
 //! and stdin closed (the MCP server's stdin is its protocol channel).
 //!
-//! Commit identity comes from the user's git config and the repo's commit hooks run.
+//! Commit identity comes from the user's git config and the repo's commit hooks run
+//! (except for the squash commit, made with plumbing: see `squash`).
 //! Failures become [`Error::Git`] with git's own message.
 
 use std::path::{Path, PathBuf};
@@ -412,9 +413,27 @@ pub fn create_ref(wt: &Path, name: &str, sha: &str) -> Result<()> {
     Ok(())
 }
 
-/// Move the branch to `sha`, keeping all changes staged.
-pub fn soft_reset(wt: &Path, sha: &str) -> Result<()> {
-    run(wt, &["reset", "-q", "--soft", sha])?;
+/// A new commit with the tree of `tree_of` and the single parent `parent`, made with the
+/// plumbing `commit-tree`: no commit hooks run, and neither the index nor the worktree
+/// is touched. Returns its sha (no ref points at it yet).
+pub fn commit_tree(
+    wt: &Path,
+    tree_of: &str,
+    parent: &str,
+    subject: &str,
+    trailers: &[(String, String)],
+) -> Result<String> {
+    let tree = format!("{tree_of}^{{tree}}");
+    let mut args = vec!["commit-tree".to_string(), tree, "-p".into(), parent.into()];
+    args.extend(message_args(subject, trailers));
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    text(wt, &refs)
+}
+
+/// Point ref `name` at `new`, but only if it still points at `old` (compare and swap):
+/// a ref that moved meanwhile is an error and stays where it is. `why` goes in its reflog.
+pub fn move_ref(wt: &Path, name: &str, new: &str, old: &str, why: &str) -> Result<()> {
+    run(wt, &["update-ref", "-m", why, name, new, old])?;
     Ok(())
 }
 

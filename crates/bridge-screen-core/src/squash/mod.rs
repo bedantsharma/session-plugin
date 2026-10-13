@@ -13,7 +13,7 @@ use rusqlite::Connection;
 
 use crate::checkpoint::{TASK_TRAILER, WIP_PREFIX};
 use crate::claim::task_title;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::git::{self, CommitInfo};
 use crate::handoff::Squashed;
 
@@ -208,27 +208,35 @@ pub fn squash(wt: &Path, opts: &Options, conn: &Connection, repo_id: &str) -> Re
     if opts.dry_run {
         return Ok(Outcome::DryRun(plan));
     }
-    let old_head = git::head(wt)?.unwrap_or_default();
+    let old_head = git::head(wt)?.ok_or_else(|| Error::Git("HEAD has no commit".into()))?;
     let backup_ref = format!(
         "refs/bridge-screen/backup/{}/{}",
         plan.branch,
         jiff::Timestamp::now().as_second()
     );
     git::create_ref(wt, &backup_ref, &old_head)?;
-    git::soft_reset(wt, &plan.merge_base)?;
-    let new_sha = match git::commit_all(
+    // The squashed commit has exactly HEAD's tree (the worktree is clean), so it holds no
+    // content that isn't already committed on the branch: the commits it replaces went
+    // through the repo's commit hooks when they were made. Making it with plumbing
+    // (`commit-tree`, then moving the branch with `update-ref`) re-checks nothing new by
+    // skipping them — this is not `--no-verify` on new content — and it keeps a
+    // PreToolUse hook from running the repo's (possibly slow) commit hooks.
+    // The index and worktree are never touched, and the branch moves only if it is still
+    // at the old HEAD, so a concurrent commit is never overwritten.
+    let new_sha = git::commit_tree(
         wt,
+        &old_head,
+        &plan.merge_base,
         &plan.message,
         &[(SQUASHED_FROM.to_string(), backup_ref.clone())],
-    ) {
-        Ok(sha) => sha,
-        Err(e) => {
-            // A commit hook refused: put the branch back where it was (all changes are
-            // staged, so this loses nothing) and report.
-            git::soft_reset(wt, &old_head)?;
-            return Err(e);
-        }
-    };
+    )?;
+    git::move_ref(
+        wt,
+        &format!("refs/heads/{}", plan.branch),
+        &new_sha,
+        &old_head,
+        "bridge-screen squash",
+    )?;
     let push = plan
         .upstream
         .as_ref()

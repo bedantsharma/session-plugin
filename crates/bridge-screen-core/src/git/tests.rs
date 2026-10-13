@@ -304,13 +304,33 @@ fn branch_history_merge_base_and_commits_since() {
     assert_eq!(merge_base(wt, "no-such-branch").unwrap(), None);
 
     create_ref(wt, "refs/bridge-screen/backup/feat/1", &commits[1].sha).unwrap();
-    soft_reset(wt, &base).unwrap();
-    assert_eq!(head(wt).unwrap().as_deref(), Some(base.as_str()));
+    let tip = &commits[1].sha;
+    let one = commit_tree(wt, tip, &base, "one", &[("K".into(), "v".into())]).unwrap();
+    assert_eq!(sh(wt, &["rev-parse", &format!("{one}^")]), base);
+    assert_eq!(
+        sh(wt, &["rev-parse", &format!("{one}^{{tree}}")]),
+        sh(wt, &["rev-parse", &format!("{tip}^{{tree}}")])
+    );
+    assert_eq!(trailers(wt, &one).unwrap(), vec![("K".into(), "v".into())]);
+    assert_eq!(
+        head(wt).unwrap().as_deref(),
+        Some(tip.as_str()),
+        "no ref moved"
+    );
+    // Compare and swap: refused unless the branch is still where we think.
+    let branch = format!(
+        "refs/heads/{}",
+        sh(wt, &["symbolic-ref", "--short", "HEAD"])
+    );
+    assert!(move_ref(wt, &branch, &one, &base, "test").is_err());
+    assert_eq!(head(wt).unwrap().as_deref(), Some(tip.as_str()));
+    move_ref(wt, &branch, &one, tip, "test").unwrap();
+    assert_eq!(head(wt).unwrap().as_deref(), Some(one.as_str()));
     assert_eq!(
         sh(wt, &["rev-parse", "refs/bridge-screen/backup/feat/1"]),
-        commits[1].sha
+        *tip
     );
-    assert!(is_dirty(wt).unwrap(), "soft reset keeps the changes staged");
+    assert!(!is_dirty(wt).unwrap(), "same tree: nothing to commit");
 }
 
 #[test]
