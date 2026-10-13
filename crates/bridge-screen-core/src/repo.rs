@@ -1,0 +1,157 @@
+//! Which repo a directory belongs to. All worktrees of a repo share one id (spec §6.1).
+
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use sha2::{Digest, Sha256};
+
+use crate::error::{Error, Result};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoInfo {
+    /// 16 hex chars derived from git's shared directory.
+    pub id: String,
+    /// Folder name of the main checkout.
+    pub name: String,
+    /// Path of the main checkout.
+    pub root: PathBuf,
+}
+
+/// Identify the repo that contains `dir`.
+pub fn identify(dir: &Path) -> Result<RepoInfo> {
+    let common = git(
+        dir,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    let toplevel = PathBuf::from(git(dir, &["rev-parse", "--show-toplevel"])?);
+    let common = std::fs::canonicalize(&common)?;
+    let root = if common.file_name().is_some_and(|n| n == ".git") {
+        common
+            .parent()
+            .map_or_else(|| toplevel.clone(), Path::to_path_buf)
+    } else {
+        toplevel
+    };
+    let name = root
+        .file_name()
+        .map_or_else(|| "repo".to_string(), |n| n.to_string_lossy().into_owned());
+    Ok(RepoInfo {
+        id: repo_id_for(&common),
+        name,
+        root,
+    })
+}
+
+/// First 16 hex chars of SHA-256 over the git common directory path.
+pub fn repo_id_for(common_dir: &Path) -> String {
+    let digest = Sha256::digest(common_dir.to_string_lossy().as_bytes());
+    digest
+        .iter()
+        .take(8)
+        .fold(String::with_capacity(16), |mut out, b| {
+            let _ = write!(out, "{b:02x}");
+            out
+        })
+}
+
+fn git(dir: &Path, args: &[&str]) -> Result<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .map_err(|e| Error::Git(format!("could not run git: {e}")))?;
+    if !out.status.success() {
+        let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if msg.contains("not a git repository") {
+            return Err(Error::NotARepo(dir.display().to_string()));
+        }
+        return Err(Error::Git(msg));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{identify, repo_id_for};
+    use crate::error::Error;
+    use std::path::Path;
+    use std::process::Command;
+
+    fn git(dir: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    fn new_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q"]);
+        git(dir.path(), &["commit", "-q", "--allow-empty", "-m", "init"]);
+        dir
+    }
+
+    #[test]
+    fn id_is_16_hex_chars_and_stable() {
+        let a = repo_id_for(Path::new("/x/.git"));
+        assert_eq!(a.len(), 16);
+        assert!(
+            a.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        );
+        assert_eq!(a, repo_id_for(Path::new("/x/.git")));
+        assert_ne!(a, repo_id_for(Path::new("/y/.git")));
+    }
+
+    #[test]
+    fn subdirectory_resolves_to_same_repo() {
+        let repo = new_repo();
+        std::fs::create_dir(repo.path().join("sub")).unwrap();
+        let top = identify(repo.path()).unwrap();
+        let sub = identify(&repo.path().join("sub")).unwrap();
+        assert_eq!(top, sub);
+        assert_eq!(top.name, repo.path().file_name().unwrap().to_string_lossy());
+    }
+
+    #[test]
+    fn linked_worktree_has_same_repo_id() {
+        let repo = new_repo();
+        let wt_parent = tempfile::tempdir().unwrap();
+        let wt = wt_parent.path().join("wt");
+        git(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature",
+                wt.to_str().unwrap(),
+            ],
+        );
+        let main = identify(repo.path()).unwrap();
+        let linked = identify(&wt).unwrap();
+        assert_eq!(main.id, linked.id);
+        assert_eq!(main.name, linked.name);
+        assert_eq!(main.root, linked.root);
+    }
+
+    #[test]
+    fn outside_git_is_not_a_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(matches!(identify(dir.path()), Err(Error::NotARepo(_))));
+    }
+}
