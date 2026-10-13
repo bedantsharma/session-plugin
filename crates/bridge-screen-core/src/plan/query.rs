@@ -70,7 +70,12 @@ pub fn get_node(conn: &Connection, repo_id: &str, id: &str) -> Result<Option<Pla
     };
     let mut node = raw.node;
     node.expected_files = serde_json::from_str(&files)?;
-    node.depends_on = deps_map(conn, repo_id)?.remove(id).unwrap_or_default();
+    let mut stmt = conn.prepare_cached(
+        "SELECT depends_on FROM plan_deps WHERE repo_id = ?1 AND node_id = ?2 ORDER BY depends_on",
+    )?;
+    node.depends_on = stmt
+        .query_map(params![repo_id, id], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
     Ok(Some(node))
 }
 
