@@ -1,0 +1,29 @@
+@import 'tailwindcss';
+
+/* Claude Code palette (spec §10.4). Dark is the default; light follows the system. */
+@theme {
+  --color-clay: #d97757;
+  --color-ok: #4eba65;
+  --color-warn: #e5a83b;
+  --color-bad: #e5534b;
+  --color-bg: #1f1e1d;
+  --color-surface: #2a2927;
+  --color-line: #3a3936;
+  --color-fg: #ece9e3;
+  --color-muted: #a39e94;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --color-bg: #faf9f5;
+    --color-surface: #ffffff;
+    --color-line: #e5e2da;
+    --color-fg: #1f1e1d;
+    --color-muted: #6b675f;
+  }
+}
+
+body {
+  @apply bg-bg text-fg antialiased;
+}

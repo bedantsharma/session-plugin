@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Fast checks on what's being committed: formatting, lint, compile.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+
+if echo "$staged" | grep -qE '\.rs$|(^|/)Cargo\.(toml|lock)$|^rust-toolchain\.toml$'; then
+  echo "pre-commit: rust fmt / clippy"
+  cargo fmt --all --check
+  cargo clippy --workspace --all-targets --quiet -- -D warnings
+fi
+
+if echo "$staged" | grep -qE '^web/'; then
+  echo "pre-commit: web format / lint / check"
+  (cd web && npx --no-install prettier --check . && npm run -s lint && npm run -s check)
+fi
