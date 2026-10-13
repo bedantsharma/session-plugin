@@ -5,6 +5,7 @@
 pub mod binding;
 pub mod claim;
 pub mod config;
+pub mod drift;
 pub mod error;
 pub mod navigator;
 pub mod paths;

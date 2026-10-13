@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     Detour, DetourClosed, DetourOpened, DetourPromoted, ItemKind, ItemResumed, ItemSuspended,
-    SuspendedItem, get_detour, open_detours, suspended,
+    Label, LabelSource, SuspendedItem, Thresholds, UnitLabeled, get_detour, open_detours,
+    suspended,
 };
 use crate::claim::{self, ClaimMode, ClaimRequest, ClaimTarget, task_title};
 use crate::error::{Error, Result};
@@ -372,5 +373,76 @@ pub fn promote_detour(
             detour,
             task_id: out.task_id,
         })
+    })
+}
+
+/// Longest `why` kept with a label.
+const MAX_WHY_CHARS: usize = 200;
+
+/// A label for a unit, from the agent or the owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabelRequest {
+    pub session_id: String,
+    /// Which unit; `None` picks as described on [`label_unit`].
+    pub unit_no: Option<i64>,
+    pub label: Label,
+    pub source: LabelSource,
+    pub why: Option<String>,
+}
+
+/// Label a unit (spec §7.2 `label_unit`). With no `unit_no`: the most recent finished unit
+/// still waiting for a label, else the last finished unit (a correction). The label is
+/// used as given; a difference from the heuristic is recorded, never argued. Returns the
+/// unit number.
+pub fn label_unit(
+    store: &mut Store,
+    req: &LabelRequest,
+    th: &Thresholds,
+    actor: &Actor,
+) -> Result<i64> {
+    let LabelRequest {
+        session_id,
+        unit_no,
+        label,
+        source,
+        why,
+    } = req;
+    let (session_id, unit_no, label, source) = (session_id.as_str(), *unit_no, *label, *source);
+    store.write(|tx| {
+        let session = session::get(tx, session_id)?
+            .ok_or_else(|| err(format!("unknown session {session_id}")))?;
+        let finished: Vec<session::Unit> = session::units(tx, session_id)?
+            .into_iter()
+            .filter(|u| u.stopped_at.is_some())
+            .collect();
+        let unit = match unit_no {
+            Some(n) => finished
+                .iter()
+                .find(|u| u.unit_no == n)
+                .ok_or_else(|| err(format!("no finished unit {n} in this session")))?,
+            None => finished
+                .iter()
+                .rev()
+                .find(|u| u.label.is_none())
+                .or_else(|| finished.last())
+                .ok_or_else(|| err("no finished unit to label yet"))?,
+        };
+        let data = UnitLabeled {
+            unit_no: unit.unit_no,
+            label,
+            source,
+            score: unit.drift_score,
+            heuristic: unit.drift_score.and_then(|s| th.heuristic(s)),
+            why: why
+                .as_deref()
+                .map(|w| w.trim().chars().take(MAX_WHY_CHARS).collect()),
+        };
+        Writer {
+            tx,
+            session: &session,
+            actor,
+        }
+        .append("unit_labeled", &data, unit.task_id.as_deref())?;
+        Ok(unit.unit_no)
     })
 }

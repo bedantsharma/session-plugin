@@ -156,6 +156,7 @@ fn lists_three_tools_with_schemas() {
         vec![
             "claim_task",
             "close_detour",
+            "label_unit",
             "plan_edit",
             "promote_detour",
             "resume",
@@ -546,5 +547,82 @@ fn empty_or_oversized_cue_is_rejected() {
     assert_eq!(
         bridge_screen_core::tangent::open_detours(store.conn(), "s1").unwrap(),
         vec![]
+    );
+}
+
+#[test]
+fn disagreement_is_recorded_not_argued() {
+    use bridge_screen_core::tangent::{Label, LabelSource};
+    let env = Env::new();
+    let seed = r#"[
+      {"op":"add_node","kind":"goal","title":"Ship","intent":"Owner sees progress"},
+      {"op":"add_node","parent":"G","kind":"milestone","title":"Accounts","intent":"People can sign in"},
+      {"op":"add_node","parent":"1","kind":"task","title":"Login form validation",
+       "expected_files":["src/login.rs"]}
+    ]"#;
+    assert!(env.run(&["plan", "edit"], seed).status.success());
+    env.hook("session-start", "s1");
+    let args = json!({"id": "1.1", "mode": "auto", "confidence": 0.9});
+    let mut mcp = Mcp::start(&env, "/nonexistent");
+    call_as(&mut mcp, &env, "s1", "claim_task", &args);
+    env.hook("user-prompt-submit", "s1");
+    for f in ["docker/Dockerfile", ".github/workflows/ci.yml"] {
+        let mut p = fixture_json("post-tool-use", "s1", &env.repo_path());
+        p["tool_input"]["file_path"] = json!(format!("{}/{f}", env.repo_path()));
+        env.hook_raw("post-tool-use", &p.to_string());
+    }
+    let mut p = fixture_json("stop", "s1", &env.repo_path());
+    p["last_assistant_message"] = json!("Rewrote the Dockerfile and the CI workflow caching.");
+    let out = env.hook_raw("stop", &p.to_string());
+    assert!(out.contains("possible drift"), "{out}");
+
+    let (is_error, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "label_unit",
+        &json!({"label": "on_task", "why": "CI must pass before the login form can merge"}),
+    );
+    assert!(!is_error, "{text}");
+    assert_eq!(text, "Labelled unit 1 as on-task.");
+    let store = Store::open(&env.db_path()).unwrap();
+    let u = &session::units(store.conn(), "s1").unwrap()[0];
+    assert_eq!(u.label, Some(Label::OnTask));
+    assert_eq!(u.label_source, Some(LabelSource::Agent));
+    assert!(u.disagreement && u.flagged);
+    let (n, label, source): (i64, String, String) = store
+        .conn()
+        .query_row(
+            "SELECT count(*), max(label), max(source) FROM drift_samples",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (n, label.as_str(), source.as_str()),
+        (1, "on_task", "agent")
+    );
+    drop(store);
+
+    // All units labelled: a second call corrects the last one.
+    let (_, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "label_unit",
+        &json!({"label": "detour", "why": "it blocked the merge"}),
+    );
+    assert_eq!(text, "Labelled unit 1 as detour.");
+    let (is_error, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "label_unit",
+        &json!({"label": "sideways", "why": "x"}),
+    );
+    assert!(is_error);
+    assert!(
+        text.starts_with("invalid arguments: unknown variant `sideways`"),
+        "{text}"
     );
 }

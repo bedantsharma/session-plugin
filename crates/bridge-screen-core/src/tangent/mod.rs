@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::Result;
 
 pub use ops::{
-    CloseRequest, Closed, DetourOutcome, MAX_CUE_CHARS, Promoted, StartRequest, Started,
-    close_detour, item_display, promote_detour, resume, start_detour,
+    CloseRequest, Closed, DetourOutcome, LabelRequest, MAX_CUE_CHARS, Promoted, StartRequest,
+    Started, close_detour, item_display, label_unit, promote_detour, resume, start_detour,
 };
 pub use project::{
     ConfigChanged, DetourClosed, DetourOpened, DetourPromoted, DriftFlagged, ItemResumed,
@@ -130,6 +130,60 @@ impl NavState {
             _ => None,
         }
     }
+}
+
+/// The cut-offs in force for a repo: config defaults, overridden by tuned values.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Thresholds {
+    /// Scores below this are on-task.
+    pub lower: f64,
+    /// Scores above this are possible drift.
+    pub upper: f64,
+    pub tolerance_min_minutes: f64,
+    pub tolerance_pct: f64,
+}
+
+impl Thresholds {
+    pub fn from_config(cfg: &crate::config::Config) -> Self {
+        Self {
+            lower: cfg.drift_lower,
+            upper: cfg.drift_upper,
+            tolerance_min_minutes: f64::from(cfg.tolerance_min_minutes),
+            tolerance_pct: f64::from(cfg.tolerance_pct),
+        }
+    }
+
+    /// The label a score implies on its own; `None` in the band where it can't tell.
+    pub fn heuristic(&self, score: f64) -> Option<Label> {
+        if score < self.lower {
+            Some(Label::OnTask)
+        } else if score > self.upper {
+            Some(Label::Drift)
+        } else {
+            None
+        }
+    }
+}
+
+/// The thresholds for `repo_id`: tuned values where the repo has them (spec §7.6).
+pub fn thresholds(
+    conn: &Connection,
+    repo_id: &str,
+    cfg: &crate::config::Config,
+) -> Result<Thresholds> {
+    let mut th = Thresholds::from_config(cfg);
+    let tuned: Option<(Option<f64>, Option<f64>, Option<f64>)> = conn
+        .prepare_cached(
+            "SELECT drift_lower, drift_upper, tolerance_pct FROM repo_tuning WHERE repo_id = ?1",
+        )?
+        .query_row([repo_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .optional()?;
+    if let Some((lower, upper, pct)) = tuned {
+        th.lower = lower.unwrap_or(th.lower);
+        th.upper = upper.unwrap_or(th.upper);
+        th.tolerance_pct = pct.unwrap_or(th.tolerance_pct);
+    }
+    Ok(th)
 }
 
 /// What a suspended item points at.

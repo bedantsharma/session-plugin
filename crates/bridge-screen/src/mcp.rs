@@ -12,11 +12,14 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use bridge_screen_core::binding;
 use bridge_screen_core::claim::{self, ClaimMode, ClaimRequest, ClaimTarget};
+use bridge_screen_core::config::Config;
 use bridge_screen_core::paths::Home;
 use bridge_screen_core::plan::{EditContext, NodeKind, NodeStatus, PlanOp, get_node, load_tree};
 use bridge_screen_core::session::{self, Session, SessionState};
 use bridge_screen_core::store::{Actor, Store};
-use bridge_screen_core::tangent::{self, CloseRequest, DetourOutcome, StartRequest};
+use bridge_screen_core::tangent::{
+    self, CloseRequest, DetourOutcome, Label, LabelRequest, LabelSource, StartRequest,
+};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
@@ -151,6 +154,17 @@ pub struct ResumeInput {
     pub item_id: String,
 }
 
+/// Label your last unit of work.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LabelUnitInput {
+    /// "on_task" if it advanced your task, "detour" if it wasn't the task but blocked it,
+    /// "drift" if it did neither.
+    pub label: Label,
+    /// One line on why.
+    pub why: String,
+}
+
 /// Turn the current detour into a real task and claim it.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -264,6 +278,16 @@ impl Bridge {
     )]
     async fn resume(&self, Parameters(args): Parameters<Args<ResumeInput>>) -> CallToolResult {
         text(self.do_resume(&args))
+    }
+
+    #[tool(
+        description = "Label your last unit of work when bridge-screen asks: on_task, detour or drift, with a one-line why. Be honest: drift is information for the owner, not blame. Calling it again corrects the label."
+    )]
+    async fn label_unit(
+        &self,
+        Parameters(args): Parameters<Args<LabelUnitInput>>,
+    ) -> CallToolResult {
+        text(self.do_label_unit(&args))
     }
 
     #[tool(
@@ -427,6 +451,31 @@ impl Bridge {
         Ok(format!(
             "Resumed {what}. On return: {}",
             sentence(&item.resume_cue)
+        ))
+    }
+
+    fn do_label_unit(&self, args: &Args<LabelUnitInput>) -> Result<String, String> {
+        let mut store = self.open()?;
+        let session = self.caller(&store, "label_unit", &args.raw)?;
+        let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        let config = Config::load(&self.home.config_path()).unwrap_or_default();
+        let th = tangent::thresholds(store.conn(), &session.repo_id, &config).map_err(msg)?;
+        let unit_no = tangent::label_unit(
+            &mut store,
+            &LabelRequest {
+                session_id: session.session_id.clone(),
+                unit_no: None,
+                label: input.label,
+                source: LabelSource::Agent,
+                why: Some(input.why.clone()),
+            },
+            &th,
+            &Actor::default(),
+        )
+        .map_err(msg)?;
+        Ok(format!(
+            "Labelled unit {unit_no} as {}.",
+            input.label.display()
         ))
     }
 

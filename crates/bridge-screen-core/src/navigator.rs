@@ -4,12 +4,13 @@
 //! Callers build [`Candidate`]s for the situation they see, call [`select`] for the channel
 //! they are, then record the chosen note with [`note_sent_draft`] and deliver its text.
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
+use crate::session::{Session, Unit};
 use crate::store::EventDraft;
-use crate::tangent::NoteSent;
+use crate::tangent::{DriftFlagged, Label, LabelSource, NoteSent, Thresholds, UnitLabeled};
 
 /// Kinds of note, highest priority first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -170,6 +171,197 @@ pub fn note_sent_draft(
         "note_sent",
         serde_json::to_value(data)?,
     ))
+}
+
+/// Asking the agent to label a unit it finished.
+pub const LABEL_REQUEST: &str =
+    "bridge-screen: label your last unit — on-task, detour or drift — with label_unit (one call).";
+
+/// The same, when the heuristic flagged the unit as possible drift.
+pub const DRIFT_REQUEST: &str = "bridge-screen: possible drift in your last unit. Label it — on-task, detour or drift — with label_unit (one call).";
+
+/// What a hook should record and say after its own events.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Step {
+    pub events: Vec<EventDraft>,
+    pub note: Option<String>,
+}
+
+impl Step {
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty() && self.note.is_none()
+    }
+}
+
+fn draft(session: &Session, kind: &str, data: &impl Serialize) -> Result<EventDraft> {
+    Ok(EventDraft::new(
+        &session.repo_id,
+        &session.session_id,
+        kind,
+        serde_json::to_value(data)?,
+    ))
+}
+
+fn labeled(
+    session: &Session,
+    unit: &Unit,
+    label: Label,
+    source: LabelSource,
+    score: Option<f64>,
+    heuristic: Option<Label>,
+) -> Result<EventDraft> {
+    let data = UnitLabeled {
+        unit_no: unit.unit_no,
+        label,
+        source,
+        score,
+        heuristic,
+        why: None,
+    };
+    let d = draft(session, "unit_labeled", &data)?;
+    Ok(match &unit.task_id {
+        Some(t) => d.task(t),
+        None => d,
+    })
+}
+
+/// After `unit_stopped` (spec §7.2): label the unit, or ask the agent to.
+///
+/// - a detour was open during the unit → `detour`, declared;
+/// - score below the lower cut-off (or no plan to score against) → `on_task`, heuristic;
+/// - otherwise ask with a [`NoteKind::LabelRequest`] through `Stop` (above the upper
+///   cut-off it is first `drift_flagged`). The request is the only Stop continuation:
+///   never when `stop_hook_active`, and at most one note per unit. When it can't be sent,
+///   the heuristic labels the unit now (`drift` when flagged, else `on_task`).
+pub fn label_at_stop(
+    conn: &Connection,
+    session: &Session,
+    unit: &Unit,
+    stop_hook_active: bool,
+    th: &Thresholds,
+) -> Result<Step> {
+    let mut step = Step::default();
+    if unit.label.is_some() {
+        return Ok(step);
+    }
+    let score = unit.drift_score;
+    if unit.detour_id.is_some() {
+        let heuristic = score.and_then(|s| th.heuristic(s));
+        step.events.push(labeled(
+            session,
+            unit,
+            Label::Detour,
+            LabelSource::Declared,
+            score,
+            heuristic,
+        )?);
+        return Ok(step);
+    }
+    let Some(s) = score.filter(|s| *s >= th.lower) else {
+        step.events.push(labeled(
+            session,
+            unit,
+            Label::OnTask,
+            LabelSource::Heuristic,
+            score,
+            score.map(|_| Label::OnTask),
+        )?);
+        return Ok(step);
+    };
+    let flagged = s > th.upper;
+    if flagged {
+        let data = DriftFlagged {
+            unit_no: unit.unit_no,
+            score: s,
+        };
+        step.events.push(draft(session, "drift_flagged", &data)?);
+    }
+    let ask = if flagged {
+        Candidate::new(
+            NoteKind::LabelRequest,
+            Channel::Stop,
+            DRIFT_REQUEST,
+            "label:drift",
+        )
+    } else {
+        Candidate::new(
+            NoteKind::LabelRequest,
+            Channel::Stop,
+            LABEL_REQUEST,
+            "label",
+        )
+    };
+    let chosen = if stop_hook_active {
+        None
+    } else {
+        select(
+            conn,
+            &session.session_id,
+            unit.unit_no,
+            Channel::Stop,
+            vec![ask],
+        )?
+    };
+    if let Some(note) = chosen {
+        step.events.push(note_sent_draft(
+            &session.repo_id,
+            &session.session_id,
+            unit.unit_no,
+            &note,
+        )?);
+        step.note = Some(note.text);
+    } else {
+        let label = if flagged { Label::Drift } else { Label::OnTask };
+        step.events.push(labeled(
+            session,
+            unit,
+            label,
+            LabelSource::Heuristic,
+            score,
+            th.heuristic(s),
+        )?);
+    }
+    Ok(step)
+}
+
+/// When a new prompt arrives and the last finished unit is still waiting for its label,
+/// the heuristic labels it (`detour` if one was open, `drift` if flagged, else `on_task`).
+pub fn label_left_unlabeled(
+    conn: &Connection,
+    session: &Session,
+    th: &Thresholds,
+) -> Result<Option<EventDraft>> {
+    let last: Option<i64> = conn
+        .prepare_cached(
+            "SELECT unit_no FROM units WHERE session_id = ?1 AND stopped_at IS NOT NULL
+             ORDER BY unit_no DESC LIMIT 1",
+        )?
+        .query_row([&session.session_id], |r| r.get(0))
+        .optional()?;
+    let Some(unit_no) = last else {
+        return Ok(None);
+    };
+    let Some(unit) =
+        crate::session::unit(conn, &session.session_id, unit_no)?.filter(|u| u.label.is_none())
+    else {
+        return Ok(None);
+    };
+    let heuristic = unit.drift_score.and_then(|s| th.heuristic(s));
+    let (label, source) = if unit.detour_id.is_some() {
+        (Label::Detour, LabelSource::Declared)
+    } else if unit.flagged {
+        (Label::Drift, LabelSource::Heuristic)
+    } else {
+        (Label::OnTask, LabelSource::Heuristic)
+    };
+    Ok(Some(labeled(
+        session,
+        &unit,
+        label,
+        source,
+        unit.drift_score,
+        heuristic,
+    )?))
 }
 
 #[cfg(test)]

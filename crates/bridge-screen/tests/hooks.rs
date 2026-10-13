@@ -150,6 +150,7 @@ fn session_flow_records_events() {
             "tool_intent",
             "file_changed",
             "unit_stopped",
+            "unit_labeled",
             "session_ended"
         ]
     );
@@ -166,7 +167,8 @@ fn session_flow_records_events() {
         all[4].data["summary"],
         "Added validation to the login form and a unit test."
     );
-    assert_eq!(all[5].data["reason"], "prompt_input_exit");
+    assert_eq!(all[5].data["label"], "on_task");
+    assert_eq!(all[6].data["reason"], "prompt_input_exit");
     let u = units(&env, "s1");
     assert_eq!(u.len(), 1);
     assert_eq!(u[0].files, vec!["src/login.rs"]);
@@ -223,7 +225,8 @@ fn parallel_sessions_stay_separate() {
         .filter(|e| e.session_id == "A")
         .map(|e| e.seq)
         .collect();
-    assert_eq!(seqs, (1..=5).collect::<Vec<_>>());
+    // session_started, prompt, 2 × file_changed, unit_stopped, unit_labeled
+    assert_eq!(seqs, (1..=6).collect::<Vec<_>>());
 }
 
 #[test]
@@ -279,7 +282,8 @@ fn known_session_does_not_run_git() {
             "tool_intent",
             "file_changed",
             "needs_owner",
-            "unit_stopped"
+            "unit_stopped",
+            "unit_labeled"
         ]
     );
 }

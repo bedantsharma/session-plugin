@@ -6,12 +6,14 @@
 
 pub mod context;
 pub mod handlers;
+pub mod nav;
 
 use std::io::{Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use bridge_screen_core::config::Config;
 use bridge_screen_core::paths::Home;
 use bridge_screen_core::store::Store;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -96,6 +98,9 @@ pub struct HookInput {
     /// Stop and SubagentStop.
     #[serde(default, deserialize_with = "lenient_string")]
     pub last_assistant_message: Option<String>,
+    /// Stop: Claude Code is already continuing because of a stop hook.
+    #[serde(default, deserialize_with = "lenient_bool")]
+    pub stop_hook_active: bool,
     /// Notification: permission_prompt, idle_prompt, …
     #[serde(default, deserialize_with = "lenient_string")]
     pub notification_type: Option<String>,
@@ -110,6 +115,11 @@ fn lenient_string<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::
         Value::String(s) => Some(s),
         _ => None,
     })
+}
+
+/// Accept any JSON value; `true` only for JSON `true`.
+fn lenient_bool<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    Ok(matches!(Value::deserialize(d)?, Value::Bool(true)))
 }
 
 /// What a hook prints: context for the agent, or nothing.
@@ -149,7 +159,9 @@ pub fn run(event: HookEvent, stdin: &str, home: &Home) -> Result<Option<HookOutp
     let input: HookInput = serde_json::from_str(stdin).context("hook input is not valid JSON")?;
     home.ensure()?;
     let mut store = Store::open(&home.db_path())?;
-    handlers::handle(event, &input, &mut store)
+    // A broken config file must not break the session: fall back to defaults.
+    let config = Config::load(&home.config_path()).unwrap_or_default();
+    handlers::handle(event, &input, &mut store, &config)
 }
 
 /// The `hook` command as the binary runs it: always exits 0.

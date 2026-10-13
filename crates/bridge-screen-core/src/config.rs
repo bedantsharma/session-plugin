@@ -6,13 +6,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// Agent-minutes per story point, for display only (spec §2).
     pub points_minutes: u32,
     /// Minutes of silence after which a session counts as crashed (spec §8.2).
     pub crash_timeout_min: u32,
+    /// Drift scores below this are on-task without asking (spec §7.2). Tuned per repo.
+    pub drift_lower: f64,
+    /// Drift scores above this are flagged as possible drift. Tuned per repo.
+    pub drift_upper: f64,
+    /// Away time is always tolerated up to this many minutes (spec §7.3).
+    pub tolerance_min_minutes: u32,
+    /// …or up to this percentage of the active task's estimate, if larger. Tuned per repo.
+    pub tolerance_pct: u32,
 }
 
 impl Default for Config {
@@ -20,6 +28,10 @@ impl Default for Config {
         Self {
             points_minutes: 15,
             crash_timeout_min: 30,
+            drift_lower: 0.3,
+            drift_upper: 0.7,
+            tolerance_min_minutes: 15,
+            tolerance_pct: 20,
         }
     }
 }
@@ -64,7 +76,11 @@ mod tests {
             cfg,
             Config {
                 points_minutes: 15,
-                crash_timeout_min: 30
+                crash_timeout_min: 30,
+                drift_lower: 0.3,
+                drift_upper: 0.7,
+                tolerance_min_minutes: 15,
+                tolerance_pct: 20,
             }
         );
     }
@@ -79,7 +95,7 @@ mod tests {
             cfg,
             Config {
                 points_minutes: 20,
-                crash_timeout_min: 30
+                ..Config::default()
             }
         );
     }
@@ -107,6 +123,10 @@ mod tests {
         let cfg = Config {
             points_minutes: 12,
             crash_timeout_min: 45,
+            drift_lower: 0.25,
+            drift_upper: 0.8,
+            tolerance_min_minutes: 10,
+            tolerance_pct: 30,
         };
         let text = cfg.to_toml().unwrap();
         assert_eq!(toml::from_str::<Config>(&text).unwrap(), cfg);
