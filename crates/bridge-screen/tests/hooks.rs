@@ -60,6 +60,37 @@ fn hook_never_fails_the_session() {
     assert!(log.contains(" stop "), "{log}");
 }
 
+#[test]
+fn unknown_or_missing_hook_event_exits_zero() {
+    // Exit code 2 would block the tool call or prompt; any bad command line must exit 0.
+    let env = Env::new();
+    for args in [
+        &["hook", "brand-new-event"][..],
+        &["hook"],
+        &["hook", "stop", "x"],
+    ] {
+        let out = env.run(args, "{}");
+        assert_eq!(out.status.code(), Some(0), "{args:?}");
+        assert!(out.stdout.is_empty(), "{args:?}");
+        assert!(out.stderr.is_empty(), "{args:?}");
+    }
+    let log = env.log();
+    assert_eq!(log.lines().count(), 3, "{log}");
+    assert!(log.contains("brand-new-event"), "{log}");
+}
+
+#[test]
+fn errors_are_logged_before_the_home_folder_exists() {
+    let env = Env::new();
+    let home = env.home.path().join("not-yet");
+    let mut env = env;
+    env.vars
+        .push(("BRIDGE_SCREEN_HOME".into(), home.to_str().unwrap().into()));
+    assert_eq!(env.hook_raw("stop", "not json"), "");
+    let log = std::fs::read_to_string(home.join("hook-errors.log")).unwrap_or_default();
+    assert!(log.contains(" stop "), "{log:?}");
+}
+
 use bridge_screen_core::session::{self, SessionState};
 use bridge_screen_core::store::{Event, Store, read_all};
 use common::fixture_json;

@@ -188,18 +188,34 @@ pub fn main_entry(event: HookEvent) {
         }
     };
     if let Some(home) = home {
-        log_error(&home, event, &message);
+        log_error(&home, event.kebab(), &message);
     }
 }
 
-/// Append one line to `<home>/hook-errors.log`. Failing to log is ignored.
-fn log_error(home: &Home, event: HookEvent, message: &str) {
+/// `bridge-screen hook …` with an event this binary doesn't know (e.g. a newer plugin's
+/// hooks.json) or a malformed command line: log it and exit 0 like any other hook error.
+/// Clap's own exit code 2 would block the tool call or prompt.
+pub fn bad_command_line(message: &str) {
+    if let Ok(home) = Home::resolve() {
+        let message: Vec<&str> = message
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        log_error(&home, "hook", &message.join(" "));
+    }
+}
+
+/// Append one line to `<home>/hook-errors.log`, creating the folder if needed. Failing to
+/// log is ignored.
+fn log_error(home: &Home, label: &str, message: &str) {
     let line = format!(
         "{} {} {}\n",
         jiff::Timestamp::now(),
-        event.kebab(),
+        label,
         message.replace('\n', " ")
     );
+    let _ = std::fs::create_dir_all(home.root());
     let _ = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
