@@ -455,6 +455,25 @@ mod tolerance {
         assert!(!ok);
         assert!(text.contains("no live session starts with zzz"), "{text}");
     }
+
+    #[test]
+    fn a_drift_answer_needs_a_session_outside_tolerance() {
+        let env = Env::new();
+        env.hook("session-start", "abc111");
+        for answer in ["continue", "stop"] {
+            let (ok, text) = cli(&env, &["drift", "abc", answer]);
+            assert!(!ok, "{text}");
+            assert!(
+                text.contains("abc111 is inside its tolerance band; there is no drift to answer"),
+                "{text}"
+            );
+        }
+        assert!(
+            !kinds(&env).contains(&"owner_action".to_string()),
+            "nothing is recorded"
+        );
+        assert_eq!(env.hook("user-prompt-submit", "abc111"), "");
+    }
 }
 
 mod tuning {

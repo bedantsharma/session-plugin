@@ -9,7 +9,7 @@ use bridge_screen_core::plan::{EditContext, PlanOp, load_tree, plan_edit, render
 use bridge_screen_core::repo;
 use bridge_screen_core::session::{self, Session};
 use bridge_screen_core::store::{Actor, EventDraft, OWNER_SESSION, Store, append_in};
-use bridge_screen_core::tangent::{self, Label, LabelRequest, LabelSource, OwnerAction};
+use bridge_screen_core::tangent::{self, Label, LabelRequest, LabelSource, NavState, OwnerAction};
 
 use crate::cli::{Cli, Command, ConfigCommand, DriftAnswer, LabelArg, PlanCommand};
 
@@ -243,6 +243,15 @@ fn drift(
     let mut store = open_store(&home)?;
     let config = Config::load(&home.config_path())?;
     let s = find_session(&store, prefix)?;
+    // An answer needs a question: the session is (or was last seen) outside tolerance.
+    let th = tangent::thresholds(store.conn(), &s.repo_id, &config)?;
+    let live = tangent::evaluate(store.conn(), &s, &th, jiff::Timestamp::now())?.state;
+    if live == NavState::Green && s.nav_state == NavState::Green {
+        anyhow::bail!(
+            "{} is inside its tolerance band; there is no drift to answer",
+            s.session_id
+        );
+    }
     let mut reply = format!(
         "Told {}: {}.",
         s.session_id,
