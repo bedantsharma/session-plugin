@@ -666,6 +666,9 @@ fn hook_latency_stop_path() {
         "Wired the checkout task into the storefront, added tests for the order summary and fixed the cart total rounding."
     );
     let payload = payload.to_string();
+    // The first exec of a freshly built binary costs ~250 ms on macOS (the OS checks it
+    // once per launch context, even for `--version`); it isn't the hook's work.
+    assert!(env.run(&["--version"], "").status.success());
     let times = (0..200)
         .map(|i| {
             // A fresh unit of 30 changed files, recorded directly to keep the setup quick.
