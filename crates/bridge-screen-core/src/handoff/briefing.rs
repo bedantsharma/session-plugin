@@ -306,11 +306,17 @@ fn capped(items: &[String], shown: usize) -> String {
 /// The action list: commit first, failed and unverified items, leftovers, open detours,
 /// suspended items, and the next action.
 fn action_lines(f: &Facts, lines: &mut Vec<String>) {
-    for s in &f.missed {
+    for s in f.missed.iter().take(VERIFY_SHOWN) {
         let short: String = s.session_id.chars().take(6).collect();
         lines.push(format!(
             "  - Commit first: checkpoint missed in session {short} (due: {}).",
             s.checkpoint_pending.as_deref().unwrap_or("")
+        ));
+    }
+    if f.missed.len() > VERIFY_SHOWN {
+        lines.push(format!(
+            "    (+{} more sessions with a missed checkpoint)",
+            f.missed.len() - VERIFY_SHOWN
         ));
     }
     if !f.failed.is_empty() {
@@ -434,10 +440,11 @@ pub fn briefing(conn: &Connection, me: &Session) -> Result<Briefing> {
         lines.push(format!("Dependencies: {}", capped(&f.deps, DEPS_SHOWN)));
     }
     let readback_required = status != BriefingStatus::Stable;
+    // Cut to the cap, keeping room for the read-back request: it must always be there.
+    lines.truncate(MAX_LINES - usize::from(readback_required));
     if readback_required {
         lines.push(READBACK_ASK.to_string());
     }
-    lines.truncate(MAX_LINES);
     Ok(Briefing {
         status,
         text: lines.join("\n"),

@@ -464,6 +464,11 @@ fn briefing_is_bounded_and_scaled() {
     );
     assert!(b.text.contains("    (+25 more)"), "{}", b.text);
     assert!(
+        b.text.contains("l004 ") && !b.text.contains("l005 "),
+        "{}",
+        b.text
+    );
+    assert!(
         b.text.ends_with(
             "Read back before your first edit: call handoff_readback with the goal, what's in flight, and your next action."
         ),
@@ -616,4 +621,54 @@ fn readback_ok_and_one_correction() {
     let again = check_readback(s.conn(), &sess(&s, "s1"), "x", "nothing", "nothing").unwrap();
     assert_eq!(again.result, ReadbackState::Mismatch);
     assert_eq!(again.reply, "Read-back recorded.");
+}
+
+#[test]
+fn many_missed_checkpoints_stay_within_the_cap_and_keep_the_read_back_request() {
+    let mut s = setup();
+    for n in 0..45 {
+        let id = format!("m{n:02}");
+        ev(
+            &mut s,
+            &id,
+            "session_started",
+            json!({"cwd": "/wt", "source": "startup"}),
+            3,
+        );
+        ev(
+            &mut s,
+            &id,
+            "checkpoint_due",
+            json!({"reason": "claimed_done"}),
+            4,
+        );
+        ev(&mut s, &id, "checkpoint_missed", json!({"unit_no": 1}), 5);
+    }
+    let b = brief(&s, "s1");
+    let lines: Vec<&str> = b.text.lines().collect();
+    assert!(lines.len() <= 40, "{} lines:\n{}", lines.len(), b.text);
+    assert_eq!(*lines.last().unwrap(), READBACK_ASK, "{}", b.text);
+    assert!(
+        b.text
+            .contains("(+42 more sessions with a missed checkpoint)"),
+        "{}",
+        b.text
+    );
+}
+
+#[test]
+fn stable_with_a_checkpoint_needs_no_read_back() {
+    let mut s = setup();
+    ev(
+        &mut s,
+        "s1",
+        "checkpoint",
+        json!({"sha": "abcdef1234", "task_id": "1.1", "next_action": "wire the form"}),
+        3,
+    );
+    let b = brief(&s, "s1");
+    assert_eq!(b.status, BriefingStatus::Stable);
+    assert!(b.text.contains("Next: wire the form"), "{}", b.text);
+    assert!(!b.readback_required);
+    assert!(!b.text.contains(READBACK_ASK), "{}", b.text);
 }
