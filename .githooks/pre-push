@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Full check before anything leaves the machine: tests and a production web build.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+echo "pre-push: cargo test"
+cargo test --workspace --quiet
+
+echo "pre-push: web build"
+(cd web && npm run -s build >/dev/null)
