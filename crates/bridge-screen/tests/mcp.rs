@@ -832,3 +832,38 @@ fn handoff_note_and_readback_round_trip() {
         "Close, but the log says: active task 1.1 \"Login form\". Carry on from there."
     );
 }
+
+#[test]
+fn status_shows_checkpoint_read_back_and_leftovers() {
+    let env = setup();
+    // s1 leaves a file behind and ends; s2 also ends; s3 starts and gets the leftover.
+    env.hook("user-prompt-submit", "s1");
+    let path = env.repo.path().join("left.txt");
+    std::fs::write(&path, "x\n").unwrap();
+    let mut p = fixture_json("post-tool-use", "s1", &env.repo_path());
+    p["tool_input"]["file_path"] = json!(path.to_str().unwrap());
+    env.hook_raw("post-tool-use", &p.to_string());
+    env.hook("session-end", "s1");
+    env.hook("session-end", "s2");
+    env.hook("session-start", "s3");
+    let args = json!({"id": "1.1", "mode": "auto", "confidence": 0.9});
+    bind(&env, "s3", "claim_task", &args, "toolu_1");
+    let mut mcp = Mcp::start(&env, "/nonexistent");
+    assert!(!mcp.call("claim_task", &args).0);
+    let args = json!({"evidence": "done"});
+    bind(&env, "s3", "claim_done", &args, "toolu_2");
+    assert!(!mcp.call("claim_done", &args).0);
+    bind(&env, "s3", "status", &json!({}), "toolu_3");
+    let (is_error, text) = mcp.call("status", &json!({}));
+    assert!(!is_error, "{text}");
+    assert!(
+        text.contains("Checkpoint pending (claimed_done): commit as `wip(bridge): <id> <title>` before you stop."),
+        "{text}"
+    );
+    assert!(
+        text.contains("Read-back pending: call handoff_readback."),
+        "{text}"
+    );
+    assert!(text.contains("Leftovers (1): "), "{text}");
+    assert!(text.contains(" left.txt (no task) → adopt"), "{text}");
+}

@@ -742,6 +742,64 @@ fn newest_session_in(store: &Store, dir: &Path) -> Result<Option<Session>, Strin
     Ok(live.into_iter().next())
 }
 
+/// The handoff part of `status`: a pending or missed checkpoint, the read-back, and the
+/// repo's open leftovers.
+fn handoff_status(
+    conn: &rusqlite::Connection,
+    s: &Session,
+    out: &mut String,
+) -> bridge_screen_core::error::Result<()> {
+    if let Some(reason) = &s.checkpoint_pending {
+        if s.checkpoint_missed == 0 {
+            let _ = writeln!(
+                out,
+                "Checkpoint pending ({reason}): commit as `wip(bridge): <id> <title>` before you stop."
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "Checkpoint missed ({reason}): commit your work now as `wip(bridge): <id> <title>`."
+            );
+        }
+    }
+    if s.readback == handoff::ReadbackState::Pending {
+        out.push_str("Read-back pending: call handoff_readback.\n");
+    }
+    let left: Vec<handoff::Leftover> = handoff::leftovers(conn, &s.repo_id, true)?;
+    if !left.is_empty() {
+        let list: Vec<String> = left
+            .iter()
+            .take(5)
+            .map(|l| {
+                let only = if l.state == handoff::LeftoverState::ReportOnly {
+                    " (report-only)"
+                } else {
+                    ""
+                };
+                format!(
+                    "{} {} ({}) → {}{only}",
+                    l.leftover_id,
+                    l.path,
+                    l.task_id.as_deref().unwrap_or("no task"),
+                    l.suggested.as_str()
+                )
+            })
+            .collect();
+        let more = if left.len() > 5 {
+            format!(" (+{} more)", left.len() - 5)
+        } else {
+            String::new()
+        };
+        let _ = writeln!(
+            out,
+            "Leftovers ({}): {}{more} — resolve with resolve_leftover",
+            left.len(),
+            list.join(" · ")
+        );
+    }
+    Ok(())
+}
+
 /// Compact state for the agent.
 fn agent_status(store: &Store, s: &Session) -> bridge_screen_core::error::Result<String> {
     let conn = store.conn();
@@ -765,6 +823,7 @@ fn agent_status(store: &Store, s: &Session) -> bridge_screen_core::error::Result
         }
         None => out.push_str("Active task: none — claim one with claim_task.\n"),
     }
+    handoff_status(conn, s, &mut out)?;
     let open = tangent::open_detours(conn, &s.session_id)?;
     if !open.is_empty() {
         let list: Vec<String> = open

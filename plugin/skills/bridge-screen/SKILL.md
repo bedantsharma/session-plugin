@@ -1,6 +1,6 @@
 ---
 name: bridge-screen
-description: How to work with bridge-screen, the tracker that records which plan task this session is on, its detours, and how much agent time it took. Use at the start of every session in a tracked repo, before tangent work, whenever bridge-screen injects a note, and before changing the plan.
+description: How to work with bridge-screen, the tracker that records which plan task this session is on, its detours, checkpoints and handoffs between sessions. Use at the start of every session in a tracked repo (read the briefing), before tangent work, when a task is done, whenever bridge-screen injects a note, and before changing the plan.
 ---
 
 # bridge-screen
@@ -11,7 +11,15 @@ what happens; your part is to say **which task** you are on, **declare tangents*
 keep the plan true. It never blocks your work.
 
 Tools (MCP server `bridge-screen`): `claim_task`, `plan_edit`, `status`, `start_detour`,
-`close_detour`, `resume`, `promote_detour`, `label_unit`.
+`close_detour`, `resume`, `promote_detour`, `label_unit`, `claim_done`, `handoff_readback`,
+`handoff_note`, `resolve_leftover`.
+
+## 0. Read the briefing; read it back
+
+Each session starts with a `bridge-screen briefing — stable|watcher|unstable`. Unless it
+is stable, call `handoff_readback` **before your first edit** with the goal, what's in
+flight (name the task id) and your next action. If it answers "Close, but the log
+says…", carry on from what it says.
 
 ## 1. Claim your task first
 
@@ -60,10 +68,37 @@ information for the owner, not blame. An **amber** note means you've been away f
 task longer than its tolerance: continue only if it still blocks the task. **Red** means
 the owner has been flagged; keep going only if essential, and follow any owner answer.
 
-## 5. Check where things stand
+## 5. Done, checkpoints and handoff notes
 
-`status` shows your task, detours, suspended items with their cues, units and active
-minutes, the goal and the next tasks. The owner can run `/bridge-screen` for all sessions.
+- Task done? `claim_done {"evidence": "cargo test: 41 passed"}` (your active task by
+  default). It is level L0 — say what you actually ran.
+- At a boundary (claim_done, detour closed, task switched) commit a checkpoint before you
+  stop. If Stop asks, commit exactly like this (the repo's commit hooks run; fix and retry
+  if one fails):
+
+  ```sh
+  git commit -m "wip(bridge): 1.2 Login form" -m "Bridge-Task: 1.2
+  Bridge-Next: <one-line next action>
+  Bridge-Session: <session id>"
+  ```
+
+- Stopping with work in flight (mid-task, or a detour still open)? Leave
+  `handoff_note {"in_flight": "…", "if_then": ["if X, then Y"]}` for the next session.
+- WIP commits are squashed automatically before `gh pr create`; nothing to do.
+
+## 6. Leftovers of dead sessions
+
+The briefing lists uncommitted files a crashed or abandoned session left, each with a
+suggestion. Prefer it: `resolve_leftover {"ids": ["l3f9a2c1"], "action": "undo"}`.
+`adopt` commits them, `resume` claims their task (only in their worktree), `undo` stashes
+them with a snapshot — nothing is lost. Ask the owner when unsure. Leftovers marked
+report-only belong to a live session: leave them alone.
+
+## 7. Check where things stand
+
+`status` shows your task, a pending checkpoint, the read-back state, open leftovers,
+detours, suspended items with their cues, units and active minutes, the goal and the next
+tasks. The owner can run `/bridge-screen` for all sessions.
 
 ## Notes from bridge-screen
 

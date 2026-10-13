@@ -8,6 +8,23 @@ request clearly matches, after asking you otherwise) and keep the plan up to dat
 Everything stays on your machine in `~/.bridge-screen/`. Nothing is ever written into
 your repos.
 
+## Handoff and recovery
+
+When a session ends, crashes or is abandoned, the next one picks up where it stopped:
+
+- **Checkpoints.** When a task is claimed done, a detour closes or the task switches, the
+  agent is asked once to commit a `wip(bridge):` checkpoint with `Bridge-Task` and
+  `Bridge-Next` trailers before it stops.
+- **Briefing.** Every session starts with a short I-PASS briefing (stable, watcher or
+  unstable) and, unless stable, reads it back before its first edit.
+- **Leftovers.** Uncommitted files of a dead session are found, attributed to tasks and
+  resolved by adopt (commit), resume (claim the task) or undo (a stash plus a snapshot —
+  nothing is ever thrown away). A live session's worktree is never touched. Resolve them
+  yourself with `bridge-screen resolve <leftover-id>… adopt|resume|undo`.
+- **Squash.** `bridge-screen squash [--onto BASE] [--dry-run]` collapses a branch's WIP
+  commits into one (leaving a backup ref), and it happens automatically before
+  `gh pr create`.
+
 ## Install
 
 *After the first release:*

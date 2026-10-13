@@ -538,7 +538,12 @@ fn big_database(env: &Env) -> bridge_screen_core::repo::RepoInfo {
 }
 
 /// min / p50 / p95 / max of 200 timings, printed; p95 must stay under 50 ms.
-fn report(label: &str, mut times: Vec<std::time::Duration>) {
+fn report(label: &str, times: Vec<std::time::Duration>) {
+    report_within(label, times, 50);
+}
+
+/// [`report`] with a different p95 budget.
+fn report_within(label: &str, mut times: Vec<std::time::Duration>, budget_ms: u64) {
     use std::time::Duration;
     assert_eq!(times.len(), 200);
     times.sort();
@@ -553,7 +558,7 @@ fn report(label: &str, mut times: Vec<std::time::Duration>) {
         ms(times[199])
     );
     assert!(
-        p95 < Duration::from_millis(50),
+        p95 < Duration::from_millis(budget_ms),
         "{label}: p95 {:.1} ms",
         ms(p95)
     );
@@ -691,6 +696,98 @@ fn hook_latency_stop_path() {
         .unwrap();
     assert_eq!(labelled, 200, "every unit was scored");
     report("hook stop (30 files, 300-node plan)", times);
+}
+
+/// PostToolUse after a Bash `git commit` while a checkpoint is pending: git runs here
+/// (HEAD, its trailers) and a checkpoint is recorded. Budget p95 < 150 ms.
+#[test]
+#[ignore = "perf check: run on demand with --release"]
+fn hook_latency_commit_path() {
+    use bridge_screen_core::checkpoint::{ClaimDoneRequest, claim_done};
+    use bridge_screen_core::plan::{EditContext, NodeKind, PlanOp, plan_edit};
+    use bridge_screen_core::store::Actor;
+    use std::time::Instant;
+
+    let env = Env::new();
+    let repo = big_database(&env);
+    let mut store = Store::open(&env.db_path()).unwrap();
+    plan_edit(
+        &mut store,
+        &EditContext {
+            repo_id: repo.id.clone(),
+            session_id: "owner".into(),
+            actor: Actor::default(),
+            reason: None,
+            replan: false,
+        },
+        &[
+            PlanOp::AddNode {
+                parent: None,
+                kind: NodeKind::Goal,
+                title: "Ship".into(),
+                intent: Some("Ship it.".into()),
+                estimate_min: None,
+                expected_files: vec![],
+            },
+            PlanOp::AddNode {
+                parent: Some("G".into()),
+                kind: NodeKind::Task,
+                title: "Login".into(),
+                intent: None,
+                estimate_min: Some(30),
+                expected_files: vec![],
+            },
+        ],
+    )
+    .unwrap();
+    let session = "perf-session-07";
+    claim_for(&env, session, "1");
+    let mut payload = common::fixture_json("post-tool-use", session, &env.repo_path());
+    payload["tool_name"] = json!("Bash");
+    payload["tool_input"] = json!({"command": "git commit -q -m 'wip(bridge): 1 Login'"});
+    let payload = payload.to_string();
+    assert!(env.run(&["--version"], "").status.success());
+    let times = (0..200)
+        .map(|i| {
+            claim_done(
+                &mut store,
+                &ClaimDoneRequest {
+                    session_id: session.into(),
+                    task_id: None,
+                    evidence: "tests".into(),
+                    actor: Actor::default(),
+                },
+            )
+            .unwrap();
+            std::fs::write(env.repo.path().join("f.txt"), format!("{i}\n")).unwrap();
+            common::git(env.repo.path(), &["add", "-A"]);
+            common::git(
+                env.repo.path(),
+                &[
+                    "commit",
+                    "-q",
+                    "-m",
+                    "wip(bridge): 1 Login",
+                    "-m",
+                    &format!("Bridge-Task: 1\nBridge-Next: step {i}"),
+                ],
+            );
+            let start = Instant::now();
+            assert_eq!(env.hook_raw("post-tool-use", &payload), "");
+            start.elapsed()
+        })
+        .collect();
+    assert_eq!(env.log(), "");
+    let recorded: i64 = store
+        .conn()
+        .query_row("SELECT count(*) FROM checkpoints", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(recorded, 200, "every commit was recorded");
+    report_within(
+        "hook post-tool-use git commit (checkpoint pending)",
+        times,
+        150,
+    );
 }
 
 #[test]
