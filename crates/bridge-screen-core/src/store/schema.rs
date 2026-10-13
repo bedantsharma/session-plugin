@@ -42,4 +42,28 @@ CREATE TRIGGER events_no_delete BEFORE DELETE ON events
 BEGIN
     SELECT RAISE(ABORT, 'events are append-only');
 END;
+
+CREATE TABLE plan_nodes (
+    repo_id        TEXT NOT NULL,
+    id             TEXT NOT NULL,
+    parent_id      TEXT,
+    kind           TEXT NOT NULL,
+    title          TEXT NOT NULL,
+    intent         TEXT,
+    estimate_min   INTEGER,
+    status         TEXT NOT NULL DEFAULT 'todo',
+    hill           TEXT,
+    expected_files TEXT NOT NULL DEFAULT '[]',
+    source         TEXT NOT NULL DEFAULT 'manual',
+    position       INTEGER NOT NULL,
+    next_child     INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (repo_id, id)
+);
+
+CREATE TABLE plan_deps (
+    repo_id    TEXT NOT NULL,
+    node_id    TEXT NOT NULL,
+    depends_on TEXT NOT NULL,
+    PRIMARY KEY (repo_id, node_id, depends_on)
+);
 ";
