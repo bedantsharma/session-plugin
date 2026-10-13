@@ -2,7 +2,6 @@
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use sha2::{Digest, Sha256};
 
@@ -86,10 +85,10 @@ fn git_path(dir: &Path, args: &[&str]) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Git with the same scrubbed environment as every other git call (`crate::git`): an
+/// inherited `GIT_DIR` would otherwise identify some other repo.
 fn git(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let out = crate::git::command(dir)
         .args(args)
         .output()
         .map_err(|e| Error::Git(format!("could not run git: {e}")))?;

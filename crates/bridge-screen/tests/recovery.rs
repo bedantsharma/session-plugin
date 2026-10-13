@@ -266,3 +266,43 @@ fn a_crashed_session_running_only_bash_comes_back_on_its_next_tool_call() {
     assert_ne!(s.state, session::SessionState::Ended);
     assert_eq!(env.log(), "");
 }
+
+/// Hooks can run inside another git process (a commit hook running Claude Code, say),
+/// which exports GIT_DIR, GIT_WORK_TREE and GIT_INDEX_FILE: they must never redirect
+/// bridge-screen's git to that other repo.
+#[test]
+fn inherited_git_variables_never_redirect_git() {
+    let mut env = env();
+    let other = tempfile::tempdir().unwrap();
+    git(other.path(), &["init", "-q"]);
+    git(
+        other.path(),
+        &["commit", "-q", "--allow-empty", "-m", "other"],
+    );
+    std::fs::write(other.path().join("theirs.txt"), "not ours\n").unwrap();
+    let other_git = other.path().join(".git");
+    env.vars = vec![
+        ("GIT_DIR".into(), other_git.to_str().unwrap().into()),
+        (
+            "GIT_WORK_TREE".into(),
+            other.path().to_str().unwrap().into(),
+        ),
+        (
+            "GIT_INDEX_FILE".into(),
+            other_git.join("index").to_str().unwrap().into(),
+        ),
+    ];
+    env.hook("session-start", "s1");
+    edit(&env, "s1", "src/login.rs", "x\n");
+    env.hook("session-end", "s1");
+    let s = session::get(store(&env).conn(), "s1").unwrap().unwrap();
+    assert_eq!(
+        s.repo_id,
+        bridge_screen_core::repo::identify(env.repo.path())
+            .unwrap()
+            .id
+    );
+    let ended = &of_kind(&env, "session_ended")[0];
+    assert_eq!(ended["dirty_files"], json!(["src/login.rs"]), "{ended}");
+    assert_eq!(env.log(), "");
+}

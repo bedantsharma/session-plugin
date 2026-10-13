@@ -93,7 +93,7 @@ pub struct WorktreeInfo {
 }
 
 /// The git command for `wt`, environment scrubbed.
-fn command(wt: &Path) -> Command {
+pub(crate) fn command(wt: &Path) -> Command {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(wt);
     for var in SCRUBBED {
