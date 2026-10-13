@@ -437,3 +437,100 @@ fn claim_reminder_cadence() {
         .collect::<String>();
     assert!(!stored.contains("Add the login form validation"));
 }
+
+/// Hook latency on a large database (spec §11.1, §14): p95 must stay under 50 ms.
+/// Release build only; run with
+/// `cargo test --release -p bridge-screen --test hooks -- --ignored hook_latency --nocapture`.
+#[test]
+#[ignore = "perf check: run on demand with --release"]
+fn hook_latency() {
+    use bridge_screen_core::store::{EventDraft, append_in};
+    use std::time::{Duration, Instant};
+
+    const SESSIONS: usize = 50;
+    const EVENTS: usize = 100_000;
+
+    let env = Env::new();
+    let repo = bridge_screen_core::repo::identify(env.repo.path()).unwrap();
+    {
+        let mut store = Store::open(&env.db_path()).unwrap();
+        store.register_repo(&repo).unwrap();
+        let per_session = EVENTS / SESSIONS;
+        for n in 0..SESSIONS {
+            let sid = format!("perf-session-{n:02}");
+            store
+                .write(|tx| {
+                    let ev = |kind: &str, data: Value| EventDraft::new(&repo.id, &sid, kind, data);
+                    append_in(
+                        tx,
+                        ev(
+                            "session_started",
+                            json!({"cwd": env.repo_path(), "source": "startup"}),
+                        ),
+                    )?;
+                    let mut written = 1;
+                    let mut unit = 0;
+                    while written < per_session {
+                        unit += 1;
+                        append_in(
+                            tx,
+                            ev(
+                                "prompt",
+                                json!({"prompt_id": format!("p{unit}"), "chars": 80}),
+                            ),
+                        )?;
+                        for f in 0..6 {
+                            let files = json!([format!("src/mod{}/file{f}.rs", unit % 20)]);
+                            append_in(
+                                tx,
+                                ev("tool_intent", json!({"tool": "Edit", "files": files})),
+                            )?;
+                            append_in(
+                                tx,
+                                ev("file_changed", json!({"tool": "Edit", "files": files})),
+                            )?;
+                        }
+                        append_in(
+                            tx,
+                            ev("unit_stopped", json!({"unit_no": unit, "summary": "done"})),
+                        )?;
+                        written += 14;
+                    }
+                    Ok(())
+                })
+                .unwrap();
+        }
+        let total: i64 = store
+            .conn()
+            .query_row("SELECT count(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert!(total >= i64::try_from(EVENTS).unwrap(), "{total}");
+    }
+
+    let session = "perf-session-07";
+    env.hook("user-prompt-submit", session);
+    let payload = common::fixture("post-tool-use", session, &env.repo_path());
+    let mut times: Vec<Duration> = (0..200)
+        .map(|_| {
+            let start = Instant::now();
+            let out = env.hook_raw("post-tool-use", &payload);
+            let took = start.elapsed();
+            assert_eq!(out, "");
+            took
+        })
+        .collect();
+    assert_eq!(env.log(), "");
+    times.sort();
+    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+    let p50 = times[99];
+    let p95 = times[189];
+    eprintln!(
+        "hook post-tool-use over {} calls: min {:.1} ms, p50 {:.1} ms, p95 {:.1} ms, max {:.1} ms",
+        times.len(),
+        ms(times[0]),
+        ms(p50),
+        ms(p95),
+        ms(times[199])
+    );
+    assert!(p95 < Duration::from_millis(50), "p95 {:.1} ms", ms(p95));
+}

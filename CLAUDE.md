@@ -5,7 +5,14 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
 ## Layout
 
 - `crates/bridge-screen-core/` — core library (store, plan, session, navigator, …; spec §4.2)
-- `crates/bridge-screen/` — the single binary: CLI, `hook`, `mcp`, `ui`
+- `crates/bridge-screen/` — the single binary: CLI, `hook`, `mcp`, `status`, `ui`
+  - `src/hook/` — `bridge-screen hook <event>`: payload parsing, per-event handlers, injected context
+  - `src/mcp.rs` — `bridge-screen mcp`: stdio MCP server (`claim_task`, `plan_edit`, `status`)
+  - `tests/fixtures/hooks/` — one recorded-style hook payload per event
+- `plugin/` — the Claude Code plugin: `.claude-plugin/plugin.json`, `hooks/hooks.json`,
+  `.mcp.json`, `skills/bridge-screen/SKILL.md`, `commands/bridge-screen.md`, and the
+  `scripts/bridge-screen` launcher (POSIX sh; uses a matching PATH binary or downloads one)
+- `.claude-plugin/marketplace.json` — marketplace `bridge-screen` listing `./plugin`
 - `web/` — Svelte 5 + Vite + Tailwind dashboard, embedded into the binary at build time
 - `docs/superpowers/` — specs and implementation plans
 
@@ -14,14 +21,20 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
 - First-time setup: `scripts/setup.sh` (enables `.githooks`, installs web deps)
 - Rust: `cargo build`, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all`
 - Web (in `web/`): `npm run dev`, `npm run build`, `npm run lint`, `npm run check`, `npm run format`
-- Releases: see `docs/RELEASING.md` (`dist plan` to preview)
+- Hooks: `bridge-screen hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|stop|subagent-stop|pre-compact|notification|session-end>` (hook JSON on stdin; always exits 0, errors go to `~/.bridge-screen/hook-errors.log`)
+- MCP server: `bridge-screen mcp` (stdio; Claude Code starts it through the plugin)
+- Status: `bridge-screen status`; plugin registration: `bridge-screen install [--dev | --no-plugin]`
+- Plugin check: `claude plugin validate ./plugin` (read-only)
+- Hook latency (release, on demand): `cargo test --release -p bridge-screen --test hooks -- --ignored hook_latency --nocapture`
+- Releases: see `docs/RELEASING.md` (`dist plan` to preview); keep `plugin/.claude-plugin/plugin.json`'s `version` equal to the workspace version (a test checks it)
 
 ## Rules
 
 - Rust toolchain is pinned in `rust-toolchain.toml`; clippy pedantic warnings fail the build.
 - The pre-commit hook runs fmt/clippy/web lint; pre-push runs all tests and the web build. Don't bypass them with `--no-verify`.
 - Never write bridge-screen state inside a repo; runtime data lives in `~/.bridge-screen/` (spec §6).
-- Hooks must stay fast (≤ 50 ms p95) and must never fail a Claude session: log errors and exit 0.
+- Hooks must stay fast (≤ 50 ms p95) and must never fail a Claude session: log errors and exit 0. A known session's hooks never run `git`.
+- Tests never touch the real `~/.claude` or `~/.bridge-screen` and never run the real `claude` CLI: use temp homes and a fake `claude` on a test-controlled PATH (`bridge-screen install --no-plugin` otherwise).
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
