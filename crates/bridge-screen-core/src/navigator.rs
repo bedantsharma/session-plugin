@@ -26,9 +26,11 @@ pub enum NoteKind {
     /// Reserved for sub-project 4.
     ReadBack,
     LabelRequest,
+    /// The owner's answer to a drift question: the response to the red signal, so it
+    /// outranks the tolerance and red notes it answers.
+    OwnerReply,
     ToleranceWarning,
     DriftRed,
-    OwnerReply,
     /// Reserved.
     DependencyReady,
     /// Reserved for sub-project 5.
@@ -562,12 +564,15 @@ mod tests {
             c(NoteKind::ReturnToTask, p, "e"),
         ];
         assert_eq!(pick(&s, 1, p, &all), Some(NoteKind::ReturnToTask));
-        assert_eq!(pick(&s, 1, p, &all[..3]), Some(NoteKind::ToleranceWarning));
-        assert_eq!(pick(&s, 1, p, &all[..2]), Some(NoteKind::DriftRed));
+        assert_eq!(pick(&s, 1, p, &all[..3]), Some(NoteKind::OwnerReply));
+        assert_eq!(pick(&s, 1, p, &all[1..3]), Some(NoteKind::ToleranceWarning));
+        assert_eq!(pick(&s, 1, p, &all[1..2]), Some(NoteKind::DriftRed));
+        assert!(NoteKind::LabelRequest < NoteKind::OwnerReply);
+        assert!(NoteKind::OwnerReply < NoteKind::ToleranceWarning);
         assert!(NoteKind::Checkpoint < NoteKind::ReturnToTask);
         assert!(NoteKind::ReturnToTask < NoteKind::ReadBack);
         assert!(NoteKind::ReadBack < NoteKind::LabelRequest);
-        assert!(NoteKind::OwnerReply < NoteKind::DependencyReady);
+        assert!(NoteKind::DriftRed < NoteKind::DependencyReady);
         assert!(NoteKind::DependencyReady < NoteKind::VerifyNudge);
     }
 
@@ -599,8 +604,8 @@ mod tests {
             Some(NoteKind::ToleranceWarning)
         );
         // A suppressed note doesn't hide a lower-priority one.
-        let reply = c(NoteKind::OwnerReply, p, "reply:x");
-        assert_eq!(pick(&s, 2, p, &[warn, reply]), Some(NoteKind::OwnerReply));
+        let red = c(NoteKind::DriftRed, p, "tol:red:D1");
+        assert_eq!(pick(&s, 2, p, &[warn, red]), Some(NoteKind::DriftRed));
     }
 
     #[test]

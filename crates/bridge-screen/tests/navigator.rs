@@ -411,6 +411,20 @@ mod tolerance {
     }
 
     #[test]
+    fn the_owner_reply_outranks_the_red_note() {
+        let env = Env::new();
+        assert!(env.run(&["plan", "edit"], SEED).status.success());
+        far_off(&env, "s1aaaa");
+        let (ok, text) = cli(&env, &["drift", "s1", "stop"]);
+        assert!(ok, "{text}");
+        assert_eq!(nav_state(&env, "s1aaaa"), "red", "stop doesn't acknowledge");
+        assert_eq!(
+            context_of(&bash(&env, "s1aaaa"), "PostToolUse"),
+            "bridge-screen: the owner says stop the detour and return to 1.1 Login form validation."
+        );
+    }
+
+    #[test]
     fn make_task_promotes_the_detour() {
         let env = Env::new();
         assert!(env.run(&["plan", "edit"], SEED).status.success());
