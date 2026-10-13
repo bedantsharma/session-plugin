@@ -160,7 +160,14 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
                         "UPDATE detours SET promoted_task = ?2 WHERE detour_id = ?1",
                         params![d.detour_id, d.task_id],
                     )?;
-                    close_detour(tx, event, &d.detour_id, "promoted")
+                    let current =
+                        session::get(tx, &event.session_id)?.and_then(|s| s.current_detour);
+                    close_detour(tx, event, &d.detour_id, "promoted")?;
+                    // The session now works on the promoted task itself.
+                    if current.as_deref() == Some(d.detour_id.as_str()) {
+                        set_current_detour(tx, &event.session_id, None)?;
+                    }
+                    Ok(())
                 }
                 "item_suspended" => {
                     let d: ItemSuspended = payload(event)?;

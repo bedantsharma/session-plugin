@@ -7,6 +7,7 @@
 //! **label** — on-task, detour or drift — and the time of consecutive units that are not
 //! on-task is the session's **away time**.
 
+pub mod ops;
 pub mod project;
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
@@ -15,6 +16,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 
+pub use ops::{
+    CloseRequest, Closed, DetourOutcome, MAX_CUE_CHARS, Promoted, StartRequest, Started,
+    close_detour, item_display, promote_detour, resume, start_detour,
+};
 pub use project::{
     ConfigChanged, DetourClosed, DetourOpened, DetourPromoted, DriftFlagged, ItemResumed,
     ItemSuspended, NavStateChanged, NoteSent, OwnerAction, TANGENT_KINDS, UnitLabeled, project,

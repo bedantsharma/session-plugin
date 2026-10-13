@@ -164,6 +164,15 @@ pub fn claim(store: &mut Store, req: &ClaimRequest) -> Result<ClaimOutcome> {
 }
 
 fn claim_in(tx: &Transaction, req: &ClaimRequest) -> Result<ClaimOutcome> {
+    claim_in_with_reason(tx, req, "claimed as new work")
+}
+
+/// [`claim`] inside the caller's transaction; `reason` is recorded on a new node.
+pub fn claim_in_with_reason(
+    tx: &Transaction,
+    req: &ClaimRequest,
+    reason: &str,
+) -> Result<ClaimOutcome> {
     let session = session::get(tx, &req.session_id)?
         .filter(|s| s.repo_id == req.repo_id)
         .ok_or_else(|| claim_err(format!("unknown session {}", req.session_id)))?;
@@ -202,7 +211,7 @@ fn claim_in(tx: &Transaction, req: &ClaimRequest) -> Result<ClaimOutcome> {
                 repo_id: req.repo_id.clone(),
                 session_id: req.session_id.clone(),
                 actor: req.actor.clone(),
-                reason: Some("claimed as new work".into()),
+                reason: Some(reason.into()),
                 replan: false,
             };
             let op = PlanOp::AddNode {
