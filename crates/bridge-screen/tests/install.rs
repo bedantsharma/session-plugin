@@ -382,3 +382,23 @@ fn launcher_prefers_a_matching_binary_on_path() {
     let out = launch(release.path(), data.path(), &path, &["status"]);
     assert_eq!(stdout(&out), "downloaded bridge-screen status\n");
 }
+
+#[test]
+fn launcher_hook_mode_survives_a_bare_environment() {
+    // No HOME, no CLAUDE_PLUGIN_DATA, nothing to download: still exit 0 and print nothing.
+    let out = Command::new(checkout().join("plugin/scripts/bridge-screen"))
+        .args(["hook", "stop"])
+        .env_clear()
+        .env("PATH", SYSTEM_PATH)
+        .env("BRIDGE_SCREEN_RELEASE_BASE", "file:///nonexistent")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(stdout(&out), "");
+}

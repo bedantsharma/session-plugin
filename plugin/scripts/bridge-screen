@@ -13,7 +13,7 @@ set -u
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(dirname -- "$here")
 self="$here/$(basename -- "$0")"
-data=${CLAUDE_PLUGIN_DATA:-${XDG_CACHE_HOME:-$HOME/.cache}/bridge-screen}
+data=${CLAUDE_PLUGIN_DATA:-${XDG_CACHE_HOME:-${HOME:-}/.cache}/bridge-screen}
 mode=run
 if [ "${1:-}" = hook ]; then
     mode=hook
