@@ -8,6 +8,7 @@ pub mod paths;
 pub mod plan;
 pub mod projection;
 pub mod repo;
+pub mod session;
 pub mod store;
 
 /// Crate version, shared by the CLI and the plugin manifest.
