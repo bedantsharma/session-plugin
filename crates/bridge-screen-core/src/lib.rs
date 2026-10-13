@@ -5,7 +5,9 @@
 pub mod config;
 pub mod error;
 pub mod paths;
+pub mod projection;
 pub mod repo;
+pub mod store;
 
 /// Crate version, shared by the CLI and the plugin manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
