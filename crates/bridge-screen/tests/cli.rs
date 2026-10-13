@@ -170,3 +170,72 @@ fn config_prints_effective_values() {
     assert!(out.contains("points_minutes = 20"));
     assert!(out.contains("crash_timeout_min = 30"));
 }
+
+#[test]
+fn linked_worktree_shows_the_same_plan() {
+    let env = Env::new();
+    let git = |args: &[&str]| {
+        let ok = Command::new("git")
+            .arg("-C")
+            .arg(env.repo.path())
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(ok.success(), "git {args:?} failed");
+    };
+    git(&["commit", "-q", "--allow-empty", "-m", "init"]);
+    let parent = tempfile::tempdir().unwrap();
+    let wt = parent.path().join("wt");
+    git(&[
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "feature",
+        wt.to_str().unwrap(),
+    ]);
+
+    env.ok(&["plan", "edit"], Some(SEED));
+    let out = env.run(&["plan", "show"], None, &wt);
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        env.ok(&["plan", "show"], None)
+    );
+}
+
+#[test]
+fn empty_batch_is_refused() {
+    let env = Env::new();
+    let out = env.run(&["plan", "edit"], Some("[]"), env.repo.path());
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "error: no operations given\n"
+    );
+}
+
+#[test]
+fn replan_needs_a_reason() {
+    let env = Env::new();
+    env.ok(&["plan", "edit"], Some(SEED));
+    let drop_task = r#"[{"op":"remove_node","id":"1.1"}]"#;
+    let out = env.run(
+        &["plan", "edit", "--replan"],
+        Some(drop_task),
+        env.repo.path(),
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("a replan needs a reason"));
+    env.ok(
+        &["plan", "edit", "--replan", "--reason", "scope cut"],
+        Some(drop_task),
+    );
+    assert!(!env.ok(&["plan", "show"], None).contains("Schema"));
+    assert!(
+        env.ok(&["plan", "show", "--all"], None)
+            .contains("1.1  Schema  [dropped]")
+    );
+    assert_eq!(env.ok(&["rebuild"], None), "rebuilt views from 5 events\n");
+}
