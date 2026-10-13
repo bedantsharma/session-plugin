@@ -3,6 +3,7 @@
 //! See `docs/superpowers/specs/2026-10-13-bridge-screen-design.md` §4.2 for the module map.
 
 pub mod binding;
+pub mod checkpoint;
 pub mod claim;
 pub mod config;
 pub mod drift;

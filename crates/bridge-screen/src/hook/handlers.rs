@@ -15,7 +15,7 @@ use bridge_screen_core::store::{Actor, EventDraft, Store, append_in};
 use bridge_screen_core::tuning;
 use serde::Serialize;
 
-use super::{HookEvent, HookInput, HookOutput, context, nav};
+use super::{HookEvent, HookInput, HookOutput, context, handoff, nav};
 
 /// Tools whose `tool_input` names files the agent is about to change.
 const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
@@ -101,33 +101,21 @@ pub fn handle(
         actor: ctx.actor(),
         now: jiff::Timestamp::now(),
     };
+    // Checkpoint git work, before taking the write lock (only when one is pending or a
+    // commit was just made).
+    let found = handoff::gather(event, ctx.known.as_ref(), input);
     // Nothing of our own to record: look first (read-only) whether the navigator has
     // anything to do, so the common tool call doesn't take the write lock.
     let worth_writing = !all.is_empty()
+        || found.is_some()
         || (navigates
             && !(nav::step(store.conn(), &nav_ctx)?.is_empty()
                 && nav::state_step(store.conn(), &nav_ctx)?.is_empty()));
-    let mut note = None;
-    if worth_writing {
-        note = store.write(|tx| {
-            for draft in all {
-                append_in(tx, draft)?;
-            }
-            if !navigates {
-                return Ok(None);
-            }
-            // Labels first, so the tolerance band sees them.
-            let labels = nav::step(tx, &nav_ctx)?;
-            for draft in labels.events {
-                append_in(tx, draft)?;
-            }
-            let state = nav::state_step(tx, &nav_ctx)?;
-            for draft in state.events {
-                append_in(tx, draft)?;
-            }
-            Ok(labels.note.or(state.note))
-        })?;
-    }
+    let note = if worth_writing {
+        write_all(store, all, navigates, &nav_ctx, found.as_ref())?
+    } else {
+        None
+    };
     if let Some((tool_use_id, tool, args)) = call {
         // Tell our MCP server which session is about to call it.
         binding::record(
@@ -165,6 +153,39 @@ pub fn handle(
         event,
         additional_context: Some(text),
     }))
+}
+
+/// Append the hook's events, then the checkpoint and navigator steps, in one transaction.
+/// Returns the note for the agent: a checkpoint request outranks every other note.
+fn write_all(
+    store: &mut Store,
+    all: Vec<EventDraft>,
+    navigates: bool,
+    nav_ctx: &nav::NavCtx,
+    found: Option<&handoff::CheckpointGit>,
+) -> Result<Option<String>> {
+    Ok(store.write(|tx| {
+        for draft in all {
+            append_in(tx, draft)?;
+        }
+        let checkpoint = match found {
+            Some(f) => handoff::apply(tx, nav_ctx.input, f, nav_ctx.stopped_unit, &nav_ctx.actor)?,
+            None => None,
+        };
+        if !navigates {
+            return Ok(checkpoint);
+        }
+        // Labels first, so the tolerance band sees them.
+        let labels = nav::step(tx, nav_ctx)?;
+        for draft in labels.events {
+            append_in(tx, draft)?;
+        }
+        let state = nav::state_step(tx, nav_ctx)?;
+        for draft in state.events {
+            append_in(tx, draft)?;
+        }
+        Ok(checkpoint.or(labels.note).or(state.note))
+    })?)
 }
 
 /// The session as stored after this hook's events.

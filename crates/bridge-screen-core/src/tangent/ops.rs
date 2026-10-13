@@ -288,6 +288,14 @@ pub fn close_detour(store: &mut Store, req: &CloseRequest) -> Result<Closed> {
             },
             detour.blocks_task.as_deref(),
         )?;
+        // A detour closing is a boundary: its work needs a checkpoint (spec §8.1).
+        w.append(
+            "checkpoint_due",
+            &crate::handoff::CheckpointDue {
+                reason: crate::handoff::CheckpointReason::DetourClosed,
+            },
+            None,
+        )?;
         if let Some(item) = &back {
             w.append(
                 "item_resumed",

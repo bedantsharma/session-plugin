@@ -166,6 +166,32 @@ fn commit_paths_commits_only_those_paths_with_trailers() {
 }
 
 #[test]
+fn head_commit_reads_sha_time_subject_and_trailers() {
+    let r = repo();
+    let wt = r.path();
+    write(wt, "a.txt", "x\n");
+    let sha = commit_all(
+        wt,
+        "wip(bridge): 1.1 X",
+        &[("Bridge-Next".into(), "go".into())],
+    )
+    .unwrap();
+    let h = head_commit(wt).unwrap().unwrap();
+    assert_eq!(
+        (h.sha.as_str(), h.subject.as_str()),
+        (sha.as_str(), "wip(bridge): 1.1 X")
+    );
+    assert_eq!(
+        h.trailers,
+        vec![("Bridge-Next".to_string(), "go".to_string())]
+    );
+    assert!((h.time - jiff::Timestamp::now().as_second()).abs() < 60);
+    let empty = tempfile::tempdir().unwrap();
+    sh(empty.path(), &["init", "-q"]);
+    assert_eq!(head_commit(empty.path()).unwrap(), None);
+}
+
+#[test]
 fn commit_paths_handles_a_deleted_file() {
     let r = repo();
     let wt = r.path();

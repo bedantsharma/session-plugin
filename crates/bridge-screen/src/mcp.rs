@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use bridge_screen_core::binding;
+use bridge_screen_core::checkpoint::{self, ClaimDoneRequest};
 use bridge_screen_core::claim::{self, ClaimMode, ClaimRequest, ClaimTarget};
 use bridge_screen_core::config::Config;
 use bridge_screen_core::paths::Home;
@@ -178,6 +179,17 @@ pub struct PromoteDetourInput {
     pub estimate_min: Option<u32>,
 }
 
+/// Say a task is done (verification level L0).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ClaimDoneInput {
+    /// The task you finished; defaults to your active task.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// What shows it is done: the tests you ran and their result, the files changed.
+    pub evidence: String,
+}
+
 #[derive(Clone)]
 pub struct Bridge {
     home: Home,
@@ -237,6 +249,16 @@ impl Bridge {
         Parameters(args): Parameters<Args<ClaimTaskInput>>,
     ) -> CallToolResult {
         text(self.do_claim(&args))
+    }
+
+    #[tool(
+        description = "Say a task is done when you finish it (verification level L0), with evidence: the tests you ran and their result. A checkpoint commit is then due before you stop."
+    )]
+    async fn claim_done(
+        &self,
+        Parameters(args): Parameters<Args<ClaimDoneInput>>,
+    ) -> CallToolResult {
+        text(self.do_claim_done(&args))
     }
 
     #[tool(
@@ -341,6 +363,25 @@ impl Bridge {
             let _ = write!(reply, " Released {prev}.");
         }
         Ok(reply)
+    }
+
+    fn do_claim_done(&self, args: &Args<ClaimDoneInput>) -> Result<String, String> {
+        let mut store = self.open()?;
+        let session = self.caller(&store, "claim_done", &args.raw)?;
+        let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        let task = checkpoint::claim_done(
+            &mut store,
+            &ClaimDoneRequest {
+                session_id: session.session_id.clone(),
+                task_id: input.id.clone(),
+                evidence: input.evidence.clone(),
+                actor: Actor::default(),
+            },
+        )
+        .map_err(msg)?;
+        Ok(format!(
+            "Marked {task} claimed done. Commit a checkpoint before you stop, then leave a handoff_note if work remains in flight."
+        ))
     }
 
     fn do_plan_edit(&self, args: &Args<PlanEditInput>) -> Result<String, String> {

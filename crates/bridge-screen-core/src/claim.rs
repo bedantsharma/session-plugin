@@ -242,6 +242,15 @@ pub fn claim_in_with_reason(
             tx,
             draft("task_released", serde_json::to_value(data)?, prev),
         )?;
+        // A task boundary: the work on `prev` needs a checkpoint (spec §8.1).
+        append_in(
+            tx,
+            crate::checkpoint::due_draft(
+                &session,
+                crate::handoff::CheckpointReason::TaskSwitched,
+                &req.actor,
+            )?,
+        )?;
         released = Some(prev.to_string());
     }
     let data = TaskClaimed {

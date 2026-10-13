@@ -154,6 +154,7 @@ fn lists_three_tools_with_schemas() {
     assert_eq!(
         names,
         vec![
+            "claim_done",
             "claim_task",
             "close_detour",
             "label_unit",
@@ -711,4 +712,39 @@ fn status_lists_detours_and_suspended_items() {
         text.contains("Suspended: 1.1 Login form — on return: rerun the login test"),
         "{text}"
     );
+}
+
+#[test]
+fn claim_done_marks_the_task_and_asks_for_a_checkpoint() {
+    let env = setup();
+    let args = json!({"id": "1.1", "mode": "auto", "confidence": 0.9});
+    bind(&env, "s1", "claim_task", &args, "toolu_1");
+    let mut mcp = Mcp::start(&env, "/nonexistent");
+    assert!(!mcp.call("claim_task", &args).0);
+    let args = json!({"evidence": "cargo test: 12 passed"});
+    bind(&env, "s1", "claim_done", &args, "toolu_2");
+    let (is_error, text) = mcp.call("claim_done", &args);
+    assert!(!is_error, "{text}");
+    assert_eq!(
+        text,
+        "Marked 1.1 claimed done. Commit a checkpoint before you stop, then leave a handoff_note if work remains in flight."
+    );
+    let store = Store::open(&env.db_path()).unwrap();
+    let node = get_node(
+        store.conn(),
+        &session::get(store.conn(), "s1").unwrap().unwrap().repo_id,
+        "1.1",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(node.status, NodeStatus::Claimed);
+    let s = session::get(store.conn(), "s1").unwrap().unwrap();
+    assert_eq!(s.checkpoint_pending.as_deref(), Some("claimed_done"));
+
+    // Without an active task and without an id there is nothing to mark.
+    let args = json!({"evidence": "x"});
+    bind(&env, "s2", "claim_done", &args, "toolu_3");
+    let (is_error, text) = mcp.call("claim_done", &args);
+    assert!(is_error);
+    assert_eq!(text, "no active task; give the id of the task you finished");
 }

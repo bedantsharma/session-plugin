@@ -73,6 +73,16 @@ pub struct CommitInfo {
     pub trailers: Vec<(String, String)>,
 }
 
+/// HEAD's commit: what commit detection needs, in one git call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadCommit {
+    pub sha: String,
+    /// Committer time, Unix seconds.
+    pub time: i64,
+    pub subject: String,
+    pub trailers: Vec<(String, String)>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeInfo {
     pub path: PathBuf,
@@ -217,6 +227,34 @@ pub fn is_dirty(wt: &Path) -> Result<bool> {
 /// The commit HEAD points at, or `None` before the first commit.
 pub fn head(wt: &Path) -> Result<Option<String>> {
     optional(wt, &["rev-parse", "--verify", "-q", "HEAD^{commit}"])
+}
+
+/// HEAD's commit, or `None` before the first commit.
+pub fn head_commit(wt: &Path) -> Result<Option<HeadCommit>> {
+    let Some(out) = optional(
+        wt,
+        &[
+            "log",
+            "-1",
+            "--format=%H%x1f%ct%x1f%s%x1f%(trailers:only,unfold)",
+            "HEAD",
+            "--",
+        ],
+    )?
+    else {
+        return Ok(None);
+    };
+    let mut f = out.splitn(4, '\x1f');
+    let sha = f.next().unwrap_or_default().to_string();
+    let time = f.next().and_then(|t| t.parse().ok()).unwrap_or(0);
+    let subject = f.next().unwrap_or_default().to_string();
+    let trailers = parse_trailers(f.next().unwrap_or_default());
+    Ok(Some(HeadCommit {
+        sha,
+        time,
+        subject,
+        trailers,
+    }))
 }
 
 /// The full message of `sha`.

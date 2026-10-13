@@ -291,7 +291,8 @@ fn rebuild_reproduces_session_views() {
         &claim_req("s2", ClaimTarget::Existing("1.1".into())),
     )
     .unwrap();
-    events += 1 + 3 + 1;
+    // The switch to the new task also makes a checkpoint due.
+    events += 1 + 4 + 1;
     s.append(EventDraft::new("a", "s1", "unit_stopped", json!({})))
         .unwrap();
     s.append(EventDraft::new(
