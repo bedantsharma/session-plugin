@@ -6,10 +6,11 @@ use std::fmt::Write as _;
 
 use anyhow::Result;
 use bridge_screen_core::claim::task_title;
+use bridge_screen_core::config::Config;
 use bridge_screen_core::plan::{NodeStatus, get_node};
 use bridge_screen_core::session::{self, Session, SessionState};
 use bridge_screen_core::store::{Store, repo_name};
-use bridge_screen_core::tangent::NavState;
+use bridge_screen_core::tangent::{self, NavState};
 
 /// Width of the "state + task" column, and the most of it the text may use.
 const TASK_COLUMN: usize = 32;
@@ -42,8 +43,26 @@ fn cut(text: &str, max: usize) -> String {
     short
 }
 
+/// ` · tuned drift .35–.65, tolerance 25%` when the repo's thresholds were auto-tuned.
+fn tuned_suffix(store: &Store, repo_id: &str, cfg: &Config) -> Result<String> {
+    let th = tangent::thresholds(store.conn(), repo_id, cfg)?;
+    if th == tangent::Thresholds::from_config(cfg) {
+        return Ok(String::new());
+    }
+    let short = |v: f64| {
+        let t = format!("{v:.2}");
+        t.strip_prefix('0').map_or(t.clone(), str::to_string)
+    };
+    Ok(format!(
+        "  · tuned drift {}–{}, tolerance {}%",
+        short(th.lower),
+        short(th.upper),
+        th.tolerance_pct
+    ))
+}
+
 /// The status text for every live session.
-pub fn render(store: &Store) -> Result<String> {
+pub fn render(store: &Store, cfg: &Config) -> Result<String> {
     let conn = store.conn();
     let live = session::list_live(conn, None)?;
     if live.is_empty() {
@@ -63,7 +82,12 @@ pub fn render(store: &Store) -> Result<String> {
     for ((name, repo_id), mut sessions) in repos {
         match get_node(conn, &repo_id, "G")?.filter(|g| g.status != NodeStatus::Dropped) {
             Some(goal) => {
-                let _ = writeln!(out, "{name}  goal: {}", goal.title);
+                let _ = writeln!(
+                    out,
+                    "{name}  goal: {}{}",
+                    goal.title,
+                    tuned_suffix(store, &repo_id, cfg)?
+                );
             }
             None => {
                 let _ = writeln!(out, "{name}  no plan yet");

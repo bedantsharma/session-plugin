@@ -12,6 +12,7 @@ use bridge_screen_core::session::{
     SessionState, SubagentStopped, UnitStopped,
 };
 use bridge_screen_core::store::{Actor, EventDraft, Store, append_in};
+use bridge_screen_core::tuning;
 use serde::Serialize;
 
 use super::{HookEvent, HookInput, HookOutput, context, nav};
@@ -136,6 +137,10 @@ pub fn handle(
             &binding::args_hash(&args),
             jiff::Timestamp::now(),
         )?;
+    }
+    if event == HookEvent::SessionStart && tuning::due(store.conn(), &ctx.repo_id)? {
+        // Enough new drift samples: tune this repo's thresholds (spec §7.6).
+        store.write(|tx| tuning::run(tx, &ctx.repo_id, config))?;
     }
     let context = match event {
         HookEvent::SessionStart => {

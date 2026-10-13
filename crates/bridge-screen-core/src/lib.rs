@@ -15,6 +15,7 @@ pub mod repo;
 pub mod session;
 pub mod store;
 pub mod tangent;
+pub mod tuning;
 
 /// Crate version, shared by the CLI and the plugin manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

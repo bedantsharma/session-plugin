@@ -54,8 +54,14 @@ pub enum Command {
     },
     /// Rebuild all views from the event log.
     Rebuild,
-    /// Print the effective configuration.
-    Config,
+    /// Print the effective configuration (and this repo's tuned drift thresholds).
+    Config {
+        #[command(subcommand)]
+        action: Option<ConfigCommand>,
+        /// Any directory inside the repo.
+        #[arg(short = 'C', long = "dir", default_value = ".", global = true)]
+        dir: PathBuf,
+    },
     /// Serve the agent's tools over MCP (stdio). Claude Code starts this.
     Mcp,
     /// Handle a Claude Code hook event (reads the hook JSON on stdin). Always exits 0.
@@ -119,4 +125,10 @@ pub enum LabelArg {
     OnTask,
     Detour,
     Drift,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigCommand {
+    /// Put this repo's auto-tuned drift thresholds back to the config defaults.
+    ResetDrift,
 }

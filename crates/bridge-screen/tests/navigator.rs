@@ -456,3 +456,73 @@ mod tolerance {
         assert!(text.contains("no live session starts with zzz"), "{text}");
     }
 }
+
+mod tuning {
+    use super::*;
+    use bridge_screen_core::store::EventDraft;
+
+    fn repo_id(env: &Env) -> String {
+        let store = Store::open(&env.db_path()).unwrap();
+        session::get(store.conn(), "s1").unwrap().unwrap().repo_id
+    }
+
+    #[test]
+    fn tuned_values_drive_the_stop_flow() {
+        let env = setup();
+        let mut store = Store::open(&env.db_path()).unwrap();
+        store
+            .append(EventDraft::new(
+                repo_id(&env),
+                "owner",
+                "config_changed",
+                json!({"scope": "repo", "key": "drift_lower", "old": 0.3, "new": 0.1,
+                       "samples": 20}),
+            ))
+            .unwrap();
+        drop(store);
+        // Scores about 0.12: on-task by default, but above the tuned lower cut-off.
+        let out = unit(&env, "s1", &["src/login.rs"], ON_TASK);
+        assert_eq!(context_of(&out, "Stop"), LABEL_REQUEST);
+        let status = String::from_utf8(env.run(&["status"], "").stdout).unwrap();
+        assert!(
+            status.contains("goal: Ship  · tuned drift .10–.70, tolerance 20%"),
+            "{status}"
+        );
+    }
+
+    #[test]
+    fn session_start_runs_tuning_when_due() {
+        let env = setup();
+        let repo = repo_id(&env);
+        let store = Store::open(&env.db_path()).unwrap();
+        for _ in 0..20 {
+            store
+                .conn()
+                .execute(
+                    "INSERT INTO drift_samples (repo_id, unit_ref, score, label, source, ts)
+                     VALUES (?1, 's1:1', 0.49, 'on_task', 'agent', 't')",
+                    [&repo],
+                )
+                .unwrap();
+        }
+        drop(store);
+        env.hook("session-start", "s2");
+        let changed: Vec<Value> = events(&env)
+            .into_iter()
+            .filter(|e| e.kind == "config_changed")
+            .map(|e| e.data)
+            .collect();
+        assert_eq!(changed.len(), 1, "{changed:?}");
+        assert_eq!(changed[0]["key"], "drift_lower");
+        assert_eq!(changed[0]["new"], 0.35);
+        // Not again until 20 more samples arrive.
+        env.hook("session-start", "s3");
+        assert_eq!(
+            events(&env)
+                .iter()
+                .filter(|e| e.kind == "config_changed")
+                .count(),
+            1
+        );
+    }
+}

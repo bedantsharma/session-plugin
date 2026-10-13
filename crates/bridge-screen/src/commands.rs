@@ -11,7 +11,7 @@ use bridge_screen_core::session::{self, Session};
 use bridge_screen_core::store::{Actor, EventDraft, OWNER_SESSION, Store, append_in};
 use bridge_screen_core::tangent::{self, Label, LabelRequest, LabelSource, OwnerAction};
 
-use crate::cli::{Cli, Command, DriftAnswer, LabelArg, PlanCommand};
+use crate::cli::{Cli, Command, ConfigCommand, DriftAnswer, LabelArg, PlanCommand};
 
 pub fn run(cli: Cli) -> Result<()> {
     match cli.command {
@@ -41,11 +41,17 @@ pub fn run(cli: Cli) -> Result<()> {
             label,
         } => label_cmd(&session, unit_no, label),
         Command::Rebuild => rebuild(),
-        Command::Config => config(),
+        Command::Config { action: None, dir } => config(&dir),
+        Command::Config {
+            action: Some(ConfigCommand::ResetDrift),
+            dir,
+        } => reset_drift(&dir),
         Command::Mcp => crate::mcp::run(),
         Command::Status => {
-            let store = open_store(&Home::resolve()?)?;
-            print!("{}", crate::status::render(&store)?);
+            let home = Home::resolve()?;
+            let store = open_store(&home)?;
+            let cfg = Config::load(&home.config_path())?;
+            print!("{}", crate::status::render(&store, &cfg)?);
             Ok(())
         }
         Command::Hook { .. } => unreachable!("main handles hooks before dispatching commands"),
@@ -135,10 +141,57 @@ fn rebuild() -> Result<()> {
     Ok(())
 }
 
-fn config() -> Result<()> {
+fn config(dir: &Path) -> Result<()> {
     let home = Home::resolve()?;
     let cfg = Config::load(&home.config_path())?;
     print!("{}", cfg.to_toml()?);
+    // Outside a repo there are no tuned values to show.
+    if let Ok(repo) = repo::identify(dir) {
+        let store = open_store(&home)?;
+        if let Some(line) = tuned_line(&store, &repo.id, &repo.name, &cfg)? {
+            println!("{line}");
+        }
+    }
+    Ok(())
+}
+
+/// `# tuned for shop: drift_lower = 0.35, …`, if the repo has tuned values.
+pub fn tuned_line(
+    store: &Store,
+    repo_id: &str,
+    name: &str,
+    cfg: &Config,
+) -> Result<Option<String>> {
+    let th = tangent::thresholds(store.conn(), repo_id, cfg)?;
+    if th == tangent::Thresholds::from_config(cfg) {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "# tuned for {name}: drift_lower = {}, drift_upper = {}, tolerance_pct = {}",
+        th.lower, th.upper, th.tolerance_pct
+    )))
+}
+
+fn reset_drift(dir: &Path) -> Result<()> {
+    let repo = repo::identify(dir)?;
+    let home = Home::resolve()?;
+    let mut store = open_store(&home)?;
+    store.register_repo(&repo)?;
+    let cfg = Config::load(&home.config_path())?;
+    let changes = store.write(|tx| bridge_screen_core::tuning::reset(tx, &repo.id, &cfg))?;
+    if changes.is_empty() {
+        println!("Drift tuning for {} is already at the defaults.", repo.name);
+    } else {
+        let parts: Vec<String> = changes
+            .iter()
+            .map(|c| format!("{} {} → {}", c.key, c.old, c.new))
+            .collect();
+        println!(
+            "Reset drift tuning for {}: {}.",
+            repo.name,
+            parts.join(", ")
+        );
+    }
     Ok(())
 }
 
