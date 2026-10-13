@@ -21,6 +21,8 @@ pub enum Error {
     SchemaTooNew { found: i64, supported: i64 },
     #[error("could not find a home directory; set BRIDGE_SCREEN_HOME")]
     NoHome,
+    #[error(transparent)]
+    Plan(#[from] crate::plan::PlanError),
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
