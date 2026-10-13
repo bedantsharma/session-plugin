@@ -7,6 +7,7 @@ pub mod claim;
 pub mod config;
 pub mod drift;
 pub mod error;
+pub mod git;
 pub mod navigator;
 pub mod paths;
 pub mod plan;
