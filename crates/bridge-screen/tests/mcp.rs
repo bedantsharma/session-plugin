@@ -426,6 +426,53 @@ fn nested_detour_returns_to_the_outer_one() {
 }
 
 #[test]
+fn closing_the_outer_detour_first_still_returns_to_the_task() {
+    let env = claimed_setup();
+    let mut mcp = Mcp::start(&env, "/nonexistent");
+    for (reason, cue) in [
+        ("build is broken", "rerun the login test"),
+        ("lockfile conflict", "rebuild after cargo update"),
+    ] {
+        call_as(
+            &mut mcp,
+            &env,
+            "s1",
+            "start_detour",
+            &json!({"reason": reason, "resume_cue": cue}),
+        );
+    }
+    let (is_error, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "close_detour",
+        &json!({"outcome": "abandoned", "detour": "D1"}),
+    );
+    assert!(!is_error, "{text}");
+    assert_eq!(text, "Detour D1 closed. Continue with your current work.");
+    // D1 is gone, so closing D2 goes straight back to the task, with the task's cue.
+    let (_, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "close_detour",
+        &json!({"outcome": "done"}),
+    );
+    assert_eq!(
+        text,
+        "Detour closed. Return to 1.1 Login form. On return: rerun the login test."
+    );
+    let store = Store::open(&env.db_path()).unwrap();
+    assert_eq!(
+        bridge_screen_core::tangent::suspended(store.conn(), "s1").unwrap(),
+        vec![],
+        "nothing is left suspended"
+    );
+    let s = session::get(store.conn(), "s1").unwrap().unwrap();
+    assert_eq!(s.current_detour, None);
+}
+
+#[test]
 fn close_with_nothing_open_is_a_tool_error() {
     let env = claimed_setup();
     let mut mcp = Mcp::start(&env, "/nonexistent");

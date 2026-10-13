@@ -1,13 +1,13 @@
 //! Opening, closing, resuming and promoting detours (spec §7.4, §11.2). Each operation is
 //! one transaction, and each records the return-to-task note its result carries.
 
-use rusqlite::{Connection, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{
     Detour, DetourClosed, DetourOpened, DetourPromoted, ItemKind, ItemResumed, ItemSuspended,
-    Label, LabelSource, SuspendedItem, Thresholds, UnitLabeled, get_detour, open_detours,
+    Label, LabelSource, SuspendedItem, Thresholds, UnitLabeled, get_detour, get_item, open_detours,
     suspended,
 };
 use crate::claim::{self, ClaimMode, ClaimRequest, ClaimTarget, task_title};
@@ -172,7 +172,7 @@ pub fn start_detour(store: &mut Store, req: &StartRequest) -> Result<Started> {
         let detour =
             get_detour(tx, &detour_id)?.ok_or_else(|| err("detour vanished after opening"))?;
         let suspended = match item_id {
-            Some(id) => super::get_item(tx, &id)?,
+            Some(id) => get_item(tx, &id)?,
             None => None,
         };
         Ok(Started { detour, suspended })
@@ -224,6 +224,38 @@ fn find_open(conn: &Connection, session_id: &str, which: &str) -> Result<Option<
         .find(|d| d.detour_id == which || d.label().eq_ignore_ascii_case(which)))
 }
 
+/// What closing the focused detour `detour_id` returns to: the item its opening suspended.
+/// If that item is a detour closed in the meantime (out of order), the walk continues to
+/// what *that* detour suspended, so the session lands on the nearest open item.
+fn return_item(
+    conn: &Connection,
+    session_id: &str,
+    detour_id: &str,
+) -> Result<Option<SuspendedItem>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT item_id FROM suspended_items
+         WHERE session_id = ?1 AND by_detour = ?2 AND resumed_at IS NULL",
+    )?;
+    let mut by = detour_id.to_string();
+    loop {
+        let Some(id) = stmt
+            .query_row(params![session_id, by], |r| r.get::<_, String>(0))
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        let Some(item) = get_item(conn, &id)? else {
+            return Ok(None);
+        };
+        let closed = item.kind == ItemKind::Detour
+            && get_detour(conn, &item.ref_id)?.is_some_and(|d| d.closed_at.is_some());
+        if !closed {
+            return Ok(Some(item));
+        }
+        by = item.ref_id;
+    }
+}
+
 /// Close a detour. Closing the current one resumes the item it suspended.
 pub fn close_detour(store: &mut Store, req: &CloseRequest) -> Result<Closed> {
     store.write(|tx| {
@@ -243,9 +275,7 @@ pub fn close_detour(store: &mut Store, req: &CloseRequest) -> Result<Closed> {
             actor: &req.actor,
         };
         let back = if was_focus {
-            suspended(tx, &session.session_id)?
-                .into_iter()
-                .find(|i| i.by_detour.as_deref() == Some(detour.detour_id.as_str()))
+            return_item(tx, &session.session_id, &detour.detour_id)?
         } else {
             None
         };
