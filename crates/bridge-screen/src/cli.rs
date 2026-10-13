@@ -14,8 +14,15 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Set up the data folder: database and default config.
-    Install,
+    /// Set up the data folder (database, default config) and register the Claude Code plugin.
+    Install {
+        /// Register the plugin from this checkout instead of GitHub.
+        #[arg(long)]
+        dev: bool,
+        /// Only set up the data folder; don't touch Claude Code.
+        #[arg(long, conflicts_with = "dev")]
+        no_plugin: bool,
+    },
     /// Show or change a repo's plan.
     Plan {
         #[command(subcommand)]

@@ -1,0 +1,14 @@
+{
+  "name": "bridge-screen",
+  "owner": {
+    "name": "Bedant Sharma"
+  },
+  "description": "bridge-screen: a local tracker for Claude Code projects and sessions.",
+  "plugins": [
+    {
+      "name": "bridge-screen",
+      "source": "./plugin",
+      "description": "Keeps track of where your Claude Code agents are: progress, the task each session is on, and agent-active time."
+    }
+  ]
+}

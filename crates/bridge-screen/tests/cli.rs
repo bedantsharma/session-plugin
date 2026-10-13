@@ -71,12 +71,13 @@ fn version_flag_prints_version() {
 #[test]
 fn install_creates_home_db_and_config() {
     let env = Env::new();
-    let out = env.ok(&["install"], None);
+    // --no-plugin: never let a test reach the real `claude` CLI.
+    let out = env.ok(&["install", "--no-plugin"], None);
     assert!(env.home.path().join("bridge-screen.db").is_file());
     assert!(env.home.path().join("config.toml").is_file());
     assert!(out.contains("config.toml (created)"));
     assert!(
-        env.ok(&["install"], None)
+        env.ok(&["install", "--no-plugin"], None)
             .contains("config.toml (kept existing)")
     );
 }
