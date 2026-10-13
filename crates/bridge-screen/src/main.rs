@@ -2,6 +2,7 @@ mod cli;
 mod commands;
 mod hook;
 mod mcp;
+mod status;
 
 use std::process::ExitCode;
 

@@ -21,6 +21,8 @@ pub enum Command {
         #[command(subcommand)]
         action: PlanCommand,
     },
+    /// Live sessions per project: state, active task, units and active minutes.
+    Status,
     /// Rebuild all views from the event log.
     Rebuild,
     /// Print the effective configuration.

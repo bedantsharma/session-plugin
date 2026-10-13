@@ -28,6 +28,11 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Rebuild => rebuild(),
         Command::Config => config(),
         Command::Mcp => crate::mcp::run(),
+        Command::Status => {
+            let store = open_store(&Home::resolve()?)?;
+            print!("{}", crate::status::render(&store)?);
+            Ok(())
+        }
         Command::Hook { .. } => unreachable!("main handles hooks before dispatching commands"),
     }
 }
