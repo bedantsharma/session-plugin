@@ -10,7 +10,9 @@ use rusqlite::{
 use crate::error::{Error, Result};
 use crate::repo::RepoInfo;
 
-pub use event::{Actor, EVENT_VERSION, Event, EventDraft, OWNER_SESSION, append_in, read_all};
+pub use event::{
+    Actor, EVENT_VERSION, Event, EventDraft, OWNER_SESSION, append_in, append_in_at, read_all,
+};
 pub use schema::SCHEMA_VERSION;
 
 /// How long a connection waits for another writer before giving up (spec §6.2).
@@ -93,6 +95,15 @@ impl Store {
     }
 }
 
+/// The display name of a registered repo.
+pub fn repo_name(conn: &Connection, repo_id: &str) -> Result<Option<String>> {
+    Ok(conn
+        .query_row("SELECT name FROM repos WHERE id = ?1", [repo_id], |r| {
+            r.get(0)
+        })
+        .optional()?)
+}
+
 /// Switch the database to WAL. Changing the journal mode needs an exclusive lock, and
 /// SQLite reports `SQLITE_BUSY` for it without consulting the busy handler, so several
 /// processes opening a brand-new database at once must retry here themselves.
@@ -152,10 +163,17 @@ fn migrate(conn: &mut Connection) -> Result<()> {
     if current < 1 {
         tx.execute_batch(schema::V1)?;
         tx.execute(
-            "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)",
-            [SCHEMA_VERSION.to_string()],
+            "INSERT INTO meta (key, value) VALUES ('schema_version', '1')",
+            [],
         )?;
     }
+    if current < 2 {
+        tx.execute_batch(schema::V2)?;
+    }
+    tx.execute(
+        "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
+        [SCHEMA_VERSION.to_string()],
+    )?;
     tx.commit()?;
     Ok(())
 }
@@ -184,7 +202,48 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(version, "1");
+        assert_eq!(version, "2");
+    }
+
+    #[test]
+    fn migrates_v1_database_to_v2() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(super::schema::V1).unwrap();
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('schema_version', '1')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO events (id, v, ts, repo_id, session_id, seq, kind, data)
+                 VALUES ('01J', 1, '2026-10-13T09:00:00Z', 'r', 'owner', 1, 'note', '{}')",
+                [],
+            )
+            .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let version: String = store
+            .conn()
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, "2");
+        let events = read_all(store.conn(), None).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "note");
+        for table in ["sessions", "units", "task_time", "mcp_bindings"] {
+            let n: i64 = store
+                .conn()
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0, "{table}");
+        }
     }
 
     #[test]
@@ -204,7 +263,7 @@ mod tests {
             Store::open(&path),
             Err(Error::SchemaTooNew {
                 found: 99,
-                supported: 1
+                supported: 2
             })
         ));
     }

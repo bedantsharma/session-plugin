@@ -1,6 +1,7 @@
 //! Validated plan edits. A batch is applied in one transaction: all ops or none.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -15,21 +16,30 @@ use crate::store::{Actor, Event, EventDraft, Store, append_in};
 
 const MAX_TITLE_CHARS: usize = 200;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
+/// One change to the plan. `op` names the change; ids are dotted plan ids such as `1.2`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PlanOp {
+    /// Add a node. Its id is assigned (next free number under the parent). Goals and
+    /// milestones need an intent: 2–3 sentences of purpose and end state.
     AddNode {
+        /// Parent id; omit only for the goal. Goal → milestone|task, milestone → task,
+        /// task → subtask.
         #[serde(default)]
         parent: Option<String>,
         kind: NodeKind,
+        /// One line, at most 200 characters.
         title: String,
         #[serde(default)]
         intent: Option<String>,
+        /// Estimate in agent-minutes.
         #[serde(default)]
         estimate_min: Option<u32>,
+        /// Files this work is expected to touch, relative to the repo root.
         #[serde(default)]
         expected_files: Vec<String>,
     },
+    /// Change a node's title and/or expected files.
     EditNode {
         id: String,
         #[serde(default)]
@@ -37,13 +47,16 @@ pub enum PlanOp {
         #[serde(default)]
         expected_files: Option<Vec<String>>,
     },
+    /// Move a node (and its children) under another parent.
     MoveNode {
         id: String,
         new_parent: String,
     },
+    /// Drop a node and its children. Ids are never reused.
     RemoveNode {
         id: String,
     },
+    /// `id` can't finish before `depends_on`.
     AddDep {
         id: String,
         depends_on: String,
@@ -52,14 +65,17 @@ pub enum PlanOp {
         id: String,
         depends_on: String,
     },
+    /// Set the purpose-and-end-state statement (required on goals and milestones).
     SetIntent {
         id: String,
         intent: String,
     },
+    /// Set the estimate in agent-minutes.
     SetEstimate {
         id: String,
         estimate_min: u32,
     },
+    /// Milestones only: uphill while unknowns remain, downhill once it's execution.
     SetHill {
         id: String,
         hill: Hill,
@@ -118,10 +134,15 @@ pub struct EditOutcome {
 
 /// Validate and apply `ops` in order, atomically.
 pub fn plan_edit(store: &mut Store, ctx: &EditContext, ops: &[PlanOp]) -> Result<EditOutcome> {
+    store.write(|tx| plan_edit_in(tx, ctx, ops))
+}
+
+/// [`plan_edit`] inside the caller's transaction, so other events can join the same batch.
+pub fn plan_edit_in(tx: &Transaction, ctx: &EditContext, ops: &[PlanOp]) -> Result<EditOutcome> {
     if ops.is_empty() {
         return Err(PlanError::Empty.into());
     }
-    store.write(|tx| {
+    {
         let mut events = Vec::new();
         let mut added_ids = Vec::new();
         let replan_id = if ctx.replan {
@@ -152,7 +173,7 @@ pub fn plan_edit(store: &mut Store, ctx: &EditContext, ops: &[PlanOp]) -> Result
             events.push(append_in(tx, draft(ctx, kind, data, Some(task)))?);
         }
         Ok(EditOutcome { events, added_ids })
-    })
+    }
 }
 
 fn draft(ctx: &EditContext, kind: &str, data: Value, task: Option<String>) -> EventDraft {
@@ -861,6 +882,32 @@ mod tests {
             out.events[1..]
                 .iter()
                 .all(|e| e.data["replan_id"] == replan_id.as_str())
+        );
+    }
+
+    #[test]
+    fn ops_reject_unknown_fields() {
+        for bad in [
+            r#"{"op":"set_estimate","id":"1","estimate":30}"#,
+            r#"{"op":"set_estimate","id":"1","estimate_min":30,"estimate":30}"#,
+            r#"{"op":"add_node","parent":"G","kind":"task","title":"t","parnet":"1"}"#,
+            r#"{"op":"remove_node","id":"1","why":"x"}"#,
+        ] {
+            let err = serde_json::from_str::<PlanOp>(bad).unwrap_err().to_string();
+            assert!(
+                err.contains("unknown field") || err.contains("missing field"),
+                "{bad}: {err}"
+            );
+        }
+        let err = serde_json::from_str::<PlanOp>(
+            r#"{"op":"set_estimate","id":"1","estimate_min":30,"estimate":30}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unknown field `estimate`"), "{err}");
+        assert!(
+            serde_json::from_str::<PlanOp>(r#"{"op":"set_estimate","id":"1","estimate_min":30}"#)
+                .is_ok()
         );
     }
 

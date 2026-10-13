@@ -12,7 +12,7 @@ use crate::cli::{Cli, Command, PlanCommand};
 
 pub fn run(cli: Cli) -> Result<()> {
     match cli.command {
-        Command::Install => install(),
+        Command::Install { dev, no_plugin } => install(dev, no_plugin),
         Command::Plan {
             action: PlanCommand::Show { dir, all },
         } => plan_show(&dir, all),
@@ -27,6 +27,13 @@ pub fn run(cli: Cli) -> Result<()> {
         } => plan_edit_cmd(&dir, reason, replan, file.as_deref()),
         Command::Rebuild => rebuild(),
         Command::Config => config(),
+        Command::Mcp => crate::mcp::run(),
+        Command::Status => {
+            let store = open_store(&Home::resolve()?)?;
+            print!("{}", crate::status::render(&store)?);
+            Ok(())
+        }
+        Command::Hook { .. } => unreachable!("main handles hooks before dispatching commands"),
     }
 }
 
@@ -35,7 +42,7 @@ fn open_store(home: &Home) -> Result<Store> {
     Ok(Store::open(&home.db_path())?)
 }
 
-fn install() -> Result<()> {
+fn install(dev: bool, no_plugin: bool) -> Result<()> {
     let home = Home::resolve()?;
     open_store(&home)?;
     let created = Config::write_default_if_missing(&home.config_path())?;
@@ -46,8 +53,10 @@ fn install() -> Result<()> {
         home.config_path().display(),
         if created { "created" } else { "kept existing" }
     );
-    println!("Claude Code plugin registration arrives in a later release.");
-    Ok(())
+    if no_plugin {
+        return Ok(());
+    }
+    crate::install::register_plugin(dev)
 }
 
 fn plan_show(dir: &Path, all: bool) -> Result<()> {

@@ -43,6 +43,14 @@ pub fn identify(dir: &Path) -> Result<RepoInfo> {
     })
 }
 
+/// The checked-out branch of the worktree containing `dir` (`HEAD` when detached), or
+/// `None` if git can't tell.
+pub fn current_branch(dir: &Path) -> Option<String> {
+    let out = git(dir, &["rev-parse", "--abbrev-ref", "HEAD"]).ok()?;
+    let name = String::from_utf8(out).ok()?.trim().to_string();
+    (!name.is_empty()).then_some(name)
+}
+
 /// First 16 hex chars of SHA-256 over the git common directory path.
 ///
 /// Hashes the path's raw bytes, so paths that aren't valid UTF-8 still get distinct ids
@@ -137,6 +145,14 @@ mod tests {
         );
         assert_eq!(a, repo_id_for(Path::new("/x/.git")));
         assert_ne!(a, repo_id_for(Path::new("/y/.git")));
+    }
+
+    #[test]
+    fn current_branch_reads_head() {
+        let repo = new_repo();
+        assert_eq!(super::current_branch(repo.path()).as_deref(), Some("main"));
+        let plain = tempfile::tempdir().unwrap();
+        assert_eq!(super::current_branch(plain.path()), None);
     }
 
     #[test]

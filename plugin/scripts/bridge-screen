@@ -1,0 +1,97 @@
+#!/bin/sh
+# bridge-screen launcher (spec §16.2). Hooks and the MCP server run this script.
+#
+# 1. A `bridge-screen` on PATH whose version matches this plugin is used as is.
+# 2. Otherwise the matching release binary is downloaded once into
+#    $CLAUDE_PLUGIN_DATA/bin, checked against its published SHA-256, and run from there.
+#
+# Called as `hook …`, any failure exits 0 silently (logged to launcher.log) so a Claude
+# session never breaks. Anything else prints a clear error and exits 1.
+
+set -u
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+root=$(dirname -- "$here")
+self="$here/$(basename -- "$0")"
+data=${CLAUDE_PLUGIN_DATA:-${XDG_CACHE_HOME:-${HOME:-}/.cache}/bridge-screen}
+mode=run
+if [ "${1:-}" = hook ]; then
+    mode=hook
+fi
+tmp=
+
+fail() {
+    if [ -n "$tmp" ]; then
+        rm -rf "$tmp"
+    fi
+    if [ "$mode" = hook ]; then
+        if mkdir -p "$data" 2>/dev/null; then
+            printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >>"$data/launcher.log" 2>/dev/null
+        fi
+        exit 0
+    fi
+    printf 'bridge-screen: %s\n' "$1" >&2
+    printf '%s\n' \
+        'Install the bridge-screen binary another way, then try again:' \
+        '  brew install bedantsharma/tap/bridge-screen' \
+        '  pipx install bridge-screen     (or: uv tool install bridge-screen)' \
+        '  cargo install bridge-screen' >&2
+    exit 1
+}
+
+want=$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    "$root/.claude-plugin/plugin.json" 2>/dev/null | head -n 1)
+[ -n "$want" ] || fail "could not read the plugin version from $root/.claude-plugin/plugin.json"
+
+# 1. A matching bridge-screen on PATH (but never this launcher itself).
+if onpath=$(command -v bridge-screen 2>/dev/null) && [ -n "$onpath" ] && ! [ "$onpath" -ef "$self" ]; then
+    if [ "$("$onpath" --version 2>/dev/null </dev/null)" = "bridge-screen $want" ]; then
+        exec "$onpath" "$@"
+    fi
+fi
+
+# 2. The release binary for this version, downloaded once.
+bin="$data/bin/bridge-screen-$want"
+if [ ! -x "$bin" ]; then
+    case "$(uname -s)" in
+        Darwin) os=apple-darwin ;;
+        Linux) os=unknown-linux-gnu ;;
+        *) fail "no prebuilt binary for $(uname -s)" ;;
+    esac
+    case "$(uname -m)" in
+        arm64 | aarch64) arch=aarch64 ;;
+        x86_64 | amd64) arch=x86_64 ;;
+        *) fail "no prebuilt binary for $(uname -m)" ;;
+    esac
+    archive="bridge-screen-$arch-$os.tar.xz"
+    base=${BRIDGE_SCREEN_RELEASE_BASE:-https://github.com/bedantsharma/session-plugin/releases/download/v$want}
+
+    mkdir -p "$data/bin" || fail "could not create $data/bin"
+    tmp=$(mktemp -d "$data/bin/.download.XXXXXX") || fail "could not create a download folder in $data/bin"
+    curl -fsSL "$base/$archive" -o "$tmp/$archive" </dev/null ||
+        fail "download failed: $base/$archive"
+    curl -fsSL "$base/$archive.sha256" -o "$tmp/$archive.sha256" </dev/null ||
+        fail "download failed: $base/$archive.sha256"
+
+    expected=$(awk 'NR == 1 { print tolower($1) }' "$tmp/$archive.sha256")
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual=$(sha256sum "$tmp/$archive" | awk '{ print tolower($1) }')
+    elif command -v shasum >/dev/null 2>&1; then
+        actual=$(shasum -a 256 "$tmp/$archive" | awk '{ print tolower($1) }')
+    else
+        fail "no sha256sum or shasum to verify the download"
+    fi
+    [ -n "$expected" ] && [ "$expected" = "$actual" ] ||
+        fail "checksum mismatch for $archive (expected $expected, got $actual)"
+
+    (cd "$tmp" && tar -xJf "$archive") || fail "could not unpack $archive"
+    found=$(find "$tmp" -type f -name bridge-screen | head -n 1)
+    [ -n "$found" ] || fail "$archive has no bridge-screen binary"
+    chmod 755 "$found" || fail "could not make $found executable"
+    # Rename into place so a concurrent hook never runs a half-written binary.
+    mv -f "$found" "$bin.$$" && mv -f "$bin.$$" "$bin" || fail "could not install $bin"
+    rm -rf "$tmp"
+    tmp=
+fi
+
+exec "$bin" "$@"

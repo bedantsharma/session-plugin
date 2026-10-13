@@ -1,0 +1,10 @@
+{
+  "session_id": "SESSION",
+  "transcript_path": "/tmp/transcripts/SESSION.jsonl",
+  "cwd": "CWD",
+  "permission_mode": "default",
+  "hook_event_name": "Stop",
+  "prompt_id": "PROMPT",
+  "stop_hook_active": false,
+  "last_assistant_message": "Added validation to the login form and a unit test."
+}

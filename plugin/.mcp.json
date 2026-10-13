@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "bridge-screen": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/bridge-screen",
+      "args": [
+        "mcp"
+      ]
+    }
+  }
+}

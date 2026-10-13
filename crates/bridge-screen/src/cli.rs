@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+use crate::hook::HookEvent;
+
 /// Keeps track of where your Claude Code agents are: progress, tangents, and handoffs.
 #[derive(Debug, Parser)]
 #[command(name = "bridge-screen", version)]
@@ -12,17 +14,33 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Set up the data folder: database and default config.
-    Install,
+    /// Set up the data folder (database, default config) and register the Claude Code plugin.
+    Install {
+        /// Register the plugin from this checkout instead of GitHub.
+        #[arg(long)]
+        dev: bool,
+        /// Only set up the data folder; don't touch Claude Code.
+        #[arg(long, conflicts_with = "dev")]
+        no_plugin: bool,
+    },
     /// Show or change a repo's plan.
     Plan {
         #[command(subcommand)]
         action: PlanCommand,
     },
+    /// Live sessions per project: state, active task, units and active minutes.
+    Status,
     /// Rebuild all views from the event log.
     Rebuild,
     /// Print the effective configuration.
     Config,
+    /// Serve the agent's tools over MCP (stdio). Claude Code starts this.
+    Mcp,
+    /// Handle a Claude Code hook event (reads the hook JSON on stdin). Always exits 0.
+    Hook {
+        #[arg(value_enum)]
+        event: HookEvent,
+    },
 }
 
 #[derive(Debug, Subcommand)]

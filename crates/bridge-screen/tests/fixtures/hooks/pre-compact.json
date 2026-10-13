@@ -1,0 +1,9 @@
+{
+  "session_id": "SESSION",
+  "transcript_path": "/tmp/transcripts/SESSION.jsonl",
+  "cwd": "CWD",
+  "permission_mode": "default",
+  "hook_event_name": "PreCompact",
+  "trigger": "auto",
+  "custom_instructions": null
+}

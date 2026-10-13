@@ -1,0 +1,111 @@
+//! `bridge-screen status`: live sessions per project, in about a dozen lines (spec §10.3).
+//! Plain text for now; colours arrive with the screens.
+
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+
+use anyhow::Result;
+use bridge_screen_core::claim::task_title;
+use bridge_screen_core::plan::{NodeStatus, get_node};
+use bridge_screen_core::session::{self, Session, SessionState};
+use bridge_screen_core::store::{Store, repo_name};
+
+/// Width of the "state + task" column, and the most of it the text may use.
+const TASK_COLUMN: usize = 32;
+const TASK_TEXT_MAX: usize = 30;
+
+fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// Needs-you first, then working, then idle.
+fn state_rank(state: SessionState) -> u8 {
+    match state {
+        SessionState::NeedsOwner => 0,
+        SessionState::Working => 1,
+        SessionState::Idle => 2,
+        SessionState::Ended => 3,
+    }
+}
+
+fn cut(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut short: String = text.chars().take(max - 1).collect();
+    short.truncate(short.trim_end().len());
+    short.push('…');
+    short
+}
+
+/// The status text for every live session.
+pub fn render(store: &Store) -> Result<String> {
+    let conn = store.conn();
+    let live = session::list_live(conn, None)?;
+    if live.is_empty() {
+        return Ok("bridge-screen · no live sessions\n".to_string());
+    }
+    // Group by repo display name (then id, in case two repos share a folder name).
+    let mut repos: BTreeMap<(String, String), Vec<Session>> = BTreeMap::new();
+    for s in live.iter().cloned() {
+        let name = repo_name(conn, &s.repo_id)?.unwrap_or_else(|| s.repo_id.clone());
+        repos.entry((name, s.repo_id.clone())).or_default().push(s);
+    }
+    let mut out = format!(
+        "bridge-screen · {} · {}\n",
+        plural(live.len(), "live session", "live sessions"),
+        plural(repos.len(), "project", "projects")
+    );
+    for ((name, repo_id), mut sessions) in repos {
+        match get_node(conn, &repo_id, "G")?.filter(|g| g.status != NodeStatus::Dropped) {
+            Some(goal) => {
+                let _ = writeln!(out, "{name}  goal: {}", goal.title);
+            }
+            None => {
+                let _ = writeln!(out, "{name}  no plan yet");
+            }
+        }
+        // `list_live` is newest first; a stable sort keeps that within each state.
+        sessions.sort_by_key(|s| state_rank(s.state));
+        for s in &sessions {
+            out.push_str(&session_line(store, s)?);
+        }
+    }
+    Ok(out)
+}
+
+fn session_line(store: &Store, s: &Session) -> Result<String> {
+    let short: String = s.session_id.chars().take(6).collect();
+    let label = match s.state {
+        SessionState::NeedsOwner => "needs you",
+        SessionState::Working => "working",
+        SessionState::Idle => "idle",
+        SessionState::Ended => "ended",
+    };
+    let task = match &s.active_task {
+        Some(id) => {
+            let title = task_title(store.conn(), &s.repo_id, id)?.unwrap_or_default();
+            format!("{id} {title}")
+        }
+        None => "(no task)".to_string(),
+    };
+    let left = cut(&format!("{label:<10}{task}"), TASK_TEXT_MAX);
+    let count = usize::try_from(s.unit_count).unwrap_or(0);
+    let units = plural(count, "unit", "units");
+    let minutes = s.active_secs / 60;
+    Ok(format!(
+        "  S {short}  {left:<TASK_COLUMN$}{units:<7} · {minutes}m\n"
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cut;
+
+    #[test]
+    fn cut_keeps_short_text_and_marks_long_text() {
+        assert_eq!(cut("short", 30), "short");
+        assert_eq!(cut("abcdef", 4), "abc…");
+        assert_eq!(cut("ab def", 4), "ab…");
+    }
+}

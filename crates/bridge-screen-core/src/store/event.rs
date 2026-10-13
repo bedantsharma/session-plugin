@@ -82,13 +82,19 @@ pub struct Event {
 
 /// Append one event and update the views it affects, inside the caller's transaction.
 pub fn append_in(tx: &Transaction, draft: EventDraft) -> Result<Event> {
+    append_in_at(tx, draft, jiff::Timestamp::now())
+}
+
+/// [`append_in`] with a given timestamp. Views derive durations from event timestamps only,
+/// so tests and replays use this to script exact times.
+pub fn append_in_at(tx: &Transaction, draft: EventDraft, ts: jiff::Timestamp) -> Result<Event> {
     let seq: i64 = tx.query_row(
         "SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE session_id = ?1",
         [&draft.session_id],
         |r| r.get(0),
     )?;
     let id = ulid::Ulid::generate().to_string();
-    let ts = jiff::Timestamp::now().to_string();
+    let ts = ts.to_string();
     tx.execute(
         "INSERT INTO events (id, v, ts, repo_id, session_id, seq, kind, actor, task_id, data)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",

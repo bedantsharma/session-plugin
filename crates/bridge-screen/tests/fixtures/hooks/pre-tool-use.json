@@ -1,0 +1,15 @@
+{
+  "session_id": "SESSION",
+  "transcript_path": "/tmp/transcripts/SESSION.jsonl",
+  "cwd": "CWD",
+  "permission_mode": "default",
+  "hook_event_name": "PreToolUse",
+  "prompt_id": "PROMPT",
+  "tool_name": "Edit",
+  "tool_input": {
+    "file_path": "CWD/src/login.rs",
+    "old_string": "a",
+    "new_string": "b"
+  },
+  "tool_use_id": "toolu_pre_1"
+}

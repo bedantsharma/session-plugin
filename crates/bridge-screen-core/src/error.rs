@@ -21,6 +21,10 @@ pub enum Error {
     SchemaTooNew { found: i64, supported: i64 },
     #[error("could not find a home directory; set BRIDGE_SCREEN_HOME")]
     NoHome,
+    #[error("{0}")]
+    Claim(String),
+    #[error("invalid event: {0}")]
+    BadEvent(String),
     #[error(transparent)]
     Plan(#[from] crate::plan::PlanError),
 }
