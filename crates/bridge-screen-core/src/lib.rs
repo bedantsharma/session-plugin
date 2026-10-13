@@ -6,6 +6,7 @@ pub mod binding;
 pub mod claim;
 pub mod config;
 pub mod error;
+pub mod navigator;
 pub mod paths;
 pub mod plan;
 pub mod projection;
