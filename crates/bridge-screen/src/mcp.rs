@@ -14,7 +14,7 @@ use bridge_screen_core::binding;
 use bridge_screen_core::checkpoint::{self, ClaimDoneRequest};
 use bridge_screen_core::claim::{self, ClaimMode, ClaimRequest, ClaimTarget};
 use bridge_screen_core::config::Config;
-use bridge_screen_core::handoff::LeftoverAction;
+use bridge_screen_core::handoff::{self, LeftoverAction};
 use bridge_screen_core::paths::Home;
 use bridge_screen_core::plan::{EditContext, NodeKind, NodeStatus, PlanOp, get_node, load_tree};
 use bridge_screen_core::recovery::{self, Caller, Resolution};
@@ -203,6 +203,29 @@ pub struct ResolveLeftoverInput {
     pub action: LeftoverAction,
 }
 
+/// Read back the briefing before your first edit.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HandoffReadbackInput {
+    /// The goal, in your words.
+    pub goal: String,
+    /// What is in flight: the task id and what is half-done.
+    pub in_flight: String,
+    /// Your next action.
+    pub next_action: String,
+}
+
+/// Leave a note for the next session.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HandoffNoteInput {
+    /// What is half-done right now, in one or two sentences.
+    pub in_flight: String,
+    /// Up to 5 warnings for the next session, as "if X, then Y".
+    #[serde(default)]
+    pub if_then: Vec<String>,
+}
+
 #[derive(Clone)]
 pub struct Bridge {
     home: Home,
@@ -282,6 +305,26 @@ impl Bridge {
         Parameters(args): Parameters<Args<ResolveLeftoverInput>>,
     ) -> CallToolResult {
         text(self.do_resolve_leftover(&args))
+    }
+
+    #[tool(
+        description = "Read back the briefing before your first edit when it asks: the goal, what's in flight (name the task id) and your next action. bridge-screen checks it against the log and corrects you once if it differs."
+    )]
+    async fn handoff_readback(
+        &self,
+        Parameters(args): Parameters<Args<HandoffReadbackInput>>,
+    ) -> CallToolResult {
+        text(self.do_handoff_readback(&args))
+    }
+
+    #[tool(
+        description = "Leave a note for the next session when you stop mid-task or finish one: what's in flight and up to 5 if/then warnings. The next session's briefing carries it."
+    )]
+    async fn handoff_note(
+        &self,
+        Parameters(args): Parameters<Args<HandoffNoteInput>>,
+    ) -> CallToolResult {
+        text(self.do_handoff_note(&args))
     }
 
     #[tool(
@@ -425,6 +468,45 @@ impl Bridge {
         resolution_text(&store, &session.repo_id, &res).map_err(msg)
     }
 
+    fn do_handoff_readback(&self, args: &Args<HandoffReadbackInput>) -> Result<String, String> {
+        let mut store = self.open()?;
+        let session = self.caller(&store, "handoff_readback", &args.raw)?;
+        let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        let check = handoff::read_back(
+            &mut store,
+            &session.session_id,
+            &input.goal,
+            &input.in_flight,
+            &input.next_action,
+            &Actor::default(),
+        )
+        .map_err(msg)?;
+        Ok(check.reply)
+    }
+
+    fn do_handoff_note(&self, args: &Args<HandoffNoteInput>) -> Result<String, String> {
+        let mut store = self.open()?;
+        let session = self.caller(&store, "handoff_note", &args.raw)?;
+        let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        let task = handoff::leave_note(
+            &mut store,
+            &session.session_id,
+            &input.in_flight,
+            &input.if_then,
+            &Actor::default(),
+        )
+        .map_err(msg)?;
+        Ok(match task {
+            Some(t) => {
+                let title = claim::task_title(store.conn(), &session.repo_id, &t)
+                    .map_err(msg)?
+                    .unwrap_or_default();
+                format!("Handoff note saved for {t} {title}.")
+            }
+            None => "Handoff note saved (no active task).".to_string(),
+        })
+    }
+
     fn do_plan_edit(&self, args: &Args<PlanEditInput>) -> Result<String, String> {
         let mut store = self.open()?;
         let session = self.caller(&store, "plan_edit", &args.raw)?;
@@ -474,7 +556,7 @@ impl Bridge {
                 let what =
                     tangent::item_display(store.conn(), &session.repo_id, item).map_err(msg)?;
                 format!(
-                    "{head} Suspended {what} — on return: {}",
+                    "{head} Suspended {what} — on return: {} If you stop before returning, leave a handoff_note.",
                     sentence(&item.resume_cue)
                 )
             }

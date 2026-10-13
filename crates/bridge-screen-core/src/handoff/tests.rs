@@ -327,3 +327,293 @@ fn crash_closes_the_unit_at_the_last_event() {
     assert_eq!((x.state, x.end_kind), (SessionState::Idle, None));
     assert_eq!(x.worktree.as_deref(), Some("/wt"));
 }
+
+// ---- briefing and read-back (spec §8.4) ----
+
+fn brief(s: &Store, id: &str) -> Briefing {
+    briefing(s.conn(), &sess(s, id)).unwrap()
+}
+
+/// `setup()` plus session s0 that worked on 1.1 earlier and ended.
+fn with_previous() -> Store {
+    let mut s = setup();
+    ev(
+        &mut s,
+        "s0",
+        "session_started",
+        json!({"cwd": "/wt", "worktree": "/wt", "source": "startup"}),
+        0,
+    );
+    ev(
+        &mut s,
+        "s0",
+        "task_claimed",
+        json!({"task_id": "1.1", "mode": "auto", "confidence": 0.9}),
+        0,
+    );
+    s
+}
+
+#[test]
+fn stable_with_nothing_pending_is_three_lines() {
+    let mut s = Store::open_in_memory().unwrap();
+    node(&mut s, "G", None, "goal");
+    node(&mut s, "1", Some("G"), "milestone");
+    node(&mut s, "1.1", Some("1"), "task");
+    ev(
+        &mut s,
+        "s9",
+        "session_started",
+        json!({"cwd": "/wt", "source": "startup"}),
+        1,
+    );
+    let b = brief(&s, "s9");
+    assert_eq!(b.status, BriefingStatus::Stable);
+    assert!(!b.readback_required);
+    assert_eq!(
+        b.text,
+        "bridge-screen briefing — stable\nGoal: TG — why\nClaim your task with claim_task and go."
+    );
+}
+
+#[test]
+fn status_classification() {
+    let mut s = setup();
+    assert_eq!(brief(&s, "s1").status, BriefingStatus::Stable);
+    ev(
+        &mut s,
+        "s1",
+        "claimed_done",
+        json!({"task_id": "1.2", "evidence": "e"}),
+        3,
+    );
+    assert_eq!(brief(&s, "s1").status, BriefingStatus::Watcher);
+    s.conn()
+        .execute(
+            "UPDATE plan_nodes SET status = 'failed' WHERE id = '1.1'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(brief(&s, "s1").status, BriefingStatus::Unstable);
+    s.conn()
+        .execute(
+            "UPDATE plan_nodes SET status = 'active' WHERE id = '1.1'",
+            [],
+        )
+        .unwrap();
+    ev(
+        &mut s,
+        "s1",
+        "checkpoint_due",
+        json!({"reason": "claimed_done"}),
+        4,
+    );
+    ev(&mut s, "s1", "checkpoint_missed", json!({"unit_no": 1}), 5);
+    let b = brief(&s, "s1");
+    assert_eq!(b.status, BriefingStatus::Unstable);
+    assert!(b.readback_required);
+    assert!(b.text.contains("checkpoint missed"), "{}", b.text);
+}
+
+#[test]
+fn briefing_is_bounded_and_scaled() {
+    let mut s = setup();
+    for n in 1..=10 {
+        node(&mut s, &format!("1.{}", n + 2), Some("1"), "task");
+        ev(
+            &mut s,
+            "old",
+            "claimed_done",
+            json!({"task_id": format!("1.{}", n + 2), "evidence": "e"}),
+            3,
+        );
+    }
+    for n in 0..30 {
+        ev(
+            &mut s,
+            "s1",
+            "leftover_found",
+            json!({"leftover_id": format!("l{n:03}"), "from_session": "s0", "worktree": "/wt",
+                   "path": format!("src/f{n}.rs"), "task_id": "1.1", "suggested": "resume",
+                   "report_only": false}),
+            4,
+        );
+    }
+    let b = brief(&s, "s1");
+    assert_eq!(b.status, BriefingStatus::Unstable);
+    assert!(b.readback_required);
+    let lines: Vec<&str> = b.text.lines().collect();
+    assert!(lines.len() <= 40, "{} lines:\n{}", lines.len(), b.text);
+    assert_eq!(lines[0], "bridge-screen briefing — unstable");
+    assert!(
+        b.text
+            .contains("Verify first (10): 1.3 T1.3, 1.4 T1.4, 1.5 T1.5 (+7 more)"),
+        "{}",
+        b.text
+    );
+    assert!(
+        b.text
+            .contains("Leftovers (30, resolve with resolve_leftover):"),
+        "{}",
+        b.text
+    );
+    assert!(
+        b.text.contains("    l000 src/f0.rs (1.1) → resume"),
+        "{}",
+        b.text
+    );
+    assert!(b.text.contains("    (+25 more)"), "{}", b.text);
+    assert!(
+        b.text.ends_with(
+            "Read back before your first edit: call handoff_readback with the goal, what's in flight, and your next action."
+        ),
+        "{}",
+        b.text
+    );
+}
+
+#[test]
+fn if_then_and_cue_carry_over_from_the_previous_session() {
+    let mut s = with_previous();
+    ev(
+        &mut s,
+        "s0",
+        "checkpoint",
+        json!({"sha": "abcdef123456", "task_id": "1.1", "next_action": "add the empty-password test"}),
+        5,
+    );
+    ev(
+        &mut s,
+        "s0",
+        "handoff_note",
+        json!({"task_id": "1.1", "in_flight": "validation half wired",
+               "if_then": ["if the form test flakes, rerun it once", "if CI is red, check the lockfile"]}),
+        6,
+    );
+    ev(
+        &mut s,
+        "s0",
+        "session_ended",
+        json!({"end_kind": "clean"}),
+        7,
+    );
+    // A new session picks up 1.1 (s1 is the one in setup, already on it).
+    let b = brief(&s, "s1");
+    assert!(
+        b.text
+            .contains("Summary: 1.1 T1.1; last checkpoint abcdef1 \"add the empty-password test\""),
+        "{}",
+        b.text
+    );
+    assert!(
+        b.text.contains("In flight: validation half wired"),
+        "{}",
+        b.text
+    );
+    assert!(
+        b.text.contains("If/then:\n  - if the form test flakes, rerun it once\n  - if CI is red, check the lockfile"),
+        "{}",
+        b.text
+    );
+    assert!(
+        b.text.contains("Next: add the empty-password test"),
+        "{}",
+        b.text
+    );
+    assert!(b.text.contains("Milestone: T1 — why"), "{}", b.text);
+}
+
+#[test]
+fn dependencies_are_listed() {
+    let mut s = setup();
+    ev(
+        &mut s,
+        "owner",
+        "dep_added",
+        json!({"id": "1.1", "depends_on": "1.2"}),
+        3,
+    );
+    let b = brief(&s, "s1");
+    assert!(b.text.contains("Dependencies: 1.2 waiting"), "{}", b.text);
+    ev(
+        &mut s,
+        "s1",
+        "claimed_done",
+        json!({"task_id": "1.2", "evidence": "e"}),
+        4,
+    );
+    assert!(brief(&s, "s1").text.contains("Dependencies: 1.2 ready"));
+}
+
+#[test]
+fn compact_rebriefing_is_short() {
+    let mut s = setup();
+    ev(
+        &mut s,
+        "s1",
+        "detour_opened",
+        json!({"detour_id": "D1", "reason": "CI is red", "blocks": "1.1", "resume_cue": "rerun login test"}),
+        3,
+    );
+    ev(
+        &mut s,
+        "s1",
+        "item_suspended",
+        json!({"item_id": "I1", "kind": "task", "ref_id": "1.1", "resume_cue": "rerun login test", "by_detour": "D1"}),
+        3,
+    );
+    let text = compact_rebriefing(s.conn(), &sess(&s, "s1")).unwrap();
+    assert!(text.lines().count() <= 8, "{text}");
+    assert_eq!(
+        text,
+        "bridge-screen: re-briefing after compaction.\nActive task: 1.1 T1.1\nOn return: rerun login test\nOpen detours: D1 CI is red (current)"
+    );
+}
+
+#[test]
+fn readback_ok_and_one_correction() {
+    let mut s = with_previous();
+    ev(
+        &mut s,
+        "s0",
+        "checkpoint",
+        json!({"sha": "abc", "task_id": "1.1", "next_action": "add the empty-password test"}),
+        5,
+    );
+    let me = sess(&s, "s1");
+    let ok = check_readback(
+        s.conn(),
+        &me,
+        "ship it",
+        "working on 1.1, the form",
+        "write the empty password test",
+    )
+    .unwrap();
+    assert_eq!(ok.result, ReadbackState::Ok);
+    assert_eq!(ok.reply, "Read-back matches the log. Go ahead.");
+    let bad = check_readback(
+        s.conn(),
+        &me,
+        "ship it",
+        "working on 1.2",
+        "refactor the router",
+    )
+    .unwrap();
+    assert_eq!(bad.result, ReadbackState::Mismatch);
+    assert_eq!(
+        bad.reply,
+        "Close, but the log says: active task 1.1 \"T1.1\", next action \"add the empty-password test\". Carry on from there."
+    );
+    assert!(bad.diff.as_deref().unwrap().contains("task"));
+    ev(
+        &mut s,
+        "s1",
+        "readback",
+        json!({"result": "mismatch", "diff": bad.diff}),
+        6,
+    );
+    // Only one correction per session.
+    let again = check_readback(s.conn(), &sess(&s, "s1"), "x", "nothing", "nothing").unwrap();
+    assert_eq!(again.result, ReadbackState::Mismatch);
+    assert_eq!(again.reply, "Read-back recorded.");
+}

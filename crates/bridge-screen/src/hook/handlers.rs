@@ -80,7 +80,20 @@ pub fn handle(
         (Some(known), HookEvent::Stop) => nav::score_open_unit(store.conn(), known, input)?,
         _ => None,
     };
-    let drafts = drafts_for(event, &ctx, store, scored)?;
+    let mut drafts = drafts_for(event, &ctx, store, scored)?;
+    // An edit before the read-back the briefing asked for: one nudge (spec §8.4).
+    let nudge = match event {
+        HookEvent::PreToolUse => handoff::readback_nudge(
+            store.conn(),
+            ctx.known.as_ref(),
+            edited_files(input).is_some(),
+        )?
+        .map(|(draft, text)| {
+            drafts.push(draft.actor(ctx.actor()));
+            text
+        }),
+        _ => None,
+    };
     let navigates = ctx.known.is_some() && nav::navigates(event);
     // A known session with nothing to record writes nothing. An unknown one is tracked
     // from first sight (below), so its later hooks take the fast path without git.
@@ -136,10 +149,7 @@ pub fn handle(
         store.write(|tx| tuning::run(tx, &ctx.repo_id, config))?;
     }
     let context = match event {
-        HookEvent::SessionStart => {
-            let session = stored_session(store, input)?;
-            Some(context::session_start(store.conn(), &session)?)
-        }
+        HookEvent::SessionStart => handoff::start_context(store, input)?,
         HookEvent::UserPromptSubmit => {
             let session = stored_session(store, input)?;
             let unit_no =
@@ -151,6 +161,7 @@ pub fn handle(
                 (r, n) => r.or(n),
             }
         }
+        HookEvent::PreToolUse => nudge.or(note),
         _ => note,
     };
     Ok(context.map(|text| HookOutput {

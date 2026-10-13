@@ -87,6 +87,11 @@ const STOP_WORDS: &[&str] = &[
 /// Path parts that appear in nearly every expected file and say nothing about the task.
 const PATH_NOISE: &[&str] = &["src", "lib", "mod", "rs", "ts", "js", "py", "md", "index"];
 
+/// Lowercase keywords of `text`, stop-words removed (for comparing short texts).
+pub fn keywords(text: &str) -> HashSet<String> {
+    tokens(text)
+}
+
 /// Lowercase word tokens, stop-words removed.
 fn tokens(text: &str) -> HashSet<String> {
     text.split(|c: char| !c.is_alphanumeric())

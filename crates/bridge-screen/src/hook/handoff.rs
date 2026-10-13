@@ -8,11 +8,12 @@ use bridge_screen_core::checkpoint::{self, StopGit};
 use bridge_screen_core::config::Config;
 use bridge_screen_core::error::Result;
 use bridge_screen_core::git::{self, HeadCommit};
-use bridge_screen_core::handoff::EndKind;
+use bridge_screen_core::handoff::{self, EndKind, ReadbackState};
+use bridge_screen_core::navigator::{Candidate, Channel, NoteKind, note_sent_draft};
 use bridge_screen_core::recovery;
 use bridge_screen_core::session::{self, Session};
 use bridge_screen_core::store::Store;
-use bridge_screen_core::store::{Actor, append_in};
+use bridge_screen_core::store::{Actor, EventDraft, append_in};
 use rusqlite::Transaction;
 
 use super::{HookEvent, HookInput};
@@ -127,4 +128,56 @@ pub fn recover(store: &mut Store, config: &Config, repo_id: &str, session_id: &s
     };
     recovery::analyse(store, repo_id, session_id, &worktree_of(&me))?;
     Ok(())
+}
+
+/// At SessionStart: the briefing (recorded as `briefed`), or the short re-briefing after
+/// a compaction.
+pub fn start_context(store: &mut Store, input: &HookInput) -> Result<Option<String>> {
+    let Some(me) = session::get(store.conn(), &input.session_id)? else {
+        return Ok(None);
+    };
+    if input.source.as_deref() == Some("compact") {
+        return Ok(Some(handoff::compact_rebriefing(store.conn(), &me)?));
+    }
+    let b = handoff::briefing(store.conn(), &me)?;
+    let data = handoff::Briefed {
+        status: b.status,
+        readback_required: b.readback_required,
+    };
+    store.append(EventDraft::new(
+        &me.repo_id,
+        &me.session_id,
+        "briefed",
+        serde_json::to_value(data)?,
+    ))?;
+    Ok(Some(b.text))
+}
+
+/// PreToolUse on an edit tool while a read-back is pending: the nudge, once per session
+/// (not blocking). Returns its `note_sent` event and text.
+pub fn readback_nudge(
+    conn: &rusqlite::Connection,
+    known: Option<&Session>,
+    is_edit: bool,
+) -> Result<Option<(EventDraft, String)>> {
+    let Some(s) = known.filter(|s| is_edit && s.readback == ReadbackState::Pending) else {
+        return Ok(None);
+    };
+    let sent: i64 = conn
+        .prepare_cached(
+            "SELECT count(*) FROM notes_sent WHERE session_id = ?1 AND kind = 'read_back'",
+        )?
+        .query_row([&s.session_id], |r| r.get(0))?;
+    if sent > 0 {
+        return Ok(None);
+    }
+    let unit_no = session::last_unit(conn, &s.session_id)?.map_or(0, |u| u.unit_no);
+    let note = Candidate::new(
+        NoteKind::ReadBack,
+        Channel::PreToolUse,
+        handoff::READBACK_NUDGE,
+        "readback",
+    );
+    let draft = note_sent_draft(&s.repo_id, &s.session_id, unit_no, &note)?;
+    Ok(Some((draft, note.text)))
 }

@@ -180,7 +180,8 @@ fn touches(conn: &Connection, repo_id: &str, dead: &str, path: &str) -> Result<V
 
 /// The task a leftover file belongs to and what to do with it (spec §8.3):
 /// - undo: no unit ever touched it, or only drift units and abandoned detours did;
-/// - adopt: its task is claimed done or verified (verify it, then commit);
+/// - adopt: its task is claimed done or verified (verify it, then commit), or it has no
+///   task to resume;
 /// - resume: otherwise (the task is unfinished — continue from its cue).
 fn suggest(
     conn: &Connection,
@@ -200,11 +201,14 @@ fn suggest(
         None => None,
     };
     let action = match status {
-        Some(
+        // Work outside any task can't be resumed by claiming it: keep it as a commit.
+        None
+        | Some(
             NodeStatus::Claimed | NodeStatus::L1 | NodeStatus::L2 | NodeStatus::L3 | NodeStatus::L4,
         ) => LeftoverAction::Adopt,
         _ => LeftoverAction::Resume,
     };
+
     Ok((task, action))
 }
 

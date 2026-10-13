@@ -157,6 +157,8 @@ fn lists_three_tools_with_schemas() {
             "claim_done",
             "claim_task",
             "close_detour",
+            "handoff_note",
+            "handoff_readback",
             "label_unit",
             "plan_edit",
             "promote_detour",
@@ -350,7 +352,9 @@ fn detour_round_trip_returns_the_cue_verbatim() {
     assert!(!is_error, "{text}");
     assert_eq!(
         text,
-        format!("Detour D1 opened: build is broken. Suspended 1.1 Login form — on return: {cue}.")
+        format!(
+            "Detour D1 opened: build is broken. Suspended 1.1 Login form — on return: {cue}. If you stop before returning, leave a handoff_note."
+        )
     );
     let (is_error, text) = call_as(
         &mut mcp,
@@ -412,7 +416,7 @@ fn nested_detour_returns_to_the_outer_one() {
     );
     assert_eq!(
         text,
-        "Detour D2 opened: lockfile conflict. Suspended D1 build is broken — on return: rebuild after cargo update."
+        "Detour D2 opened: lockfile conflict. Suspended D1 build is broken — on return: rebuild after cargo update. If you stop before returning, leave a handoff_note."
     );
     let (_, text) = call_as(
         &mut mcp,
@@ -791,4 +795,40 @@ fn resolve_leftover_undoes_into_a_stash() {
     let (is_error, text) = mcp.call("resolve_leftover", &args);
     assert!(is_error);
     assert!(text.starts_with("invalid arguments"), "{text}");
+}
+
+#[test]
+fn handoff_note_and_readback_round_trip() {
+    let env = setup();
+    let args = json!({"id": "1.1", "mode": "auto", "confidence": 0.9});
+    bind(&env, "s1", "claim_task", &args, "toolu_1");
+    let mut mcp = Mcp::start(&env, "/nonexistent");
+    assert!(!mcp.call("claim_task", &args).0);
+    let args = json!({"in_flight": "validation half wired",
+                      "if_then": ["if the form test flakes, rerun it once"]});
+    bind(&env, "s1", "handoff_note", &args, "toolu_2");
+    let (is_error, text) = mcp.call("handoff_note", &args);
+    assert!(!is_error, "{text}");
+    assert_eq!(text, "Handoff note saved for 1.1 Login form.");
+    let args = json!({"in_flight": ""});
+    bind(&env, "s1", "handoff_note", &args, "toolu_3");
+    let (is_error, text) = mcp.call("handoff_note", &args);
+    assert!(is_error);
+    assert!(text.starts_with("in_flight is required"), "{text}");
+
+    let args = json!({"goal": "ship", "in_flight": "1.1 login form", "next_action": "wire it"});
+    bind(&env, "s1", "handoff_readback", &args, "toolu_4");
+    let (is_error, text) = mcp.call("handoff_readback", &args);
+    assert!(!is_error, "{text}");
+    assert_eq!(text, "Read-back matches the log. Go ahead.");
+    let store = Store::open(&env.db_path()).unwrap();
+    let s = session::get(store.conn(), "s1").unwrap().unwrap();
+    assert_eq!(s.readback, bridge_screen_core::handoff::ReadbackState::Ok);
+    let args = json!({"goal": "ship", "in_flight": "the reset page", "next_action": "x"});
+    bind(&env, "s1", "handoff_readback", &args, "toolu_5");
+    let (_, text) = mcp.call("handoff_readback", &args);
+    assert_eq!(
+        text,
+        "Close, but the log says: active task 1.1 \"Login form\". Carry on from there."
+    );
 }

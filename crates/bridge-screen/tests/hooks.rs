@@ -146,6 +146,7 @@ fn session_flow_records_events() {
         kinds(&env, "s1"),
         vec![
             "session_started",
+            "briefed",
             "prompt",
             "tool_intent",
             "file_changed",
@@ -155,20 +156,20 @@ fn session_flow_records_events() {
         ]
     );
     let all = events(&env);
-    let prompt = &all[1].data;
+    let prompt = &all[2].data;
     assert_eq!(prompt["chars"], 29);
     assert!(
-        !all[1].data.to_string().contains("login form"),
+        !all[2].data.to_string().contains("login form"),
         "prompt text must never be stored"
     );
-    assert_eq!(all[2].data["files"], json!(["src/login.rs"]));
-    assert_eq!(all[4].data["unit_no"], 1);
+    assert_eq!(all[3].data["files"], json!(["src/login.rs"]));
+    assert_eq!(all[5].data["unit_no"], 1);
     assert_eq!(
-        all[4].data["summary"],
+        all[5].data["summary"],
         "Added validation to the login form and a unit test."
     );
-    assert_eq!(all[5].data["label"], "on_task");
-    assert_eq!(all[6].data["reason"], "prompt_input_exit");
+    assert_eq!(all[6].data["label"], "on_task");
+    assert_eq!(all[7].data["reason"], "prompt_input_exit");
     let u = units(&env, "s1");
     assert_eq!(u.len(), 1);
     assert_eq!(u[0].files, vec!["src/login.rs"]);
@@ -225,8 +226,8 @@ fn parallel_sessions_stay_separate() {
         .filter(|e| e.session_id == "A")
         .map(|e| e.seq)
         .collect();
-    // session_started, prompt, 2 × file_changed, unit_stopped, unit_labeled
-    assert_eq!(seqs, (1..=6).collect::<Vec<_>>());
+    // session_started, briefed, prompt, 2 × file_changed, unit_stopped, unit_labeled
+    assert_eq!(seqs, (1..=7).collect::<Vec<_>>());
 }
 
 #[test]
@@ -278,6 +279,7 @@ fn known_session_does_not_run_git() {
         kinds(&env, "s1"),
         vec![
             "session_started",
+            "briefed",
             "prompt",
             "tool_intent",
             "file_changed",
@@ -386,15 +388,6 @@ fn context_of(out: &str, event: &str) -> String {
         .to_string()
 }
 
-fn repo_name(env: &Env) -> String {
-    env.repo
-        .path()
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned()
-}
-
 fn claim_for(env: &Env, session: &str, task: &str) {
     use bridge_screen_core::claim::{ClaimMode, ClaimRequest, ClaimTarget, claim};
     let mut store = Store::open(&env.db_path()).unwrap();
@@ -422,10 +415,7 @@ fn session_start_without_a_plan_asks_for_one() {
     let out = env.hook("session-start", "s1");
     assert_eq!(
         context_of(&out, "SessionStart"),
-        format!(
-            "bridge-screen: tracking this session in {}. No plan yet — ask the owner whether to create one (bridge-screen plan edit / plan_edit tool).",
-            repo_name(&env)
-        )
+        "bridge-screen briefing — stable\nNo plan yet — ask the owner whether to create one (bridge-screen plan edit / plan_edit tool)."
     );
     // No plan, no claim reminders.
     for _ in 0..4 {
@@ -440,10 +430,7 @@ fn session_start_names_goal_and_active_task() {
     let out = env.hook("session-start", "s1");
     assert_eq!(
         context_of(&out, "SessionStart"),
-        format!(
-            "bridge-screen: tracking this session in {}. Goal: Ship.\nClaim your task with claim_task before working (see the bridge-screen skill).",
-            repo_name(&env)
-        )
+        "bridge-screen briefing — stable\nGoal: Ship — Owner sees progress\nClaim your task with claim_task and go."
     );
     claim_for(&env, "s1", "1.1");
     let resumed = hook_with(&env, "session-start", "s1", |p| {
@@ -451,10 +438,7 @@ fn session_start_names_goal_and_active_task() {
     });
     assert_eq!(
         context_of(&resumed, "SessionStart"),
-        format!(
-            "bridge-screen: tracking this session in {}. Goal: Ship.\nActive task: 1.1 Login form validation.",
-            repo_name(&env)
-        )
+        "bridge-screen briefing — stable\nGoal: Ship — Owner sees progress\nActive task: 1.1 Login form validation — carry on."
     );
 }
 

@@ -4,6 +4,7 @@
 //! This module holds the model: event payloads, the projector for the handoff views and
 //! read-side queries. The logic lives in `checkpoint`, `recovery` and the briefing.
 
+pub mod briefing;
 pub mod project;
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
@@ -12,6 +13,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 
+pub use briefing::{
+    Briefing, READBACK_ASK, READBACK_NUDGE, ReadbackCheck, briefing, check_readback,
+    compact_rebriefing,
+};
 pub use project::{
     Briefed, CheckpointDue, CheckpointMissed, CheckpointReason, CheckpointRecorded, ClaimedDone,
     HANDOFF_KINDS, HandoffNoteData, LeftoverFound, LeftoverResolved, LeftoversAnalysed,
@@ -252,6 +257,94 @@ pub fn claims_done(conn: &Connection, repo_id: &str) -> Result<Vec<ClaimDone>> {
             })
         })?
         .collect::<rusqlite::Result<_>>()?)
+}
+
+fn err(msg: impl Into<String>) -> crate::error::Error {
+    crate::error::Error::Tangent(msg.into())
+}
+
+/// Longest `in_flight` text and if/then line kept in a handoff note.
+pub const MAX_NOTE_CHARS: usize = 300;
+/// Most if/then lines in one note.
+pub const MAX_IF_THEN: usize = 5;
+
+/// Record a handoff note for the session's active task (spec §8.4). Returns the task.
+pub fn leave_note(
+    store: &mut crate::store::Store,
+    session_id: &str,
+    in_flight: &str,
+    if_then: &[String],
+    actor: &crate::store::Actor,
+) -> Result<Option<String>> {
+    let in_flight = in_flight.trim();
+    if in_flight.is_empty() || in_flight.chars().count() > MAX_NOTE_CHARS {
+        return Err(err(format!(
+            "in_flight is required: what is half-done, at most {MAX_NOTE_CHARS} characters"
+        )));
+    }
+    let lines: Vec<String> = if_then
+        .iter()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.len() > MAX_IF_THEN || lines.iter().any(|l| l.chars().count() > MAX_NOTE_CHARS) {
+        return Err(err(format!(
+            "if_then takes at most {MAX_IF_THEN} lines of at most {MAX_NOTE_CHARS} characters"
+        )));
+    }
+    store.write(|tx| {
+        let s = crate::session::get(tx, session_id)?
+            .ok_or_else(|| err(format!("unknown session {session_id}")))?;
+        let data = HandoffNoteData {
+            task_id: s.active_task.clone(),
+            in_flight: in_flight.to_string(),
+            if_then: lines.clone(),
+        };
+        let mut draft = crate::store::EventDraft::new(
+            &s.repo_id,
+            &s.session_id,
+            "handoff_note",
+            serde_json::to_value(data)?,
+        )
+        .actor(actor.clone());
+        if let Some(t) = &s.active_task {
+            draft = draft.task(t);
+        }
+        crate::store::append_in(tx, draft)?;
+        Ok(s.active_task)
+    })
+}
+
+/// Check a read-back and record it (`readback`). Returns the check, whose `reply` is
+/// the tool result.
+pub fn read_back(
+    store: &mut crate::store::Store,
+    session_id: &str,
+    goal: &str,
+    in_flight: &str,
+    next_action: &str,
+    actor: &crate::store::Actor,
+) -> Result<ReadbackCheck> {
+    store.write(|tx| {
+        let s = crate::session::get(tx, session_id)?
+            .ok_or_else(|| err(format!("unknown session {session_id}")))?;
+        let check = check_readback(tx, &s, goal, in_flight, next_action)?;
+        let data = ReadbackData {
+            result: check.result,
+            diff: check.diff.clone(),
+        };
+        crate::store::append_in(
+            tx,
+            crate::store::EventDraft::new(
+                &s.repo_id,
+                &s.session_id,
+                "readback",
+                serde_json::to_value(data)?,
+            )
+            .actor(actor.clone()),
+        )?;
+        Ok(check)
+    })
 }
 
 #[cfg(test)]

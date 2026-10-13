@@ -65,6 +65,8 @@ pub enum Channel {
     Stop,
     /// `UserPromptSubmit` additional context.
     PromptSubmit,
+    /// `PreToolUse` additional context (the read-back nudge).
+    PreToolUse,
 }
 
 impl Channel {
@@ -74,6 +76,7 @@ impl Channel {
             Self::PostToolUse => "post_tool_use",
             Self::Stop => "stop",
             Self::PromptSubmit => "prompt_submit",
+            Self::PreToolUse => "pre_tool_use",
         }
     }
 }
