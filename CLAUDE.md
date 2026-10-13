@@ -14,6 +14,7 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
 - First-time setup: `scripts/setup.sh` (enables `.githooks`, installs web deps)
 - Rust: `cargo build`, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all`
 - Web (in `web/`): `npm run dev`, `npm run build`, `npm run lint`, `npm run check`, `npm run format`
+- Releases: see `docs/RELEASING.md` (`dist plan` to preview)
 
 ## Rules
 
