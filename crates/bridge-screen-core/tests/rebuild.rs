@@ -1,3 +1,4 @@
+use bridge_screen_core::claim::{ClaimMode, ClaimRequest, ClaimTarget, claim};
 use bridge_screen_core::plan::{EditContext, Hill, NodeKind, PlanOp, plan_edit};
 use bridge_screen_core::store::{Actor, EventDraft, Store, append_in_at};
 use jiff::{SignedDuration, Timestamp};
@@ -202,8 +203,71 @@ fn script_sessions(s: &mut Store) -> usize {
 #[test]
 fn rebuild_reproduces_session_views() {
     let mut s = Store::open_in_memory().unwrap();
-    let events = script_sessions(&mut s);
+    let mut events = script_sessions(&mut s);
+    plan_edit(
+        &mut s,
+        &ctx("a", false),
+        &[
+            add(None, NodeKind::Goal, "goal"),
+            add(Some("G"), NodeKind::Milestone, "core"),
+            add(Some("1"), NodeKind::Task, "schema"),
+        ],
+    )
+    .unwrap();
+    events += 3;
+    let claim_req = |session: &str, task: ClaimTarget| ClaimRequest {
+        session_id: session.into(),
+        repo_id: "a".into(),
+        task,
+        mode: ClaimMode::Confirmed,
+        confidence: 0.5,
+        actor: Actor::default(),
+    };
+    claim(
+        &mut s,
+        &claim_req("s1", ClaimTarget::Existing("1.1".into())),
+    )
+    .unwrap();
+    // A new task (node_added + task_released + task_claimed), then s2 claims 1.1 too.
+    claim(
+        &mut s,
+        &claim_req(
+            "s1",
+            ClaimTarget::New {
+                parent: "1".into(),
+                title: "late work".into(),
+                estimate_min: Some(10),
+            },
+        ),
+    )
+    .unwrap();
+    claim(
+        &mut s,
+        &claim_req("s2", ClaimTarget::Existing("1.1".into())),
+    )
+    .unwrap();
+    events += 1 + 3 + 1;
+    s.append(EventDraft::new("a", "s1", "unit_stopped", json!({})))
+        .unwrap();
+    s.append(EventDraft::new(
+        "a",
+        "s2",
+        "session_ended",
+        json!({"reason": "other"}),
+    ))
+    .unwrap();
+    events += 2;
     let before = dump(&s);
+    let status = |id: &str| {
+        bridge_screen_core::plan::get_node(s.conn(), "a", id)
+            .unwrap()
+            .unwrap()
+            .status
+    };
+    // s1 holds 1.2; 1.1 went back to todo when s2 (its last holder) ended.
+    assert_eq!(status("1.2"), bridge_screen_core::plan::NodeStatus::Active);
+    assert_eq!(status("1.1"), bridge_screen_core::plan::NodeStatus::Todo);
+    assert!(before.iter().any(|r| r.starts_with("task_time: ")));
     assert!(before.iter().any(|r| r.starts_with("units: ")));
     assert!(before.iter().any(|r| r.starts_with("sessions: ")));
     assert_eq!(s.rebuild().unwrap().events, events);

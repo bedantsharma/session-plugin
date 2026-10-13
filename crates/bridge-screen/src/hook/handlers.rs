@@ -12,7 +12,7 @@ use bridge_screen_core::session::{
 use bridge_screen_core::store::{Actor, EventDraft, Store, append_in};
 use serde::Serialize;
 
-use super::{HookEvent, HookInput, HookOutput};
+use super::{HookEvent, HookInput, HookOutput, context};
 
 /// Tools whose `tool_input` names files the agent is about to change.
 const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
@@ -83,7 +83,30 @@ pub fn handle(
         }
         Ok(())
     })?;
-    Ok(None)
+    let context = match event {
+        HookEvent::SessionStart => {
+            let session = stored_session(store, input)?;
+            Some(context::session_start(store.conn(), &session)?)
+        }
+        HookEvent::UserPromptSubmit => {
+            let session = stored_session(store, input)?;
+            let unit_no =
+                session::current_unit(store.conn(), &input.session_id)?.map_or(0, |u| u.unit_no);
+            let prompt = input.prompt.as_deref().unwrap_or("");
+            context::claim_reminder(store.conn(), &session, unit_no, prompt)?
+        }
+        _ => None,
+    };
+    Ok(context.map(|text| HookOutput {
+        event,
+        additional_context: Some(text),
+    }))
+}
+
+/// The session as stored after this hook's events.
+fn stored_session(store: &Store, input: &HookInput) -> Result<Session> {
+    session::get(store.conn(), &input.session_id)?
+        .ok_or_else(|| anyhow::anyhow!("session {} vanished", input.session_id))
 }
 
 /// Find the session's repo. Known sessions never run git; unknown ones outside a git repo

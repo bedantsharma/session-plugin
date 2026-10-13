@@ -95,6 +95,15 @@ impl Store {
     }
 }
 
+/// The display name of a registered repo.
+pub fn repo_name(conn: &Connection, repo_id: &str) -> Result<Option<String>> {
+    Ok(conn
+        .query_row("SELECT name FROM repos WHERE id = ?1", [repo_id], |r| {
+            r.get(0)
+        })
+        .optional()?)
+}
+
 /// Switch the database to WAL. Changing the journal mode needs an exclusive lock, and
 /// SQLite reports `SQLITE_BUSY` for it without consulting the busy handler, so several
 /// processes opening a brand-new database at once must retry here themselves.

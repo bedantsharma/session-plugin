@@ -87,6 +87,7 @@ dependencies = [
  "bridge-screen-core",
  "clap",
  "jiff",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

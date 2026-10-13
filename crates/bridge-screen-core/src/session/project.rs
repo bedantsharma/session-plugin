@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{Session, SessionState, Unit, current_unit, get};
 use crate::error::{Error, Result};
+use crate::plan::project::{mark_claimed, mark_released};
 use crate::store::Event;
 
 /// Event kinds routed to this projector.
@@ -102,7 +103,7 @@ pub struct TaskClaimed {
     pub task_id: String,
     /// `auto` or `confirmed`.
     pub mode: String,
-    pub confidence: f32,
+    pub confidence: f64,
     #[serde(default)]
     pub previous: Option<String>,
 }
@@ -189,8 +190,28 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
                  WHERE session_id = ?1",
                 params![session.session_id, event.ts, d.reason],
             )?;
+            // An ended session lets go of its task.
+            if let Some(task) = &session.active_task {
+                at.release(task)?;
+            }
         }
-        // subagent_stopped and precompact only mark activity; claims arrive with claiming.
+        "task_claimed" => {
+            let d: TaskClaimed = payload(event)?;
+            tx.execute(
+                "UPDATE sessions SET active_task = ?2, active_since = ?3 WHERE session_id = ?1",
+                params![session.session_id, d.task_id, event.ts],
+            )?;
+            if let Some(mut u) = unit.filter(|u| u.task_id.is_none()) {
+                u.task_id = Some(d.task_id.clone());
+                save_unit(tx, &u)?;
+            }
+            mark_claimed(tx, &session.repo_id, &d.task_id)?;
+        }
+        "task_released" => {
+            let d: TaskReleased = payload(event)?;
+            at.release(&d.task_id)?;
+        }
+        // subagent_stopped and precompact only mark activity.
         _ => {}
     }
     Ok(())
@@ -303,6 +324,16 @@ impl Moment<'_> {
             self.set_state(SessionState::Working)?;
         }
         Ok(())
+    }
+
+    /// The session stops holding `task`; the task goes back to todo if nobody else has it.
+    fn release(&self, task: &str) -> Result<()> {
+        self.tx.execute(
+            "UPDATE sessions SET active_task = NULL, active_since = NULL
+             WHERE session_id = ?1 AND active_task = ?2",
+            params![self.session.session_id, task],
+        )?;
+        mark_released(self.tx, &self.session.repo_id, task)
     }
 
     fn close_unit(&self, mut u: Unit) -> Result<()> {

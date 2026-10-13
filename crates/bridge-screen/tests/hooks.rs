@@ -4,12 +4,30 @@ mod common;
 
 use common::{EVENTS, Env};
 
+/// Hook stdout is empty or exactly one JSON object in Claude Code's hook output format.
+fn assert_hook_output(event: &str, out: &str) {
+    if out.is_empty() {
+        return;
+    }
+    assert_eq!(out.lines().count(), 1, "{event}: {out}");
+    let v: serde_json::Value = serde_json::from_str(out).unwrap();
+    let pascal: String = event
+        .split('-')
+        .map(|w| w[..1].to_uppercase() + &w[1..])
+        .collect();
+    assert_eq!(v["hookSpecificOutput"]["hookEventName"], pascal.as_str());
+    assert!(v["hookSpecificOutput"]["additionalContext"].is_string());
+}
+
 #[test]
 fn each_event_is_accepted() {
     let env = Env::new();
     for event in EVENTS {
         let out = env.hook(event, "s-accept");
-        assert_eq!(out, "", "{event} printed something");
+        assert_hook_output(event, &out);
+        if !matches!(*event, "session-start" | "user-prompt-submit") {
+            assert_eq!(out, "", "{event} printed something");
+        }
     }
     assert_eq!(env.log(), "", "unexpected hook errors");
 }
@@ -90,7 +108,7 @@ fn session_flow_records_events() {
         "stop",
         "session-end",
     ] {
-        assert_eq!(env.hook(event, "s1"), "");
+        assert_hook_output(event, &env.hook(event, "s1"));
     }
     assert_eq!(env.log(), "");
     assert_eq!(
@@ -289,4 +307,133 @@ fn notification_kinds() {
             json!("other")
         ]
     );
+}
+
+const SEED: &str = r#"[
+  {"op":"add_node","kind":"goal","title":"Ship","intent":"Owner sees progress"},
+  {"op":"add_node","parent":"G","kind":"milestone","title":"Accounts","intent":"People can sign in"},
+  {"op":"add_node","parent":"1","kind":"task","title":"Login form validation","estimate_min":30},
+  {"op":"add_node","parent":"1","kind":"task","title":"Password reset"}
+]"#;
+
+fn seed_plan(env: &Env) {
+    let out = env.run(&["plan", "edit"], SEED);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+fn context_of(out: &str, event: &str) -> String {
+    let v: Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["hookEventName"], event);
+    v["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+fn repo_name(env: &Env) -> String {
+    env.repo
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn claim_for(env: &Env, session: &str, task: &str) {
+    use bridge_screen_core::claim::{ClaimMode, ClaimRequest, ClaimTarget, claim};
+    let mut store = Store::open(&env.db_path()).unwrap();
+    let repo_id = session::get(store.conn(), session)
+        .unwrap()
+        .unwrap()
+        .repo_id;
+    claim(
+        &mut store,
+        &ClaimRequest {
+            session_id: session.into(),
+            repo_id,
+            task: ClaimTarget::Existing(task.into()),
+            mode: ClaimMode::Auto,
+            confidence: 0.9,
+            actor: bridge_screen_core::store::Actor::default(),
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn session_start_without_a_plan_asks_for_one() {
+    let env = Env::new();
+    let out = env.hook("session-start", "s1");
+    assert_eq!(
+        context_of(&out, "SessionStart"),
+        format!(
+            "bridge-screen: tracking this session in {}. No plan yet — ask the owner whether to create one (bridge-screen plan edit / plan_edit tool).",
+            repo_name(&env)
+        )
+    );
+    // No plan, no claim reminders.
+    for _ in 0..4 {
+        assert_eq!(env.hook("user-prompt-submit", "s1"), "");
+    }
+}
+
+#[test]
+fn session_start_names_goal_and_active_task() {
+    let env = Env::new();
+    seed_plan(&env);
+    let out = env.hook("session-start", "s1");
+    assert_eq!(
+        context_of(&out, "SessionStart"),
+        format!(
+            "bridge-screen: tracking this session in {}. Goal: Ship.\nClaim your task with claim_task before working (see the bridge-screen skill).",
+            repo_name(&env)
+        )
+    );
+    claim_for(&env, "s1", "1.1");
+    let resumed = hook_with(&env, "session-start", "s1", |p| {
+        p["source"] = json!("resume");
+    });
+    assert_eq!(
+        context_of(&resumed, "SessionStart"),
+        format!(
+            "bridge-screen: tracking this session in {}. Goal: Ship.\nActive task: 1.1 Login form validation.",
+            repo_name(&env)
+        )
+    );
+}
+
+#[test]
+fn claim_reminder_cadence() {
+    let env = Env::new();
+    seed_plan(&env);
+    env.hook("session-start", "s1");
+    let mut reminded = Vec::new();
+    for n in 1..=5 {
+        let out = env.hook("user-prompt-submit", "s1");
+        if !out.is_empty() {
+            reminded.push(n);
+            if n == 1 {
+                assert_eq!(
+                    context_of(&out, "UserPromptSubmit"),
+                    "bridge-screen: no active task yet. Likely matches for this request:\n  1.1 Login form validation (score .75)\nIf one clearly fits, call claim_task with mode \"auto\". If unsure where the work stands, ask the owner. If none fits, claim a new task under the right parent."
+                );
+            }
+        }
+        env.hook("stop", "s1");
+    }
+    assert_eq!(reminded, vec![1, 4]);
+    claim_for(&env, "s1", "1.2");
+    for _ in 6..=8 {
+        assert_eq!(env.hook("user-prompt-submit", "s1"), "");
+    }
+    // The prompt text is used for ranking only, never stored.
+    let stored = events(&env)
+        .iter()
+        .map(|e| e.data.to_string())
+        .collect::<String>();
+    assert!(!stored.contains("Add the login form validation"));
 }

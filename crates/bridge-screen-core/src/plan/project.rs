@@ -165,6 +165,29 @@ fn project_node_removed(tx: &Transaction, repo: &str, d: &NodeRef) -> Result<()>
     Ok(())
 }
 
+/// A claimed task starts being worked on: todo or failed → active. Verified and claimed-done
+/// statuses (claimed, L1–L4) are left alone.
+pub fn mark_claimed(tx: &Transaction, repo: &str, id: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE plan_nodes SET status = 'active'
+         WHERE repo_id = ?1 AND id = ?2 AND status IN ('todo', 'failed')",
+        params![repo, id],
+    )?;
+    Ok(())
+}
+
+/// A released task goes back to todo, unless another live session still has it active.
+pub fn mark_released(tx: &Transaction, repo: &str, id: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE plan_nodes SET status = 'todo'
+         WHERE repo_id = ?1 AND id = ?2 AND status = 'active'
+           AND NOT EXISTS (SELECT 1 FROM sessions
+                           WHERE repo_id = ?1 AND active_task = ?2 AND state != 'ended')",
+        params![repo, id],
+    )?;
+    Ok(())
+}
+
 /// Apply one plan event to the plan views.
 pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
     let repo = event.repo_id.as_str();

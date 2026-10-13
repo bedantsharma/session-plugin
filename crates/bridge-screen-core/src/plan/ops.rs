@@ -1,6 +1,6 @@
 //! Validated plan edits. A batch is applied in one transaction: all ops or none.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -118,10 +118,15 @@ pub struct EditOutcome {
 
 /// Validate and apply `ops` in order, atomically.
 pub fn plan_edit(store: &mut Store, ctx: &EditContext, ops: &[PlanOp]) -> Result<EditOutcome> {
+    store.write(|tx| plan_edit_in(tx, ctx, ops))
+}
+
+/// [`plan_edit`] inside the caller's transaction, so other events can join the same batch.
+pub fn plan_edit_in(tx: &Transaction, ctx: &EditContext, ops: &[PlanOp]) -> Result<EditOutcome> {
     if ops.is_empty() {
         return Err(PlanError::Empty.into());
     }
-    store.write(|tx| {
+    {
         let mut events = Vec::new();
         let mut added_ids = Vec::new();
         let replan_id = if ctx.replan {
@@ -152,7 +157,7 @@ pub fn plan_edit(store: &mut Store, ctx: &EditContext, ops: &[PlanOp]) -> Result
             events.push(append_in(tx, draft(ctx, kind, data, Some(task)))?);
         }
         Ok(EditOutcome { events, added_ids })
-    })
+    }
 }
 
 fn draft(ctx: &EditContext, kind: &str, data: Value, task: Option<String>) -> EventDraft {
