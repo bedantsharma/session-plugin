@@ -6,9 +6,11 @@ use std::fmt::Write as _;
 
 use anyhow::Result;
 use bridge_screen_core::claim::task_title;
+use bridge_screen_core::config::Config;
 use bridge_screen_core::plan::{NodeStatus, get_node};
 use bridge_screen_core::session::{self, Session, SessionState};
 use bridge_screen_core::store::{Store, repo_name};
+use bridge_screen_core::tangent::{self, Label, NavState};
 
 /// Width of the "state + task" column, and the most of it the text may use.
 const TASK_COLUMN: usize = 32;
@@ -18,13 +20,16 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
-/// Needs-you first, then working, then idle.
-fn state_rank(state: SessionState) -> u8 {
-    match state {
-        SessionState::NeedsOwner => 0,
-        SessionState::Working => 1,
-        SessionState::Idle => 2,
-        SessionState::Ended => 3,
+/// Red drift first, then other needs-you, then working, then idle.
+fn state_rank(s: &Session) -> u8 {
+    if s.nav_state == NavState::Red {
+        return 0;
+    }
+    match s.state {
+        SessionState::NeedsOwner => 1,
+        SessionState::Working => 2,
+        SessionState::Idle => 3,
+        SessionState::Ended => 4,
     }
 }
 
@@ -38,8 +43,26 @@ fn cut(text: &str, max: usize) -> String {
     short
 }
 
+/// ` · tuned drift .35–.65, tolerance 25%` when the repo's thresholds were auto-tuned.
+fn tuned_suffix(store: &Store, repo_id: &str, cfg: &Config) -> Result<String> {
+    let th = tangent::thresholds(store.conn(), repo_id, cfg)?;
+    if th == tangent::Thresholds::from_config(cfg) {
+        return Ok(String::new());
+    }
+    let short = |v: f64| {
+        let t = format!("{v:.2}");
+        t.strip_prefix('0').map_or(t.clone(), str::to_string)
+    };
+    Ok(format!(
+        "  · tuned drift {}–{}, tolerance {}%",
+        short(th.lower),
+        short(th.upper),
+        th.tolerance_pct
+    ))
+}
+
 /// The status text for every live session.
-pub fn render(store: &Store) -> Result<String> {
+pub fn render(store: &Store, cfg: &Config) -> Result<String> {
     let conn = store.conn();
     let live = session::list_live(conn, None)?;
     if live.is_empty() {
@@ -59,14 +82,19 @@ pub fn render(store: &Store) -> Result<String> {
     for ((name, repo_id), mut sessions) in repos {
         match get_node(conn, &repo_id, "G")?.filter(|g| g.status != NodeStatus::Dropped) {
             Some(goal) => {
-                let _ = writeln!(out, "{name}  goal: {}", goal.title);
+                let _ = writeln!(
+                    out,
+                    "{name}  goal: {}{}",
+                    goal.title,
+                    tuned_suffix(store, &repo_id, cfg)?
+                );
             }
             None => {
                 let _ = writeln!(out, "{name}  no plan yet");
             }
         }
         // `list_live` is newest first; a stable sort keeps that within each state.
-        sessions.sort_by_key(|s| state_rank(s.state));
+        sessions.sort_by_key(state_rank);
         for s in &sessions {
             out.push_str(&session_line(store, s)?);
         }
@@ -77,6 +105,7 @@ pub fn render(store: &Store) -> Result<String> {
 fn session_line(store: &Store, s: &Session) -> Result<String> {
     let short: String = s.session_id.chars().take(6).collect();
     let label = match s.state {
+        _ if s.nav_state == NavState::Red => "needs you",
         SessionState::NeedsOwner => "needs you",
         SessionState::Working => "working",
         SessionState::Idle => "idle",
@@ -93,9 +122,37 @@ fn session_line(store: &Store, s: &Session) -> Result<String> {
     let count = usize::try_from(s.unit_count).unwrap_or(0);
     let units = plural(count, "unit", "units");
     let minutes = s.active_secs / 60;
+    let nav = nav_text(store, s)?;
     Ok(format!(
-        "  S {short}  {left:<TASK_COLUMN$}{units:<7} · {minutes}m\n"
+        "  S {short}  {left:<TASK_COLUMN$}{units:<7} · {minutes}m · {nav}\n"
     ))
+}
+
+/// The navigator light in words — `on task`, `detour 25m`, `drift ⚠ 40m` — plus the
+/// current detour and a `⚠` when the agent disagreed with the heuristic.
+fn nav_text(store: &Store, s: &Session) -> Result<String> {
+    let last = session::units(store.conn(), &s.session_id)?
+        .into_iter()
+        .rev()
+        .find(|u| u.stopped_at.is_some());
+    let away = s.away_secs / 60;
+    let drifting = last.as_ref().is_some_and(|u| u.label == Some(Label::Drift));
+    let mut text = if s.current_detour.is_none() && drifting {
+        format!("drift ⚠ {away}m")
+    } else if s.current_detour.is_some() || s.away_secs > 0 {
+        format!("detour {away}m")
+    } else {
+        "on task".to_string()
+    };
+    if let Some(id) = &s.current_detour
+        && let Some(d) = tangent::get_detour(store.conn(), id)?
+    {
+        let _ = write!(text, " · {} \"{}\"", d.label(), cut(&d.reason, 30));
+    }
+    if !drifting && last.is_some_and(|u| u.disagreement) {
+        text.push_str(" ⚠");
+    }
+    Ok(text)
 }
 
 #[cfg(test)]

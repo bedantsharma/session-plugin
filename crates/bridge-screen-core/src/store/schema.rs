@@ -1,6 +1,6 @@
 //! SQL schema. Version 1 is the first released schema; later versions append migrations.
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 pub const V1: &str = r"
 CREATE TABLE meta (
@@ -124,4 +124,88 @@ CREATE TABLE mcp_bindings (
 );
 
 CREATE INDEX mcp_bindings_match ON mcp_bindings (tool_name, args_hash, created_at);
+";
+
+/// Version 3: tangents — detours, suspended items, unit labels, away time, navigator notes
+/// and per-repo drift tuning (spec §7).
+pub const V3: &str = r"
+ALTER TABLE units ADD COLUMN label TEXT;
+ALTER TABLE units ADD COLUMN label_source TEXT;
+ALTER TABLE units ADD COLUMN drift_score REAL;
+ALTER TABLE units ADD COLUMN detour_id TEXT;
+ALTER TABLE units ADD COLUMN disagreement INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE units ADD COLUMN flagged INTEGER NOT NULL DEFAULT 0;
+
+CREATE INDEX units_task ON units (task_id);
+
+ALTER TABLE sessions ADD COLUMN current_detour TEXT;
+ALTER TABLE sessions ADD COLUMN away_secs INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN away_since TEXT;
+ALTER TABLE sessions ADD COLUMN nav_state TEXT NOT NULL DEFAULT 'green';
+ALTER TABLE sessions ADD COLUMN ack_away_secs INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN ack_unit INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN pending_reply TEXT;
+
+CREATE TABLE detours (
+    detour_id     TEXT PRIMARY KEY,
+    session_id    TEXT NOT NULL,
+    repo_id       TEXT NOT NULL,
+    no            INTEGER NOT NULL,
+    blocks_task   TEXT,
+    reason        TEXT NOT NULL,
+    resume_cue    TEXT NOT NULL,
+    opened_at     TEXT NOT NULL,
+    opened_unit   INTEGER,
+    parent_detour TEXT,
+    closed_at     TEXT,
+    outcome       TEXT,
+    active_secs   INTEGER NOT NULL DEFAULT 0,
+    promoted_task TEXT
+);
+
+CREATE INDEX detours_session ON detours (session_id);
+CREATE INDEX detours_task ON detours (repo_id, blocks_task);
+
+CREATE TABLE suspended_items (
+    item_id      TEXT PRIMARY KEY,
+    session_id   TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    ref_id       TEXT NOT NULL,
+    resume_cue   TEXT NOT NULL,
+    by_detour    TEXT,
+    suspended_at TEXT NOT NULL,
+    resumed_at   TEXT
+);
+
+CREATE INDEX suspended_items_session ON suspended_items (session_id);
+
+CREATE TABLE drift_samples (
+    repo_id  TEXT NOT NULL,
+    unit_ref TEXT NOT NULL,
+    score    REAL NOT NULL,
+    label    TEXT NOT NULL,
+    source   TEXT NOT NULL,
+    ts       TEXT NOT NULL
+);
+
+CREATE INDEX drift_samples_repo ON drift_samples (repo_id);
+
+CREATE TABLE repo_tuning (
+    repo_id             TEXT PRIMARY KEY,
+    drift_lower         REAL,
+    drift_upper         REAL,
+    tolerance_pct       REAL,
+    samples_at_last_run INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE notes_sent (
+    session_id TEXT NOT NULL,
+    unit_no    INTEGER NOT NULL,
+    kind       TEXT NOT NULL,
+    state_key  TEXT NOT NULL,
+    channel    TEXT NOT NULL,
+    ts         TEXT NOT NULL
+);
+
+CREATE INDEX notes_sent_session ON notes_sent (session_id, unit_no);
 ";

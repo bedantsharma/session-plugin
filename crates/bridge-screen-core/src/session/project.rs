@@ -66,6 +66,9 @@ pub struct FileEvent {
 pub enum NeedsOwnerKind {
     PermissionPrompt,
     IdlePrompt,
+    /// Far outside the tolerance band (spec §7.3). The owner should look, but the agent
+    /// keeps working: this is not a wait.
+    Drift,
     #[serde(other)]
     Other,
 }
@@ -75,13 +78,16 @@ pub struct NeedsOwner {
     pub kind: NeedsOwnerKind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UnitStopped {
     #[serde(default)]
     pub unit_no: Option<i64>,
     /// First 300 characters of the agent's last message.
     #[serde(default)]
     pub summary: Option<String>,
+    /// The drift heuristic's score for the unit (spec §7.2), when it was scored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,8 +181,10 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
     match event.kind.as_str() {
         "prompt" => at.prompt(unit, &payload(event)?)?,
         "needs_owner" => {
-            payload::<NeedsOwner>(event)?;
-            at.needs_owner(unit)?;
+            let d: NeedsOwner = payload(event)?;
+            if d.kind != NeedsOwnerKind::Drift {
+                at.needs_owner(unit)?;
+            }
         }
         "tool_intent" => at.tool_activity(unit.as_ref())?,
         "file_changed" => {
@@ -191,12 +199,7 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
                 save_unit(tx, &u)?;
             }
         }
-        "unit_stopped" => {
-            if let Some(u) = unit {
-                at.close_unit(u)?;
-            }
-            at.set_state(SessionState::Idle)?;
-        }
+        "unit_stopped" => at.unit_stopped(unit, &payload(event)?)?,
         "session_ended" => {
             let d: SessionEnded = payload(event)?;
             if let Some(u) = unit {
@@ -343,14 +346,15 @@ impl Moment<'_> {
             |r| r.get(0),
         )?;
         self.tx.execute(
-            "INSERT INTO units (session_id, unit_no, prompt_id, task_id, started_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO units (session_id, unit_no, prompt_id, task_id, started_at, detour_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 self.session.session_id,
                 unit_count + 1,
                 d.prompt_id,
                 self.session.active_task,
-                self.ts_text
+                self.ts_text,
+                self.session.current_detour
             ],
         )?;
         self.set_state(SessionState::Working)
@@ -388,6 +392,19 @@ impl Moment<'_> {
         mark_released(self.tx, &self.session.repo_id, task)
     }
 
+    fn unit_stopped(&self, open: Option<Unit>, d: &UnitStopped) -> Result<()> {
+        if let Some(u) = open {
+            if let Some(score) = d.score {
+                self.tx.execute(
+                    "UPDATE units SET drift_score = ?3 WHERE session_id = ?1 AND unit_no = ?2",
+                    params![u.session_id, u.unit_no, score],
+                )?;
+            }
+            self.close_unit(u)?;
+        }
+        self.set_state(SessionState::Idle)
+    }
+
     fn close_unit(&self, mut u: Unit) -> Result<()> {
         let wall = secs_between(&u.started_at, self.ts);
         u.active_secs = (wall - u.waited_secs).max(0);
@@ -405,6 +422,13 @@ impl Moment<'_> {
                  ON CONFLICT(repo_id, task_id) DO UPDATE SET
                      active_secs = active_secs + excluded.active_secs, units = units + 1",
                 params![self.session.repo_id, task, u.active_secs],
+            )?;
+        }
+        // A detour open during the unit gets its time too (spec §5.5).
+        if let Some(detour) = &u.detour_id {
+            self.tx.execute(
+                "UPDATE detours SET active_secs = active_secs + ?2 WHERE detour_id = ?1",
+                params![detour, u.active_secs],
             )?;
         }
         Ok(())

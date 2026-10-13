@@ -151,7 +151,19 @@ fn lists_three_tools_with_schemas() {
     let tools = resp["result"]["tools"].as_array().unwrap();
     let mut names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     names.sort_unstable();
-    assert_eq!(names, vec!["claim_task", "plan_edit", "status"]);
+    assert_eq!(
+        names,
+        vec![
+            "claim_task",
+            "close_detour",
+            "label_unit",
+            "plan_edit",
+            "promote_detour",
+            "resume",
+            "start_detour",
+            "status"
+        ]
+    );
     for tool in tools {
         assert_eq!(tool["inputSchema"]["type"], "object", "{tool}");
         assert!(tool["description"].as_str().unwrap().len() > 20, "{tool}");
@@ -291,4 +303,412 @@ fn plan_edit_adds_nodes_and_reports_op_errors() {
     );
     assert!(is_error);
     assert!(text.starts_with("op 1: unknown field `estimate`"), "{text}");
+}
+
+/// Bind `args` to `session` through the hook, then call the tool.
+fn call_as(mcp: &mut Mcp, env: &Env, session: &str, tool: &str, args: &Value) -> (bool, String) {
+    let id = format!("toolu_{}", ulid_like(tool, args));
+    bind(env, session, tool, args, &id);
+    mcp.call(tool, args)
+}
+
+/// A unique-enough tool_use_id per call.
+fn ulid_like(tool: &str, args: &Value) -> String {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static N: AtomicUsize = AtomicUsize::new(0);
+    format!(
+        "{tool}_{}_{}",
+        args.to_string().len(),
+        N.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn claimed_setup() -> Env {
+    let env = setup();
+    let args = json!({"id": "1.1", "mode": "auto", "confidence": 0.9});
+    bind(&env, "s1", "claim_task", &args, "toolu_claim");
+    let mut mcp = Mcp::start(&env, "/nonexistent");
+    assert!(!mcp.call("claim_task", &args).0);
+    env.hook("user-prompt-submit", "s1");
+    env
+}
+
+#[test]
+fn detour_round_trip_returns_the_cue_verbatim() {
+    let env = claimed_setup();
+    let mut mcp = Mcp::start(&env, "/nonexistent");
+    let cue = "rerun tests/login.rs::rejects_empty after fixing the build";
+    let (is_error, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "start_detour",
+        &json!({"reason": "build is broken", "resume_cue": cue}),
+    );
+    assert!(!is_error, "{text}");
+    assert_eq!(
+        text,
+        format!("Detour D1 opened: build is broken. Suspended 1.1 Login form — on return: {cue}.")
+    );
+    let (is_error, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "close_detour",
+        &json!({"outcome": "done"}),
+    );
+    assert!(!is_error, "{text}");
+    assert_eq!(
+        text,
+        format!("Detour closed. Return to 1.1 Login form. On return: {cue}.")
+    );
+    let kinds: Vec<String> =
+        bridge_screen_core::store::read_all(Store::open(&env.db_path()).unwrap().conn(), None)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.session_id == "s1")
+            .map(|e| e.kind)
+            .collect();
+    for kind in [
+        "detour_opened",
+        "item_suspended",
+        "detour_closed",
+        "item_resumed",
+        "note_sent",
+    ] {
+        assert!(kinds.iter().any(|k| k == kind), "{kind}: {kinds:?}");
+    }
+    // Nothing open any more.
+    let (is_error, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "close_detour",
+        &json!({"outcome": "done"}),
+    );
+    assert!(is_error);
+    assert_eq!(text, "no open detour to close");
+}
+
+#[test]
+fn nested_detour_returns_to_the_outer_one() {
+    let env = claimed_setup();
+    let mut mcp = Mcp::start(&env, "/nonexistent");
+    call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "start_detour",
+        &json!({"reason": "build is broken", "resume_cue": "rerun the login test"}),
+    );
+    let (_, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "start_detour",
+        &json!({"reason": "lockfile conflict", "resume_cue": "rebuild after cargo update"}),
+    );
+    assert_eq!(
+        text,
+        "Detour D2 opened: lockfile conflict. Suspended D1 build is broken — on return: rebuild after cargo update."
+    );
+    let (_, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "close_detour",
+        &json!({"outcome": "abandoned"}),
+    );
+    assert_eq!(
+        text,
+        "Detour closed. Return to D1 build is broken. On return: rebuild after cargo update."
+    );
+}
+
+#[test]
+fn closing_the_outer_detour_first_still_returns_to_the_task() {
+    let env = claimed_setup();
+    let mut mcp = Mcp::start(&env, "/nonexistent");
+    for (reason, cue) in [
+        ("build is broken", "rerun the login test"),
+        ("lockfile conflict", "rebuild after cargo update"),
+    ] {
+        call_as(
+            &mut mcp,
+            &env,
+            "s1",
+            "start_detour",
+            &json!({"reason": reason, "resume_cue": cue}),
+        );
+    }
+    let (is_error, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "close_detour",
+        &json!({"outcome": "abandoned", "detour": "D1"}),
+    );
+    assert!(!is_error, "{text}");
+    assert_eq!(text, "Detour D1 closed. Continue with your current work.");
+    // D1 is gone, so closing D2 goes straight back to the task, with the task's cue.
+    let (_, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "close_detour",
+        &json!({"outcome": "done"}),
+    );
+    assert_eq!(
+        text,
+        "Detour closed. Return to 1.1 Login form. On return: rerun the login test."
+    );
+    let store = Store::open(&env.db_path()).unwrap();
+    assert_eq!(
+        bridge_screen_core::tangent::suspended(store.conn(), "s1").unwrap(),
+        vec![],
+        "nothing is left suspended"
+    );
+    let s = session::get(store.conn(), "s1").unwrap().unwrap();
+    assert_eq!(s.current_detour, None);
+}
+
+#[test]
+fn close_with_nothing_open_is_a_tool_error() {
+    let env = claimed_setup();
+    let mut mcp = Mcp::start(&env, "/nonexistent");
+    let (is_error, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "close_detour",
+        &json!({"outcome": "done"}),
+    );
+    assert!(is_error);
+    assert_eq!(text, "no open detour to close");
+    let (is_error, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "close_detour",
+        &json!({"outcome": "finished"}),
+    );
+    assert!(is_error);
+    assert!(
+        text.starts_with("invalid arguments: unknown variant `finished`"),
+        "{text}"
+    );
+}
+
+#[test]
+fn resume_someone_elses_item_is_a_tool_error() {
+    let env = claimed_setup();
+    let mut mcp = Mcp::start(&env, "/nonexistent");
+    call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "start_detour",
+        &json!({"reason": "build is broken", "resume_cue": "rerun the login test"}),
+    );
+    let store = Store::open(&env.db_path()).unwrap();
+    let item = bridge_screen_core::tangent::suspended(store.conn(), "s1").unwrap()[0]
+        .item_id
+        .clone();
+    drop(store);
+    let (is_error, text) = call_as(&mut mcp, &env, "s2", "resume", &json!({"item_id": item}));
+    assert!(is_error);
+    assert_eq!(text, format!("no suspended item {item} in this session"));
+    // Its own session can, by item id or by the task id it points at.
+    let (is_error, text) = call_as(&mut mcp, &env, "s1", "resume", &json!({"item_id": "1.1"}));
+    assert!(!is_error, "{text}");
+    assert_eq!(
+        text,
+        "Resumed 1.1 Login form. On return: rerun the login test."
+    );
+    let (is_error, _) = call_as(&mut mcp, &env, "s1", "resume", &json!({"item_id": "1.1"}));
+    assert!(is_error, "an item is resumed once");
+}
+
+#[test]
+fn promote_creates_and_claims_a_task() {
+    let env = claimed_setup();
+    let mut mcp = Mcp::start(&env, "/nonexistent");
+    call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "start_detour",
+        &json!({"reason": "rate limiting", "resume_cue": "finish the login form submit"}),
+    );
+    let (is_error, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "promote_detour",
+        &json!({"parent": "1", "title": "Rate-limit login", "estimate_min": 40}),
+    );
+    assert!(!is_error, "{text}");
+    assert_eq!(text, "Detour D1 is now task 1.3.");
+    assert_eq!(active_task(&env, "s1").as_deref(), Some("1.3"));
+    let store = Store::open(&env.db_path()).unwrap();
+    let repo = session::get(store.conn(), "s1").unwrap().unwrap().repo_id;
+    let node = get_node(store.conn(), &repo, "1.3").unwrap().unwrap();
+    assert_eq!(
+        (node.title.as_str(), node.estimate_min),
+        ("Rate-limit login", Some(40))
+    );
+    let d = bridge_screen_core::tangent::open_detours(store.conn(), "s1").unwrap();
+    assert!(d.is_empty(), "a promoted detour is closed");
+    let all: Vec<_> = bridge_screen_core::store::read_all(store.conn(), None).unwrap();
+    let promoted = all.iter().find(|e| e.kind == "detour_promoted").unwrap();
+    assert_eq!(promoted.data["task_id"], "1.3");
+    let added = all
+        .iter()
+        .find(|e| e.kind == "node_added" && e.data["id"] == "1.3")
+        .unwrap();
+    assert_eq!(added.data["reason"], "promoted from detour");
+    // The task it blocked is still waiting to be resumed.
+    let items = bridge_screen_core::tangent::suspended(store.conn(), "s1").unwrap();
+    assert_eq!(items[0].ref_id, "1.1");
+}
+
+#[test]
+fn empty_or_oversized_cue_is_rejected() {
+    let env = claimed_setup();
+    let mut mcp = Mcp::start(&env, "/nonexistent");
+    for cue in ["", "   ", &"x".repeat(201)] {
+        let (is_error, text) = call_as(
+            &mut mcp,
+            &env,
+            "s1",
+            "start_detour",
+            &json!({"reason": "r", "resume_cue": cue}),
+        );
+        assert!(is_error, "{cue}");
+        assert_eq!(
+            text,
+            "resume_cue is required: one line (at most 200 characters) naming the next action and the file or test"
+        );
+    }
+    let store = Store::open(&env.db_path()).unwrap();
+    assert_eq!(
+        bridge_screen_core::tangent::open_detours(store.conn(), "s1").unwrap(),
+        vec![]
+    );
+}
+
+#[test]
+fn disagreement_is_recorded_not_argued() {
+    use bridge_screen_core::tangent::{Label, LabelSource};
+    let env = Env::new();
+    let seed = r#"[
+      {"op":"add_node","kind":"goal","title":"Ship","intent":"Owner sees progress"},
+      {"op":"add_node","parent":"G","kind":"milestone","title":"Accounts","intent":"People can sign in"},
+      {"op":"add_node","parent":"1","kind":"task","title":"Login form validation",
+       "expected_files":["src/login.rs"]}
+    ]"#;
+    assert!(env.run(&["plan", "edit"], seed).status.success());
+    env.hook("session-start", "s1");
+    let args = json!({"id": "1.1", "mode": "auto", "confidence": 0.9});
+    let mut mcp = Mcp::start(&env, "/nonexistent");
+    call_as(&mut mcp, &env, "s1", "claim_task", &args);
+    env.hook("user-prompt-submit", "s1");
+    for f in ["docker/Dockerfile", ".github/workflows/ci.yml"] {
+        let mut p = fixture_json("post-tool-use", "s1", &env.repo_path());
+        p["tool_input"]["file_path"] = json!(format!("{}/{f}", env.repo_path()));
+        env.hook_raw("post-tool-use", &p.to_string());
+    }
+    let mut p = fixture_json("stop", "s1", &env.repo_path());
+    p["last_assistant_message"] = json!("Rewrote the Dockerfile and the CI workflow caching.");
+    let out = env.hook_raw("stop", &p.to_string());
+    assert!(out.contains("possible drift"), "{out}");
+
+    let (is_error, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "label_unit",
+        &json!({"label": "on_task", "why": "CI must pass before the login form can merge"}),
+    );
+    assert!(!is_error, "{text}");
+    assert_eq!(text, "Labelled unit 1 as on-task.");
+    let store = Store::open(&env.db_path()).unwrap();
+    let u = &session::units(store.conn(), "s1").unwrap()[0];
+    assert_eq!(u.label, Some(Label::OnTask));
+    assert_eq!(u.label_source, Some(LabelSource::Agent));
+    assert!(u.disagreement && u.flagged);
+    let (n, label, source): (i64, String, String) = store
+        .conn()
+        .query_row(
+            "SELECT count(*), max(label), max(source) FROM drift_samples",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (n, label.as_str(), source.as_str()),
+        (1, "on_task", "agent")
+    );
+    drop(store);
+    // The agent's word stands: no red, no needs-you, no red note on the next tool call.
+    let p = fixture_json("post-tool-use", "s1", &env.repo_path());
+    assert_eq!(env.hook_raw("post-tool-use", &p.to_string()), "");
+    let store = Store::open(&env.db_path()).unwrap();
+    let s = session::get(store.conn(), "s1").unwrap().unwrap();
+    assert_eq!(s.nav_state.as_str(), "green");
+    let drift_asks: i64 = store
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM events WHERE kind IN ('needs_owner', 'nav_state_changed')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(drift_asks, 0);
+    drop(store);
+
+    // All units labelled: a second call corrects the last one.
+    let (_, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "label_unit",
+        &json!({"label": "detour", "why": "it blocked the merge"}),
+    );
+    assert_eq!(text, "Labelled unit 1 as detour.");
+    let (is_error, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "label_unit",
+        &json!({"label": "sideways", "why": "x"}),
+    );
+    assert!(is_error);
+    assert!(
+        text.starts_with("invalid arguments: unknown variant `sideways`"),
+        "{text}"
+    );
+}
+
+#[test]
+fn status_lists_detours_and_suspended_items() {
+    let env = claimed_setup();
+    let mut mcp = Mcp::start(&env, "/nonexistent");
+    call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "start_detour",
+        &json!({"reason": "build is broken", "resume_cue": "rerun the login test"}),
+    );
+    let (is_error, text) = call_as(&mut mcp, &env, "s1", "status", &json!({}));
+    assert!(!is_error, "{text}");
+    assert!(
+        text.contains("Open detours: D1 build is broken (current)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Suspended: 1.1 Login form — on return: rerun the login test"),
+        "{text}"
+    );
 }

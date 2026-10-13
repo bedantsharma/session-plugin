@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use bridge_screen_core::binding;
+use bridge_screen_core::config::Config;
 use bridge_screen_core::error::Error;
 use bridge_screen_core::repo;
 use bridge_screen_core::session::{
@@ -11,9 +12,10 @@ use bridge_screen_core::session::{
     SessionState, SubagentStopped, UnitStopped,
 };
 use bridge_screen_core::store::{Actor, EventDraft, Store, append_in};
+use bridge_screen_core::tuning;
 use serde::Serialize;
 
-use super::{HookEvent, HookInput, HookOutput, context};
+use super::{HookEvent, HookInput, HookOutput, context, nav};
 
 /// Tools whose `tool_input` names files the agent is about to change.
 const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
@@ -64,6 +66,7 @@ pub fn handle(
     event: HookEvent,
     input: &HookInput,
     store: &mut Store,
+    config: &Config,
 ) -> Result<Option<HookOutput>> {
     let Some(ctx) = resolve(event, input, store)? else {
         return Ok(None);
@@ -71,10 +74,16 @@ pub fn handle(
     let call = (event == HookEvent::PreToolUse)
         .then(|| our_mcp_call(input))
         .flatten();
-    let drafts = drafts_for(event, &ctx, store)?;
+    // Stop scores the unit it is about to close (in memory; the message isn't stored).
+    let scored = match (&ctx.known, event) {
+        (Some(known), HookEvent::Stop) => nav::score_open_unit(store.conn(), known, input)?,
+        _ => None,
+    };
+    let drafts = drafts_for(event, &ctx, store, scored)?;
+    let navigates = ctx.known.is_some() && nav::navigates(event);
     // A known session with nothing to record writes nothing. An unknown one is tracked
     // from first sight (below), so its later hooks take the fast path without git.
-    if drafts.is_empty() && call.is_none() && ctx.known.is_some() {
+    if drafts.is_empty() && call.is_none() && ctx.known.is_some() && !navigates {
         return Ok(None);
     }
     let mut all = Vec::with_capacity(drafts.len() + 1);
@@ -83,12 +92,39 @@ pub fn handle(
         all.push(ctx.draft("session_started", &ctx.session_started("unknown"))?);
     }
     all.extend(drafts);
-    if !all.is_empty() {
-        store.write(|tx| {
+    let nav_ctx = nav::NavCtx {
+        event,
+        input,
+        config,
+        stopped_unit: scored.map(|(unit_no, _)| unit_no),
+        actor: ctx.actor(),
+        now: jiff::Timestamp::now(),
+    };
+    // Nothing of our own to record: look first (read-only) whether the navigator has
+    // anything to do, so the common tool call doesn't take the write lock.
+    let worth_writing = !all.is_empty()
+        || (navigates
+            && !(nav::step(store.conn(), &nav_ctx)?.is_empty()
+                && nav::state_step(store.conn(), &nav_ctx)?.is_empty()));
+    let mut note = None;
+    if worth_writing {
+        note = store.write(|tx| {
             for draft in all {
                 append_in(tx, draft)?;
             }
-            Ok(())
+            if !navigates {
+                return Ok(None);
+            }
+            // Labels first, so the tolerance band sees them.
+            let labels = nav::step(tx, &nav_ctx)?;
+            for draft in labels.events {
+                append_in(tx, draft)?;
+            }
+            let state = nav::state_step(tx, &nav_ctx)?;
+            for draft in state.events {
+                append_in(tx, draft)?;
+            }
+            Ok(labels.note.or(state.note))
         })?;
     }
     if let Some((tool_use_id, tool, args)) = call {
@@ -102,6 +138,10 @@ pub fn handle(
             jiff::Timestamp::now(),
         )?;
     }
+    if event == HookEvent::SessionStart && tuning::due(store.conn(), &ctx.repo_id)? {
+        // Enough new drift samples: tune this repo's thresholds (spec §7.6).
+        store.write(|tx| tuning::run(tx, &ctx.repo_id, config))?;
+    }
     let context = match event {
         HookEvent::SessionStart => {
             let session = stored_session(store, input)?;
@@ -112,9 +152,13 @@ pub fn handle(
             let unit_no =
                 session::current_unit(store.conn(), &input.session_id)?.map_or(0, |u| u.unit_no);
             let prompt = input.prompt.as_deref().unwrap_or("");
-            context::claim_reminder(store.conn(), &session, unit_no, prompt)?
+            let reminder = context::claim_reminder(store.conn(), &session, unit_no, prompt)?;
+            match (reminder, note) {
+                (Some(r), Some(n)) => Some(format!("{r}\n{n}")),
+                (r, n) => r.or(n),
+            }
         }
-        _ => None,
+        _ => note,
     };
     Ok(context.map(|text| HookOutput {
         event,
@@ -169,8 +213,14 @@ fn resolve<'a>(event: HookEvent, input: &'a HookInput, store: &Store) -> Result<
     }))
 }
 
-/// The events one hook call records (possibly none).
-fn drafts_for(event: HookEvent, ctx: &Ctx, store: &Store) -> Result<Vec<EventDraft>> {
+/// The events one hook call records (possibly none). `scored` is the unit a Stop closes
+/// and its drift score.
+fn drafts_for(
+    event: HookEvent,
+    ctx: &Ctx,
+    store: &Store,
+    scored: Option<(i64, Option<f64>)>,
+) -> Result<Vec<EventDraft>> {
     let input = ctx.input;
     let draft = match event {
         HookEvent::SessionStart => {
@@ -218,6 +268,7 @@ fn drafts_for(event: HookEvent, ctx: &Ctx, store: &Store) -> Result<Vec<EventDra
                 &UnitStopped {
                     unit_no,
                     summary: summary(input),
+                    score: scored.and_then(|(_, score)| score),
                 },
             )?
         }

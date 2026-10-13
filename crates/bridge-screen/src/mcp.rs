@@ -12,10 +12,14 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use bridge_screen_core::binding;
 use bridge_screen_core::claim::{self, ClaimMode, ClaimRequest, ClaimTarget};
+use bridge_screen_core::config::Config;
 use bridge_screen_core::paths::Home;
 use bridge_screen_core::plan::{EditContext, NodeKind, NodeStatus, PlanOp, get_node, load_tree};
 use bridge_screen_core::session::{self, Session, SessionState};
 use bridge_screen_core::store::{Actor, Store};
+use bridge_screen_core::tangent::{
+    self, CloseRequest, DetourOutcome, Label, LabelRequest, LabelSource, StartRequest,
+};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
@@ -113,6 +117,67 @@ pub struct PlanEditInput {
 #[serde(deny_unknown_fields)]
 pub struct StatusInput {}
 
+/// Open a detour: work that isn't your task but blocks it.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StartDetourInput {
+    /// One line: what the detour is, e.g. "build is broken on main".
+    pub reason: String,
+    /// One line (at most 200 characters) naming the next action on the work you are
+    /// suspending and the file or test it concerns. You get it back verbatim on return.
+    pub resume_cue: String,
+    /// The task this detour blocks; defaults to your active task.
+    #[serde(default)]
+    pub blocks: Option<String>,
+}
+
+/// Close a detour and get the resume cue of the work it suspended.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CloseDetourInput {
+    /// "done" when the blocker is dealt with, "abandoned" when you gave up on it.
+    pub outcome: DetourOutcome,
+    /// Optional one-line note on how it ended.
+    #[serde(default)]
+    pub note: Option<String>,
+    /// Which detour, as "D2"; defaults to the one you are on.
+    #[serde(default)]
+    pub detour: Option<String>,
+}
+
+/// Resume a suspended item.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResumeInput {
+    /// The item as `status` lists it: a task id such as "1.2", a detour such as "D1", or
+    /// the item's id.
+    pub item_id: String,
+}
+
+/// Label your last unit of work.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LabelUnitInput {
+    /// "on_task" if it advanced your task, "detour" if it wasn't the task but blocked it,
+    /// "drift" if it did neither.
+    pub label: Label,
+    /// One line on why.
+    pub why: String,
+}
+
+/// Turn the current detour into a real task and claim it.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PromoteDetourInput {
+    /// Id of the milestone (or goal) for the new task, or of a task for a new subtask.
+    pub parent: String,
+    /// One line, at most 200 characters.
+    pub title: String,
+    /// Your estimate in agent-minutes.
+    #[serde(default)]
+    pub estimate_min: Option<u32>,
+}
+
 #[derive(Clone)]
 pub struct Bridge {
     home: Home,
@@ -187,6 +252,62 @@ impl Bridge {
     async fn status(&self, Parameters(args): Parameters<Args<StatusInput>>) -> CallToolResult {
         text(self.do_status(&args))
     }
+
+    #[tool(
+        description = "Open a detour before tangent work that isn't your task but blocks it (a broken build, a missing dependency). Give a one-line reason and a resume_cue: the next action on the work you are suspending and the file or test it concerns. Close it with close_detour when done."
+    )]
+    async fn start_detour(
+        &self,
+        Parameters(args): Parameters<Args<StartDetourInput>>,
+    ) -> CallToolResult {
+        text(self.do_start_detour(&args))
+    }
+
+    #[tool(
+        description = "Close your current detour (outcome \"done\" or \"abandoned\"). Returns the task to go back to and its resume cue, verbatim."
+    )]
+    async fn close_detour(
+        &self,
+        Parameters(args): Parameters<Args<CloseDetourInput>>,
+    ) -> CallToolResult {
+        text(self.do_close_detour(&args))
+    }
+
+    #[tool(
+        description = "Resume any suspended item (a task or a detour) directly, by the id status lists. Returns its resume cue."
+    )]
+    async fn resume(&self, Parameters(args): Parameters<Args<ResumeInput>>) -> CallToolResult {
+        text(self.do_resume(&args))
+    }
+
+    #[tool(
+        description = "Label your last unit of work when bridge-screen asks: on_task, detour or drift, with a one-line why. Be honest: drift is information for the owner, not blame. Calling it again corrects the label."
+    )]
+    async fn label_unit(
+        &self,
+        Parameters(args): Parameters<Args<LabelUnitInput>>,
+    ) -> CallToolResult {
+        text(self.do_label_unit(&args))
+    }
+
+    #[tool(
+        description = "Turn a detour that has grown into real work into a plan task under parent, and claim it. The work it suspended stays suspended."
+    )]
+    async fn promote_detour(
+        &self,
+        Parameters(args): Parameters<Args<PromoteDetourInput>>,
+    ) -> CallToolResult {
+        text(self.do_promote_detour(&args))
+    }
+}
+
+/// `text` as a sentence: a full stop added unless it already ends with one.
+fn sentence(text: &str) -> String {
+    if text.ends_with(['.', '!', '?']) {
+        text.to_string()
+    } else {
+        format!("{text}.")
+    }
 }
 
 impl Bridge {
@@ -247,6 +368,135 @@ impl Bridge {
             let _ = write!(reply, " Added: {}.", out.added_ids.join(", "));
         }
         Ok(reply)
+    }
+
+    fn do_start_detour(&self, args: &Args<StartDetourInput>) -> Result<String, String> {
+        let mut store = self.open()?;
+        let session = self.caller(&store, "start_detour", &args.raw)?;
+        let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        let started = tangent::start_detour(
+            &mut store,
+            &StartRequest {
+                session_id: session.session_id.clone(),
+                reason: input.reason.clone(),
+                resume_cue: input.resume_cue.clone(),
+                blocks: input.blocks.clone(),
+                actor: Actor::default(),
+            },
+        )
+        .map_err(msg)?;
+        let d = &started.detour;
+        let head = format!("Detour {} opened: {}.", d.label(), d.reason);
+        Ok(match &started.suspended {
+            Some(item) => {
+                let what =
+                    tangent::item_display(store.conn(), &session.repo_id, item).map_err(msg)?;
+                format!(
+                    "{head} Suspended {what} — on return: {}",
+                    sentence(&item.resume_cue)
+                )
+            }
+            None => format!(
+                "{head} Nothing to suspend (no active task); close it with close_detour when done."
+            ),
+        })
+    }
+
+    fn do_close_detour(&self, args: &Args<CloseDetourInput>) -> Result<String, String> {
+        let mut store = self.open()?;
+        let session = self.caller(&store, "close_detour", &args.raw)?;
+        let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        let closed = tangent::close_detour(
+            &mut store,
+            &CloseRequest {
+                session_id: session.session_id.clone(),
+                detour: input.detour.clone(),
+                outcome: input.outcome,
+                note: input.note.clone(),
+                actor: Actor::default(),
+            },
+        )
+        .map_err(msg)?;
+        if !closed.was_focus {
+            return Ok(format!(
+                "Detour {} closed. Continue with your current work.",
+                closed.detour.label()
+            ));
+        }
+        Ok(match &closed.resumed {
+            Some(item) => {
+                let what =
+                    tangent::item_display(store.conn(), &session.repo_id, item).map_err(msg)?;
+                format!(
+                    "Detour closed. Return to {what}. On return: {}",
+                    sentence(&item.resume_cue)
+                )
+            }
+            None => "Detour closed. No suspended item; continue with your task.".to_string(),
+        })
+    }
+
+    fn do_resume(&self, args: &Args<ResumeInput>) -> Result<String, String> {
+        let mut store = self.open()?;
+        let session = self.caller(&store, "resume", &args.raw)?;
+        let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        let item = tangent::resume(
+            &mut store,
+            &session.session_id,
+            &input.item_id,
+            &Actor::default(),
+        )
+        .map_err(msg)?;
+        let what = tangent::item_display(store.conn(), &session.repo_id, &item).map_err(msg)?;
+        Ok(format!(
+            "Resumed {what}. On return: {}",
+            sentence(&item.resume_cue)
+        ))
+    }
+
+    fn do_label_unit(&self, args: &Args<LabelUnitInput>) -> Result<String, String> {
+        let mut store = self.open()?;
+        let session = self.caller(&store, "label_unit", &args.raw)?;
+        let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        let config = Config::load(&self.home.config_path()).unwrap_or_default();
+        let th = tangent::thresholds(store.conn(), &session.repo_id, &config).map_err(msg)?;
+        let unit_no = tangent::label_unit(
+            &mut store,
+            &LabelRequest {
+                session_id: session.session_id.clone(),
+                unit_no: None,
+                label: input.label,
+                source: LabelSource::Agent,
+                why: Some(input.why.clone()),
+            },
+            &th,
+            &Actor::default(),
+        )
+        .map_err(msg)?;
+        Ok(format!(
+            "Labelled unit {unit_no} as {}.",
+            input.label.display()
+        ))
+    }
+
+    fn do_promote_detour(&self, args: &Args<PromoteDetourInput>) -> Result<String, String> {
+        let mut store = self.open()?;
+        let session = self.caller(&store, "promote_detour", &args.raw)?;
+        let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        let out = tangent::promote_detour(
+            &mut store,
+            &session.session_id,
+            &input.parent,
+            &input.title,
+            input.estimate_min,
+            &Actor::default(),
+        )
+        .map_err(msg)?;
+        Ok(format!(
+            "Detour {} is now task {}.",
+            out.detour.label(),
+            out.task_id
+        ))
     }
 
     fn do_status(&self, args: &Args<StatusInput>) -> Result<String, String> {
@@ -311,6 +561,26 @@ fn agent_status(store: &Store, s: &Session) -> bridge_screen_core::error::Result
             let _ = writeln!(out, "Active task: {id} {title}");
         }
         None => out.push_str("Active task: none — claim one with claim_task.\n"),
+    }
+    let open = tangent::open_detours(conn, &s.session_id)?;
+    if !open.is_empty() {
+        let list: Vec<String> = open
+            .iter()
+            .map(|d| {
+                let current = s.current_detour.as_deref() == Some(d.detour_id.as_str());
+                format!(
+                    "{} {}{}",
+                    d.label(),
+                    d.reason,
+                    if current { " (current)" } else { "" }
+                )
+            })
+            .collect();
+        let _ = writeln!(out, "Open detours: {}", list.join(" · "));
+    }
+    for item in tangent::suspended(conn, &s.session_id)? {
+        let what = tangent::item_display(conn, &s.repo_id, &item)?;
+        let _ = writeln!(out, "Suspended: {what} — on return: {}", item.resume_cue);
     }
     match get_node(conn, &s.repo_id, "G")?.filter(|g| g.status != NodeStatus::Dropped) {
         Some(goal) => {

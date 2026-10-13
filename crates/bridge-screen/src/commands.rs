@@ -3,12 +3,15 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use bridge_screen_core::config::Config;
+use bridge_screen_core::navigator::{self, Channel};
 use bridge_screen_core::paths::Home;
 use bridge_screen_core::plan::{EditContext, PlanOp, load_tree, plan_edit, render_text};
 use bridge_screen_core::repo;
-use bridge_screen_core::store::{Actor, OWNER_SESSION, Store};
+use bridge_screen_core::session::{self, Session};
+use bridge_screen_core::store::{Actor, EventDraft, OWNER_SESSION, Store, append_in};
+use bridge_screen_core::tangent::{self, Label, LabelRequest, LabelSource, NavState, OwnerAction};
 
-use crate::cli::{Cli, Command, PlanCommand};
+use crate::cli::{Cli, Command, ConfigCommand, DriftAnswer, LabelArg, PlanCommand};
 
 pub fn run(cli: Cli) -> Result<()> {
     match cli.command {
@@ -25,12 +28,30 @@ pub fn run(cli: Cli) -> Result<()> {
                     file,
                 },
         } => plan_edit_cmd(&dir, reason, replan, file.as_deref()),
+        Command::Drift {
+            session,
+            answer,
+            parent,
+            title,
+            estimate,
+        } => drift(&session, answer, parent.zip(title), estimate),
+        Command::Label {
+            session,
+            unit_no,
+            label,
+        } => label_cmd(&session, unit_no, label),
         Command::Rebuild => rebuild(),
-        Command::Config => config(),
+        Command::Config { action: None, dir } => config(&dir),
+        Command::Config {
+            action: Some(ConfigCommand::ResetDrift),
+            dir,
+        } => reset_drift(&dir),
         Command::Mcp => crate::mcp::run(),
         Command::Status => {
-            let store = open_store(&Home::resolve()?)?;
-            print!("{}", crate::status::render(&store)?);
+            let home = Home::resolve()?;
+            let store = open_store(&home)?;
+            let cfg = Config::load(&home.config_path())?;
+            print!("{}", crate::status::render(&store, &cfg)?);
             Ok(())
         }
         Command::Hook { .. } => unreachable!("main handles hooks before dispatching commands"),
@@ -120,9 +141,179 @@ fn rebuild() -> Result<()> {
     Ok(())
 }
 
-fn config() -> Result<()> {
+fn config(dir: &Path) -> Result<()> {
     let home = Home::resolve()?;
     let cfg = Config::load(&home.config_path())?;
     print!("{}", cfg.to_toml()?);
+    // Outside a repo there are no tuned values to show.
+    if let Ok(repo) = repo::identify(dir) {
+        let store = open_store(&home)?;
+        if let Some(line) = tuned_line(&store, &repo.id, &repo.name, &cfg)? {
+            println!("{line}");
+        }
+    }
+    Ok(())
+}
+
+/// `# tuned for shop: drift_lower = 0.35, …`, if the repo has tuned values.
+pub fn tuned_line(
+    store: &Store,
+    repo_id: &str,
+    name: &str,
+    cfg: &Config,
+) -> Result<Option<String>> {
+    let th = tangent::thresholds(store.conn(), repo_id, cfg)?;
+    if th == tangent::Thresholds::from_config(cfg) {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "# tuned for {name}: drift_lower = {}, drift_upper = {}, tolerance_pct = {}",
+        th.lower, th.upper, th.tolerance_pct
+    )))
+}
+
+fn reset_drift(dir: &Path) -> Result<()> {
+    let repo = repo::identify(dir)?;
+    let home = Home::resolve()?;
+    let mut store = open_store(&home)?;
+    store.register_repo(&repo)?;
+    let cfg = Config::load(&home.config_path())?;
+    let changes = store.write(|tx| bridge_screen_core::tuning::reset(tx, &repo.id, &cfg))?;
+    if changes.is_empty() {
+        println!("Drift tuning for {} is already at the defaults.", repo.name);
+    } else {
+        let parts: Vec<String> = changes
+            .iter()
+            .map(|c| format!("{} {} → {}", c.key, c.old, c.new))
+            .collect();
+        println!(
+            "Reset drift tuning for {}: {}.",
+            repo.name,
+            parts.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// The live session whose id starts with `prefix`.
+fn find_session(store: &Store, prefix: &str) -> Result<Session> {
+    let found: Vec<Session> = session::list_live(store.conn(), None)?
+        .into_iter()
+        .filter(|s| s.session_id.starts_with(prefix))
+        .collect();
+    match found.len() {
+        0 => anyhow::bail!("no live session starts with {prefix}"),
+        1 => Ok(found.into_iter().next().expect("one session")),
+        _ => {
+            let ids: Vec<&str> = found.iter().map(|s| s.session_id.as_str()).collect();
+            anyhow::bail!("session prefix {prefix} is ambiguous: {}", ids.join(", "))
+        }
+    }
+}
+
+/// Re-check the session's tolerance band after an owner action (state events only).
+fn recheck(store: &mut Store, config: &Config, session_id: &str) -> Result<()> {
+    store.write(|tx| {
+        let Some(s) = session::get(tx, session_id)? else {
+            return Ok(());
+        };
+        let th = tangent::thresholds(tx, &s.repo_id, config)?;
+        let step = navigator::nav_step(
+            tx,
+            session_id,
+            Channel::ToolResult,
+            &th,
+            jiff::Timestamp::now(),
+        )?;
+        for draft in step.events {
+            append_in(tx, draft)?;
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
+fn drift(
+    prefix: &str,
+    answer: DriftAnswer,
+    task: Option<(String, String)>,
+    estimate: Option<u32>,
+) -> Result<()> {
+    let home = Home::resolve()?;
+    let mut store = open_store(&home)?;
+    let config = Config::load(&home.config_path())?;
+    let s = find_session(&store, prefix)?;
+    // An answer needs a question: the session is (or was last seen) outside tolerance.
+    let th = tangent::thresholds(store.conn(), &s.repo_id, &config)?;
+    let live = tangent::evaluate(store.conn(), &s, &th, jiff::Timestamp::now())?.state;
+    if live == NavState::Green && s.nav_state == NavState::Green {
+        anyhow::bail!(
+            "{} is inside its tolerance band; there is no drift to answer",
+            s.session_id
+        );
+    }
+    let mut reply = format!(
+        "Told {}: {}.",
+        s.session_id,
+        answer.as_str().replace('_', " ")
+    );
+    if answer == DriftAnswer::MakeTask {
+        let (parent, title) = task.context("make-task needs --parent and --title")?;
+        let out = tangent::promote_detour(
+            &mut store,
+            &s.session_id,
+            &parent,
+            &title,
+            estimate,
+            &Actor::default(),
+        )?;
+        reply = format!(
+            "Detour {} is now task {}, claimed by {}.",
+            out.detour.label(),
+            out.task_id,
+            s.session_id
+        );
+    }
+    let data = OwnerAction {
+        action: "drift".into(),
+        answer: Some(answer.as_str().into()),
+        target: Some(s.session_id.clone()),
+    };
+    store.append(EventDraft::new(
+        &s.repo_id,
+        OWNER_SESSION,
+        "owner_action",
+        serde_json::to_value(data)?,
+    ))?;
+    recheck(&mut store, &config, &s.session_id)?;
+    println!("{reply}");
+    Ok(())
+}
+
+fn label_cmd(prefix: &str, unit_no: i64, label: LabelArg) -> Result<()> {
+    let home = Home::resolve()?;
+    let mut store = open_store(&home)?;
+    let config = Config::load(&home.config_path())?;
+    let s = find_session(&store, prefix)?;
+    let label = match label {
+        LabelArg::OnTask => Label::OnTask,
+        LabelArg::Detour => Label::Detour,
+        LabelArg::Drift => Label::Drift,
+    };
+    let th = tangent::thresholds(store.conn(), &s.repo_id, &config)?;
+    let req = LabelRequest {
+        session_id: s.session_id.clone(),
+        unit_no: Some(unit_no),
+        label,
+        source: LabelSource::Owner,
+        why: None,
+    };
+    tangent::label_unit(&mut store, &req, &th, &Actor::default())?;
+    recheck(&mut store, &config, &s.session_id)?;
+    println!(
+        "Labelled unit {unit_no} of {} as {}.",
+        s.session_id,
+        label.display()
+    );
     Ok(())
 }

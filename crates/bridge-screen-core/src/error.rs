@@ -23,6 +23,9 @@ pub enum Error {
     NoHome,
     #[error("{0}")]
     Claim(String),
+    /// A detour, resume or label request the agent or owner can fix.
+    #[error("{0}")]
+    Tangent(String),
     #[error("invalid event: {0}")]
     BadEvent(String),
     #[error(transparent)]

@@ -34,6 +34,11 @@ fn dump(store: &Store) -> Vec<String> {
         ("sessions", "session_id"),
         ("units", "session_id, unit_no"),
         ("task_time", "repo_id, task_id"),
+        ("detours", "detour_id"),
+        ("suspended_items", "item_id"),
+        ("drift_samples", "repo_id, unit_ref, ts, label"),
+        ("repo_tuning", "repo_id"),
+        ("notes_sent", "session_id, unit_no, ts, kind"),
     ] {
         let mut stmt = store
             .conn()
@@ -307,6 +312,180 @@ fn rebuild_reproduces_session_views() {
     assert!(before.iter().any(|r| r.starts_with("units: ")));
     assert!(before.iter().any(|r| r.starts_with("sessions: ")));
     assert_eq!(s.rebuild().unwrap().events, events);
+    assert_eq!(dump(&s), before);
+}
+
+/// The scripted detour session for [`rebuild_reproduces_tangent_views`].
+#[allow(clippy::too_many_lines)] // one event per line, as data
+fn tangent_script() -> Vec<(&'static str, i64, &'static str, Value)> {
+    vec![
+        (
+            "s1",
+            0,
+            "session_started",
+            json!({"cwd": "/a", "source": "startup"}),
+        ),
+        (
+            "s1",
+            1,
+            "task_claimed",
+            json!({"task_id": "1", "mode": "auto", "confidence": 0.9}),
+        ),
+        ("s1", 2, "prompt", json!({"chars": 3})),
+        (
+            "s1",
+            5,
+            "detour_opened",
+            json!({"detour_id": "D1", "reason": "broken build",
+            "blocks": "1", "resume_cue": "rerun test x"}),
+        ),
+        (
+            "s1",
+            5,
+            "item_suspended",
+            json!({"item_id": "I1", "kind": "task", "ref_id": "1",
+            "resume_cue": "rerun test x", "by_detour": "D1"}),
+        ),
+        ("s1", 60, "unit_stopped", json!({"unit_no": 1})),
+        (
+            "s1",
+            60,
+            "unit_labeled",
+            json!({"unit_no": 1, "label": "detour", "source": "declared"}),
+        ),
+        (
+            "s1",
+            61,
+            "note_sent",
+            json!({"unit_no": 1, "kind": "return_to_task",
+            "channel": "tool_result", "state_key": "ret:D1"}),
+        ),
+        ("s1", 70, "prompt", json!({"chars": 3})),
+        (
+            "s1",
+            75,
+            "detour_opened",
+            json!({"detour_id": "D2", "reason": "flaky dep",
+            "blocks": "1", "resume_cue": "back to D1"}),
+        ),
+        (
+            "s1",
+            75,
+            "item_suspended",
+            json!({"item_id": "I2", "kind": "detour", "ref_id": "D1",
+            "resume_cue": "back to D1", "by_detour": "D2"}),
+        ),
+        (
+            "s1",
+            90,
+            "nav_state_changed",
+            json!({"from": "green", "to": "amber", "away_secs": 900}),
+        ),
+        (
+            "s1",
+            100,
+            "unit_stopped",
+            json!({"unit_no": 2, "score": 0.8}),
+        ),
+        (
+            "s1",
+            100,
+            "drift_flagged",
+            json!({"unit_no": 2, "score": 0.8}),
+        ),
+        (
+            "s1",
+            101,
+            "unit_labeled",
+            json!({"unit_no": 2, "label": "on_task", "source": "agent",
+            "heuristic": "drift"}),
+        ),
+        (
+            "s1",
+            102,
+            "detour_closed",
+            json!({"detour_id": "D2", "outcome": "done"}),
+        ),
+        ("s1", 102, "item_resumed", json!({"item_id": "I2"})),
+        (
+            "s1",
+            103,
+            "detour_promoted",
+            json!({"detour_id": "D1", "task_id": "2"}),
+        ),
+        (
+            "owner",
+            110,
+            "owner_action",
+            json!({"action": "drift", "answer": "stop", "target": "s1"}),
+        ),
+        ("s1", 120, "prompt", json!({"chars": 3})),
+        (
+            "s1",
+            150,
+            "unit_stopped",
+            json!({"unit_no": 3, "score": 0.1}),
+        ),
+        (
+            "s1",
+            150,
+            "unit_labeled",
+            json!({"unit_no": 3, "label": "drift", "source": "owner",
+            "score": 0.1, "heuristic": "on_task"}),
+        ),
+        (
+            "owner",
+            160,
+            "config_changed",
+            json!({"scope": "repo", "key": "drift_upper",
+            "old": 0.7, "new": 0.65, "samples": 20}),
+        ),
+        ("owner", 170, "tuning_ran", json!({"samples": 40})),
+    ]
+}
+
+/// A session that claims a task, opens nested detours, labels units, gets flagged, hears
+/// from the owner, and has its thresholds tuned.
+#[test]
+fn rebuild_reproduces_tangent_views() {
+    let mut s = Store::open_in_memory().unwrap();
+    plan_edit(
+        &mut s,
+        &ctx("a", false),
+        &[
+            add(None, NodeKind::Goal, "goal"),
+            add(Some("G"), NodeKind::Task, "schema"),
+        ],
+    )
+    .unwrap();
+    let t0: Timestamp = "2026-10-13T09:00:00Z".parse().unwrap();
+    let script = tangent_script();
+    s.write(|tx| {
+        for (session, secs, kind, data) in script {
+            let draft = EventDraft::new("a", session, kind, data);
+            append_in_at(tx, draft, t0 + SignedDuration::from_secs(secs))?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let before = dump(&s);
+    for table in [
+        "detours",
+        "suspended_items",
+        "drift_samples",
+        "repo_tuning",
+        "notes_sent",
+    ] {
+        let prefix = format!("{table}: ");
+        assert!(before.iter().any(|r| r.starts_with(&prefix)), "{table}");
+    }
+    assert!(
+        before
+            .iter()
+            .any(|r| r.starts_with("repo_tuning: ") && r.ends_with("|Integer(40)")),
+        "{before:?}"
+    );
+    s.rebuild().unwrap();
     assert_eq!(dump(&s), before);
 }
 

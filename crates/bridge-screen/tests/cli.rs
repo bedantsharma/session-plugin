@@ -240,3 +240,47 @@ fn replan_needs_a_reason() {
     );
     assert_eq!(env.ok(&["rebuild"], None), "rebuilt views from 5 events\n");
 }
+
+#[test]
+fn config_shows_and_resets_drift_tuning() {
+    use bridge_screen_core::store::{EventDraft, Store};
+    let env = Env::new();
+    let repo = bridge_screen_core::repo::identify(env.repo.path()).unwrap();
+    {
+        std::fs::create_dir_all(env.home.path()).unwrap();
+        let mut s = Store::open(&env.home.path().join("bridge-screen.db")).unwrap();
+        s.register_repo(&repo).unwrap();
+        s.append(EventDraft::new(
+            &repo.id,
+            "owner",
+            "config_changed",
+            serde_json::json!({"scope": "repo", "key": "drift_lower", "old": 0.3, "new": 0.4,
+                               "samples": 20}),
+        ))
+        .unwrap();
+    }
+    let out = env.ok(&["config"], None);
+    assert!(
+        out.contains(&format!(
+            "# tuned for {}: drift_lower = 0.4, drift_upper = 0.7, tolerance_pct = 20",
+            repo.name
+        )),
+        "{out}"
+    );
+    assert!(out.contains("drift_lower = 0.3"), "{out}");
+    assert_eq!(
+        env.ok(&["config", "reset-drift"], None),
+        format!(
+            "Reset drift tuning for {}: drift_lower 0.4 → 0.3.\n",
+            repo.name
+        )
+    );
+    assert_eq!(
+        env.ok(&["config", "reset-drift"], None),
+        format!(
+            "Drift tuning for {} is already at the defaults.\n",
+            repo.name
+        )
+    );
+    assert!(!env.ok(&["config"], None).contains("# tuned"));
+}

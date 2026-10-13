@@ -30,10 +30,38 @@ pub enum Command {
     },
     /// Live sessions per project: state, active task, units and active minutes.
     Status,
+    /// Answer a drift question about a session (spec §7.3).
+    Drift {
+        /// A unique prefix of a live session id (as `status` shows it).
+        session: String,
+        answer: DriftAnswer,
+        /// make-task: the new task's parent (milestone, goal, or task for a subtask).
+        #[arg(long, required_if_eq("answer", "make-task"))]
+        parent: Option<String>,
+        /// make-task: the new task's title.
+        #[arg(long, required_if_eq("answer", "make-task"))]
+        title: Option<String>,
+        /// make-task: estimate in agent-minutes.
+        #[arg(long)]
+        estimate: Option<u32>,
+    },
+    /// Set a unit's label: on-task, detour or drift (overrides the agent and heuristic).
+    Label {
+        /// A unique prefix of a live session id.
+        session: String,
+        unit_no: i64,
+        label: LabelArg,
+    },
     /// Rebuild all views from the event log.
     Rebuild,
-    /// Print the effective configuration.
-    Config,
+    /// Print the effective configuration (and this repo's tuned drift thresholds).
+    Config {
+        #[command(subcommand)]
+        action: Option<ConfigCommand>,
+        /// Any directory inside the repo.
+        #[arg(short = 'C', long = "dir", default_value = ".", global = true)]
+        dir: PathBuf,
+    },
     /// Serve the agent's tools over MCP (stdio). Claude Code starts this.
     Mcp,
     /// Handle a Claude Code hook event (reads the hook JSON on stdin). Always exits 0.
@@ -69,4 +97,38 @@ pub enum PlanCommand {
         #[arg(long)]
         file: Option<PathBuf>,
     },
+}
+
+/// The owner's answer to a drift question.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum DriftAnswer {
+    /// Keep going: the away time so far is acknowledged.
+    Continue,
+    /// Promote the current detour to a task (needs --parent and --title).
+    MakeTask,
+    /// Stop the detour and return to the task.
+    Stop,
+}
+
+impl DriftAnswer {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Continue => "continue",
+            Self::MakeTask => "make_task",
+            Self::Stop => "stop",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum LabelArg {
+    OnTask,
+    Detour,
+    Drift,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigCommand {
+    /// Put this repo's auto-tuned drift thresholds back to the config defaults.
+    ResetDrift,
 }

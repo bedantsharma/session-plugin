@@ -150,6 +150,7 @@ fn session_flow_records_events() {
             "tool_intent",
             "file_changed",
             "unit_stopped",
+            "unit_labeled",
             "session_ended"
         ]
     );
@@ -166,7 +167,8 @@ fn session_flow_records_events() {
         all[4].data["summary"],
         "Added validation to the login form and a unit test."
     );
-    assert_eq!(all[5].data["reason"], "prompt_input_exit");
+    assert_eq!(all[5].data["label"], "on_task");
+    assert_eq!(all[6].data["reason"], "prompt_input_exit");
     let u = units(&env, "s1");
     assert_eq!(u.len(), 1);
     assert_eq!(u[0].files, vec!["src/login.rs"]);
@@ -223,7 +225,8 @@ fn parallel_sessions_stay_separate() {
         .filter(|e| e.session_id == "A")
         .map(|e| e.seq)
         .collect();
-    assert_eq!(seqs, (1..=5).collect::<Vec<_>>());
+    // session_started, prompt, 2 × file_changed, unit_stopped, unit_labeled
+    assert_eq!(seqs, (1..=6).collect::<Vec<_>>());
 }
 
 #[test]
@@ -279,7 +282,8 @@ fn known_session_does_not_run_git() {
             "tool_intent",
             "file_changed",
             "needs_owner",
-            "unit_stopped"
+            "unit_stopped",
+            "unit_labeled"
         ]
     );
 }
@@ -486,79 +490,105 @@ fn claim_reminder_cadence() {
     assert!(!stored.contains("Add the login form validation"));
 }
 
+/// 50 sessions and 100k events in `env`'s database, like a long-used install.
+fn big_database(env: &Env) -> bridge_screen_core::repo::RepoInfo {
+    use bridge_screen_core::store::{EventDraft, append_in};
+
+    const SESSIONS: usize = 50;
+    const EVENTS: usize = 100_000;
+
+    let repo = bridge_screen_core::repo::identify(env.repo.path()).unwrap();
+    let mut store = Store::open(&env.db_path()).unwrap();
+    store.register_repo(&repo).unwrap();
+    let per_session = EVENTS / SESSIONS;
+    for n in 0..SESSIONS {
+        let sid = format!("perf-session-{n:02}");
+        store
+            .write(|tx| {
+                let ev = |kind: &str, data: Value| EventDraft::new(&repo.id, &sid, kind, data);
+                append_in(
+                    tx,
+                    ev(
+                        "session_started",
+                        json!({"cwd": env.repo_path(), "source": "startup"}),
+                    ),
+                )?;
+                let mut written = 1;
+                let mut unit = 0;
+                while written < per_session {
+                    unit += 1;
+                    append_in(
+                        tx,
+                        ev(
+                            "prompt",
+                            json!({"prompt_id": format!("p{unit}"), "chars": 80}),
+                        ),
+                    )?;
+                    for f in 0..6 {
+                        let files = json!([format!("src/mod{}/file{f}.rs", unit % 20)]);
+                        append_in(
+                            tx,
+                            ev("tool_intent", json!({"tool": "Edit", "files": files})),
+                        )?;
+                        append_in(
+                            tx,
+                            ev("file_changed", json!({"tool": "Edit", "files": files})),
+                        )?;
+                    }
+                    append_in(
+                        tx,
+                        ev("unit_stopped", json!({"unit_no": unit, "summary": "done"})),
+                    )?;
+                    written += 14;
+                }
+                Ok(())
+            })
+            .unwrap();
+    }
+    let total: i64 = store
+        .conn()
+        .query_row("SELECT count(*) FROM events", [], |r| r.get(0))
+        .unwrap();
+    assert!(total >= i64::try_from(EVENTS).unwrap(), "{total}");
+    repo
+}
+
+/// min / p50 / p95 / max of 200 timings, printed; p95 must stay under 50 ms.
+fn report(label: &str, mut times: Vec<std::time::Duration>) {
+    use std::time::Duration;
+    assert_eq!(times.len(), 200);
+    times.sort();
+    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+    let p95 = times[189];
+    eprintln!(
+        "{label} over {} calls: min {:.1} ms, p50 {:.1} ms, p95 {:.1} ms, max {:.1} ms",
+        times.len(),
+        ms(times[0]),
+        ms(times[99]),
+        ms(p95),
+        ms(times[199])
+    );
+    assert!(
+        p95 < Duration::from_millis(50),
+        "{label}: p95 {:.1} ms",
+        ms(p95)
+    );
+}
+
 /// Hook latency on a large database (spec §11.1, §14): p95 must stay under 50 ms.
 /// Release build only; run with
 /// `cargo test --release -p bridge-screen --test hooks -- --ignored hook_latency --nocapture`.
 #[test]
 #[ignore = "perf check: run on demand with --release"]
 fn hook_latency() {
-    use bridge_screen_core::store::{EventDraft, append_in};
-    use std::time::{Duration, Instant};
-
-    const SESSIONS: usize = 50;
-    const EVENTS: usize = 100_000;
+    use std::time::Instant;
 
     let env = Env::new();
-    let repo = bridge_screen_core::repo::identify(env.repo.path()).unwrap();
-    {
-        let mut store = Store::open(&env.db_path()).unwrap();
-        store.register_repo(&repo).unwrap();
-        let per_session = EVENTS / SESSIONS;
-        for n in 0..SESSIONS {
-            let sid = format!("perf-session-{n:02}");
-            store
-                .write(|tx| {
-                    let ev = |kind: &str, data: Value| EventDraft::new(&repo.id, &sid, kind, data);
-                    append_in(
-                        tx,
-                        ev(
-                            "session_started",
-                            json!({"cwd": env.repo_path(), "source": "startup"}),
-                        ),
-                    )?;
-                    let mut written = 1;
-                    let mut unit = 0;
-                    while written < per_session {
-                        unit += 1;
-                        append_in(
-                            tx,
-                            ev(
-                                "prompt",
-                                json!({"prompt_id": format!("p{unit}"), "chars": 80}),
-                            ),
-                        )?;
-                        for f in 0..6 {
-                            let files = json!([format!("src/mod{}/file{f}.rs", unit % 20)]);
-                            append_in(
-                                tx,
-                                ev("tool_intent", json!({"tool": "Edit", "files": files})),
-                            )?;
-                            append_in(
-                                tx,
-                                ev("file_changed", json!({"tool": "Edit", "files": files})),
-                            )?;
-                        }
-                        append_in(
-                            tx,
-                            ev("unit_stopped", json!({"unit_no": unit, "summary": "done"})),
-                        )?;
-                        written += 14;
-                    }
-                    Ok(())
-                })
-                .unwrap();
-        }
-        let total: i64 = store
-            .conn()
-            .query_row("SELECT count(*) FROM events", [], |r| r.get(0))
-            .unwrap();
-        assert!(total >= i64::try_from(EVENTS).unwrap(), "{total}");
-    }
-
+    big_database(&env);
     let session = "perf-session-07";
     env.hook("user-prompt-submit", session);
     let payload = common::fixture("post-tool-use", session, &env.repo_path());
-    let mut times: Vec<Duration> = (0..200)
+    let times = (0..200)
         .map(|_| {
             let start = Instant::now();
             let out = env.hook_raw("post-tool-use", &payload);
@@ -568,19 +598,115 @@ fn hook_latency() {
         })
         .collect();
     assert_eq!(env.log(), "");
-    times.sort();
-    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
-    let p50 = times[99];
-    let p95 = times[189];
-    eprintln!(
-        "hook post-tool-use over {} calls: min {:.1} ms, p50 {:.1} ms, p95 {:.1} ms, max {:.1} ms",
-        times.len(),
-        ms(times[0]),
-        ms(p50),
-        ms(p95),
-        ms(times[199])
+    report("hook post-tool-use", times);
+}
+
+/// The Stop path scores the unit against the plan and its history: a unit of 30 files on
+/// a plan of 300 nodes, on the same large database.
+#[test]
+#[ignore = "perf check: run on demand with --release"]
+fn hook_latency_stop_path() {
+    use bridge_screen_core::plan::{EditContext, NodeKind, PlanOp, plan_edit};
+    use bridge_screen_core::store::{Actor, EventDraft, append_in};
+    use std::time::Instant;
+
+    let env = Env::new();
+    let repo = big_database(&env);
+    let mut ops = vec![PlanOp::AddNode {
+        parent: None,
+        kind: NodeKind::Goal,
+        title: "Ship the shop".into(),
+        intent: Some("People can buy things and see their orders.".into()),
+        estimate_min: None,
+        expected_files: vec![],
+    }];
+    for m in 1..=10 {
+        ops.push(PlanOp::AddNode {
+            parent: Some("G".into()),
+            kind: NodeKind::Milestone,
+            title: format!("Milestone {m} storefront"),
+            intent: Some("Part of the shop works end to end.".into()),
+            estimate_min: None,
+            expected_files: vec![],
+        });
+        for t in 1..=29 {
+            ops.push(PlanOp::AddNode {
+                parent: Some(m.to_string()),
+                kind: NodeKind::Task,
+                title: format!("Task {t} of milestone {m} checkout"),
+                intent: None,
+                estimate_min: Some(30),
+                expected_files: vec![format!("src/mod{m}/task{t}.rs")],
+            });
+        }
+    }
+    let mut store = Store::open(&env.db_path()).unwrap();
+    plan_edit(
+        &mut store,
+        &EditContext {
+            repo_id: repo.id.clone(),
+            session_id: "owner".into(),
+            actor: Actor::default(),
+            reason: None,
+            replan: false,
+        },
+        &ops,
+    )
+    .unwrap();
+    let nodes: i64 = store
+        .conn()
+        .query_row("SELECT count(*) FROM plan_nodes", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(nodes, 301);
+    let session = "perf-session-07";
+    claim_for(&env, session, "3.5");
+
+    let mut payload = common::fixture_json("stop", session, &env.repo_path());
+    payload["last_assistant_message"] = json!(
+        "Wired the checkout task into the storefront, added tests for the order summary and fixed the cart total rounding."
     );
-    assert!(p95 < Duration::from_millis(50), "p95 {:.1} ms", ms(p95));
+    let payload = payload.to_string();
+    // The first exec of a freshly built binary costs ~250 ms on macOS (the OS checks it
+    // once per launch context, even for `--version`); it isn't the hook's work.
+    assert!(env.run(&["--version"], "").status.success());
+    let times = (0..200)
+        .map(|i| {
+            // A fresh unit of 30 changed files, recorded directly to keep the setup quick.
+            store
+                .write(|tx| {
+                    let ev =
+                        |kind: &str, data: Value| EventDraft::new(&repo.id, session, kind, data);
+                    append_in(tx, ev("prompt", json!({"chars": 40})))?;
+                    for f in 0..30 {
+                        let file = if f % 3 == 0 {
+                            format!("docs/notes{i}_{f}.md")
+                        } else {
+                            format!("src/mod3/part{f}.rs")
+                        };
+                        append_in(
+                            tx,
+                            ev("file_changed", json!({"tool": "Edit", "files": [file]})),
+                        )?;
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            let start = Instant::now();
+            env.hook_raw("stop", &payload);
+            start.elapsed()
+        })
+        .collect();
+    assert_eq!(env.log(), "");
+    let labelled: i64 = store
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM units WHERE session_id = ?1 AND drift_score IS NOT NULL",
+            [session],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(labelled, 200, "every unit was scored");
+    report("hook stop (30 files, 300-node plan)", times);
 }
 
 #[test]
