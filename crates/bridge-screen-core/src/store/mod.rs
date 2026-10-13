@@ -1,15 +1,20 @@
 //! The SQLite store: the append-only event log plus view tables (spec §5–6).
 
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{
+    Connection, ErrorCode, OptionalExtension, Transaction, TransactionBehavior, params,
+};
 
 use crate::error::{Error, Result};
 use crate::repo::RepoInfo;
 
 pub use event::{Actor, EVENT_VERSION, Event, EventDraft, OWNER_SESSION, append_in, read_all};
 pub use schema::SCHEMA_VERSION;
+
+/// How long a connection waits for another writer before giving up (spec §6.2).
+const BUSY_TIMEOUT: Duration = Duration::from_millis(2000);
 
 pub struct Store {
     conn: Connection,
@@ -31,8 +36,8 @@ impl Store {
     }
 
     fn init(mut conn: Connection) -> Result<Self> {
-        conn.busy_timeout(Duration::from_millis(2000))?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        enable_wal(&conn)?;
         migrate(&mut conn)?;
         Ok(Self { conn })
     }
@@ -88,24 +93,56 @@ impl Store {
     }
 }
 
-fn migrate(conn: &mut Connection) -> Result<()> {
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let has_meta: i64 = tx.query_row(
+/// Switch the database to WAL. Changing the journal mode needs an exclusive lock, and
+/// SQLite reports `SQLITE_BUSY` for it without consulting the busy handler, so several
+/// processes opening a brand-new database at once must retry here themselves.
+fn enable_wal(conn: &Connection) -> Result<()> {
+    let deadline = Instant::now() + BUSY_TIMEOUT;
+    loop {
+        let mode: String = conn.pragma_query_value(None, "journal_mode", |r| r.get(0))?;
+        if mode.eq_ignore_ascii_case("wal") || mode.eq_ignore_ascii_case("memory") {
+            return Ok(());
+        }
+        match conn.pragma_update(None, "journal_mode", "WAL") {
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == ErrorCode::DatabaseBusy && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            other => return other.map_err(Error::from),
+        }
+    }
+}
+
+/// The schema version recorded in `meta`, or 0 for a database without one.
+fn schema_version(conn: &Connection) -> Result<i64> {
+    let has_meta: i64 = conn.query_row(
         "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'meta'",
         [],
         |r| r.get(0),
     )?;
-    let current: i64 = if has_meta > 0 {
-        tx.query_row(
+    if has_meta == 0 {
+        return Ok(0);
+    }
+    Ok(conn
+        .query_row(
             "SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'schema_version'",
             [],
             |r| r.get(0),
         )
         .optional()?
-        .unwrap_or(0)
-    } else {
-        0
-    };
+        .unwrap_or(0))
+}
+
+fn migrate(conn: &mut Connection) -> Result<()> {
+    // Fast path for every open after the first: a plain read, no write lock, so many
+    // hook processes starting at once don't queue behind each other.
+    if schema_version(conn)? == SCHEMA_VERSION {
+        return Ok(());
+    }
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // Re-read under the write lock: another process may have migrated meanwhile.
+    let current = schema_version(&tx)?;
     if current > SCHEMA_VERSION {
         return Err(Error::SchemaTooNew {
             found: current,
