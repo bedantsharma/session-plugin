@@ -11,7 +11,7 @@ what happens; your part is to say **which task** you are on, **declare tangents*
 keep the plan true. It never blocks your work.
 
 Tools (MCP server `bridge-screen`): `claim_task`, `plan_edit`, `status`, `start_detour`,
-`close_detour`, `resume`, `promote_detour`.
+`close_detour`, `resume`, `promote_detour`, `label_unit`.
 
 ## 1. Claim your task first
 
@@ -52,7 +52,15 @@ tangent to another agent; declare it and do it:
 - `status` lists suspended items; `resume` goes back to any of them (`"1.2"` or `"D1"`).
 - A detour that grows into real work: `promote_detour` with a parent and title.
 
-## 4. Check where things stand
+## 4. Labels and navigator notes
+
+Every unit of work is on-task, a detour, or drift (neither advances nor blocks the task).
+When asked, call `label_unit` once with an honest label and a one-line `why` — drift is
+information for the owner, not blame. An **amber** note means you've been away from the
+task longer than its tolerance: continue only if it still blocks the task. **Red** means
+the owner has been flagged; keep going only if essential, and follow any owner answer.
+
+## 5. Check where things stand
 
 `status` shows your task, detours, suspended items with their cues, units and active
 minutes, the goal and the next tasks. The owner can run `/bridge-screen` for all sessions.

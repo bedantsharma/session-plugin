@@ -562,6 +562,26 @@ fn agent_status(store: &Store, s: &Session) -> bridge_screen_core::error::Result
         }
         None => out.push_str("Active task: none — claim one with claim_task.\n"),
     }
+    let open = tangent::open_detours(conn, &s.session_id)?;
+    if !open.is_empty() {
+        let list: Vec<String> = open
+            .iter()
+            .map(|d| {
+                let current = s.current_detour.as_deref() == Some(d.detour_id.as_str());
+                format!(
+                    "{} {}{}",
+                    d.label(),
+                    d.reason,
+                    if current { " (current)" } else { "" }
+                )
+            })
+            .collect();
+        let _ = writeln!(out, "Open detours: {}", list.join(" · "));
+    }
+    for item in tangent::suspended(conn, &s.session_id)? {
+        let what = tangent::item_display(conn, &s.repo_id, &item)?;
+        let _ = writeln!(out, "Suspended: {what} — on return: {}", item.resume_cue);
+    }
     match get_node(conn, &s.repo_id, "G")?.filter(|g| g.status != NodeStatus::Dropped) {
         Some(goal) => {
             let _ = writeln!(out, "Goal: {}", goal.title);

@@ -626,3 +626,26 @@ fn disagreement_is_recorded_not_argued() {
         "{text}"
     );
 }
+
+#[test]
+fn status_lists_detours_and_suspended_items() {
+    let env = claimed_setup();
+    let mut mcp = Mcp::start(&env, "/nonexistent");
+    call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "start_detour",
+        &json!({"reason": "build is broken", "resume_cue": "rerun the login test"}),
+    );
+    let (is_error, text) = call_as(&mut mcp, &env, "s1", "status", &json!({}));
+    assert!(!is_error, "{text}");
+    assert!(
+        text.contains("Open detours: D1 build is broken (current)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Suspended: 1.1 Login form — on return: rerun the login test"),
+        "{text}"
+    );
+}

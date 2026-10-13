@@ -5,9 +5,16 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
 ## Layout
 
 - `crates/bridge-screen-core/` — core library (store, plan, session, navigator, …; spec §4.2)
+  - `tangent/` — detours, suspended items and resume cues, unit labels, away time and the
+    tolerance band (§7.1–7.4); `drift.rs` — the pure drift-score heuristic (§7.2);
+    `navigator.rs` — note candidates, priority, one-note-per-unit and repeat limits, and the
+    Stop/PostToolUse/UserPromptSubmit steps (§7.5); `tuning.rs` — per-repo threshold
+    auto-tuning with guard rails (§7.6)
 - `crates/bridge-screen/` — the single binary: CLI, `hook`, `mcp`, `status`, `ui`
   - `src/hook/` — `bridge-screen hook <event>`: payload parsing, per-event handlers, injected context
-  - `src/mcp.rs` — `bridge-screen mcp`: stdio MCP server (`claim_task`, `plan_edit`, `status`)
+  - `src/hook/nav.rs` — the navigator's part of a hook (label at Stop, tolerance band, notes)
+  - `src/mcp.rs` — `bridge-screen mcp`: stdio MCP server (`claim_task`, `plan_edit`, `status`,
+    `start_detour`, `close_detour`, `resume`, `promote_detour`, `label_unit`)
   - `tests/fixtures/hooks/` — one recorded-style hook payload per event
 - `plugin/` — the Claude Code plugin: `.claude-plugin/plugin.json`, `hooks/hooks.json`,
   `.mcp.json`, `skills/bridge-screen/SKILL.md`, `commands/bridge-screen.md`, and the
@@ -24,8 +31,12 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
 - Hooks: `bridge-screen hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|stop|subagent-stop|pre-compact|notification|session-end>` (hook JSON on stdin; always exits 0, errors go to `~/.bridge-screen/hook-errors.log`)
 - MCP server: `bridge-screen mcp` (stdio; Claude Code starts it through the plugin)
 - Status: `bridge-screen status`; plugin registration: `bridge-screen install [--dev | --no-plugin]`
+- Owner answers: `bridge-screen drift <session-prefix> continue|make-task|stop [--parent P --title T]`,
+  `bridge-screen label <session-prefix> <unit_no> on-task|detour|drift`
+- Config: `bridge-screen config [-C DIR]` (shows the repo's tuned drift thresholds),
+  `bridge-screen config reset-drift [-C DIR]`
 - Plugin check: `claude plugin validate ./plugin` (read-only)
-- Hook latency (release, on demand): `cargo test --release -p bridge-screen --test hooks -- --ignored hook_latency --nocapture`
+- Hook latency (release, on demand; PostToolUse and the Stop scoring path): `cargo test --release -p bridge-screen --test hooks -- --ignored hook_latency --nocapture`
 - Releases: see `docs/RELEASING.md` (`dist plan` to preview); keep `plugin/.claude-plugin/plugin.json`'s `version` equal to the workspace version (a test checks it)
 
 ## Rules
@@ -34,6 +45,8 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
 - The pre-commit hook runs fmt/clippy/web lint; pre-push runs all tests and the web build. Don't bypass them with `--no-verify`.
 - Never write bridge-screen state inside a repo; runtime data lives in `~/.bridge-screen/` (spec §6).
 - Hooks must stay fast (≤ 50 ms p95) and must never fail a Claude session: log errors and exit 0. A known session's hooks never run `git`.
+- Tangents are never blocked. The only Stop continuation is the label request: at most once per unit, never when `stop_hook_active`.
+- Projectors use event timestamps only; "now" (live away time) is for hook decisions and never written into views.
 - Tests never touch the real `~/.claude` or `~/.bridge-screen` and never run the real `claude` CLI: use temp homes and a fake `claude` on a test-controlled PATH (`bridge-screen install --no-plugin` otherwise).
 
 <!-- gitnexus:start -->

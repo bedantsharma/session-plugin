@@ -10,7 +10,7 @@ use bridge_screen_core::config::Config;
 use bridge_screen_core::plan::{NodeStatus, get_node};
 use bridge_screen_core::session::{self, Session, SessionState};
 use bridge_screen_core::store::{Store, repo_name};
-use bridge_screen_core::tangent::{self, NavState};
+use bridge_screen_core::tangent::{self, Label, NavState};
 
 /// Width of the "state + task" column, and the most of it the text may use.
 const TASK_COLUMN: usize = 32;
@@ -122,9 +122,39 @@ fn session_line(store: &Store, s: &Session) -> Result<String> {
     let count = usize::try_from(s.unit_count).unwrap_or(0);
     let units = plural(count, "unit", "units");
     let minutes = s.active_secs / 60;
+    let nav = nav_text(store, s)?;
     Ok(format!(
-        "  S {short}  {left:<TASK_COLUMN$}{units:<7} · {minutes}m\n"
+        "  S {short}  {left:<TASK_COLUMN$}{units:<7} · {minutes}m · {nav}\n"
     ))
+}
+
+/// The navigator light in words — `on task`, `detour 25m`, `drift ⚠ 40m` — plus the
+/// current detour and a `⚠` when the agent disagreed with the heuristic.
+fn nav_text(store: &Store, s: &Session) -> Result<String> {
+    let last = session::units(store.conn(), &s.session_id)?
+        .into_iter()
+        .rev()
+        .find(|u| u.stopped_at.is_some());
+    let away = s.away_secs / 60;
+    let drifting = last.as_ref().is_some_and(|u| {
+        u.label == Some(Label::Drift) || (u.flagged && s.nav_state == NavState::Red)
+    });
+    let mut text = if s.current_detour.is_none() && drifting {
+        format!("drift ⚠ {away}m")
+    } else if s.current_detour.is_some() || s.away_secs > 0 {
+        format!("detour {away}m")
+    } else {
+        "on task".to_string()
+    };
+    if let Some(id) = &s.current_detour
+        && let Some(d) = tangent::get_detour(store.conn(), id)?
+    {
+        let _ = write!(text, " · {} \"{}\"", d.label(), cut(&d.reason, 30));
+    }
+    if !drifting && last.is_some_and(|u| u.disagreement) {
+        text.push_str(" ⚠");
+    }
+    Ok(text)
 }
 
 #[cfg(test)]

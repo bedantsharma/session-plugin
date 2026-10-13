@@ -152,11 +152,11 @@ fn sessions_grouped_by_project_needs_you_first() {
         "\
 bridge-screen · 4 live sessions · 2 projects
 api  no plan yet
-  S apis00  idle      (no task)             2 units · 2m
+  S apis00  idle      (no task)             2 units · 2m · on task
 shop  goal: Online shop
-  S wait00  needs you (no task)             1 unit  · 2m
-  S work00  working   2 Login form          3 units · 18m
-  S idle00  idle      (no task)             0 units · 0m
+  S wait00  needs you (no task)             1 unit  · 2m · on task
+  S work00  working   2 Login form          3 units · 18m · on task
+  S idle00  idle      (no task)             0 units · 0m · on task
 "
     );
 }
@@ -212,6 +212,90 @@ fn long_titles_are_cut_to_fit() {
     let out = status(&env);
     assert_eq!(
         out.lines().nth(2).unwrap(),
-        "  S long00  idle      1 A very long task…   0 units · 0m"
+        "  S long00  idle      1 A very long task…   0 units · 0m · on task"
+    );
+}
+
+#[test]
+fn detours_drift_and_disagreements_show() {
+    let env = Env::new();
+    let mut s = Store::open(&env.db_path()).unwrap();
+    register(&s, "r1", "shop");
+    // det: 25 minutes on an open detour.
+    start(&mut s, "r1", "det00aaa", 0);
+    ev(&mut s, "r1", "det00aaa", "prompt", json!({}), 10);
+    ev(
+        &mut s,
+        "r1",
+        "det00aaa",
+        "detour_opened",
+        json!({"detour_id": "D", "reason": "CI cache is broken", "resume_cue": "x"}),
+        10,
+    );
+    ev(&mut s, "r1", "det00aaa", "unit_stopped", json!({}), 1510);
+    ev(
+        &mut s,
+        "r1",
+        "det00aaa",
+        "unit_labeled",
+        json!({"unit_no": 1, "label": "detour", "source": "declared"}),
+        1510,
+    );
+    // dri: 40 minutes of drift, flagged red; the agent called the last unit on-task.
+    start(&mut s, "r1", "dri00bbb", 5);
+    ev(&mut s, "r1", "dri00bbb", "prompt", json!({}), 10);
+    ev(
+        &mut s,
+        "r1",
+        "dri00bbb",
+        "unit_stopped",
+        json!({"score": 0.9}),
+        2410,
+    );
+    ev(
+        &mut s,
+        "r1",
+        "dri00bbb",
+        "unit_labeled",
+        json!({"unit_no": 1, "label": "drift", "source": "owner"}),
+        2410,
+    );
+    ev(
+        &mut s,
+        "r1",
+        "dri00bbb",
+        "nav_state_changed",
+        json!({"from": "green", "to": "red", "away_secs": 2400}),
+        2410,
+    );
+    // dis: on task, but the agent disagreed with the heuristic.
+    start(&mut s, "r1", "dis00ccc", 7);
+    ev(&mut s, "r1", "dis00ccc", "prompt", json!({}), 10);
+    ev(
+        &mut s,
+        "r1",
+        "dis00ccc",
+        "unit_stopped",
+        json!({"score": 0.9}),
+        70,
+    );
+    ev(
+        &mut s,
+        "r1",
+        "dis00ccc",
+        "unit_labeled",
+        json!({"unit_no": 1, "label": "on_task", "source": "agent", "heuristic": "drift"}),
+        70,
+    );
+    drop(s);
+    assert_eq!(
+        status(&env),
+        "\
+bridge-screen · 3 live sessions · 1 project
+shop  no plan yet
+  S dri00b  needs you (no task)             1 unit  · 40m · drift ⚠ 40m
+  S dis00c  idle      (no task)             1 unit  · 1m · on task ⚠
+  S det00a  idle      (no task)             1 unit  · 25m · detour 25m · D1 \"CI cache is broken\"
+"
     );
 }
