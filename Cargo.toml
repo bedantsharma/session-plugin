@@ -8,6 +8,7 @@ edition = "2024"
 rust-version = "1.99"
 license = "UNLICENSED"
 repository = "https://github.com/bedantsharma/session-plugin"
+homepage = "https://github.com/bedantsharma/session-plugin"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
