@@ -25,6 +25,8 @@ pub enum Command {
     Rebuild,
     /// Print the effective configuration.
     Config,
+    /// Serve the agent's tools over MCP (stdio). Claude Code starts this.
+    Mcp,
     /// Handle a Claude Code hook event (reads the hook JSON on stdin). Always exits 0.
     Hook {
         #[arg(value_enum)]

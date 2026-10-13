@@ -27,6 +27,7 @@ pub fn run(cli: Cli) -> Result<()> {
         } => plan_edit_cmd(&dir, reason, replan, file.as_deref()),
         Command::Rebuild => rebuild(),
         Command::Config => config(),
+        Command::Mcp => crate::mcp::run(),
         Command::Hook { .. } => unreachable!("main handles hooks before dispatching commands"),
     }
 }

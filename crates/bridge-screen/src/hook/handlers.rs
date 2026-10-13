@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use bridge_screen_core::binding;
 use bridge_screen_core::error::Error;
 use bridge_screen_core::repo;
 use bridge_screen_core::session::{
@@ -67,8 +68,11 @@ pub fn handle(
     let Some(ctx) = resolve(event, input, store)? else {
         return Ok(None);
     };
+    let call = (event == HookEvent::PreToolUse)
+        .then(|| our_mcp_call(input))
+        .flatten();
     let drafts = drafts_for(event, &ctx, store)?;
-    if drafts.is_empty() {
+    if drafts.is_empty() && call.is_none() {
         return Ok(None);
     }
     let mut all = Vec::with_capacity(drafts.len() + 1);
@@ -77,12 +81,25 @@ pub fn handle(
         all.push(ctx.draft("session_started", &ctx.session_started("unknown"))?);
     }
     all.extend(drafts);
-    store.write(|tx| {
-        for draft in all {
-            append_in(tx, draft)?;
-        }
-        Ok(())
-    })?;
+    if !all.is_empty() {
+        store.write(|tx| {
+            for draft in all {
+                append_in(tx, draft)?;
+            }
+            Ok(())
+        })?;
+    }
+    if let Some((tool_use_id, tool, args)) = call {
+        // Tell our MCP server which session is about to call it.
+        binding::record(
+            store.conn(),
+            tool_use_id,
+            &input.session_id,
+            tool,
+            &binding::args_hash(&args),
+            jiff::Timestamp::now(),
+        )?;
+    }
     let context = match event {
         HookEvent::SessionStart => {
             let session = stored_session(store, input)?;
@@ -107,6 +124,20 @@ pub fn handle(
 fn stored_session(store: &Store, input: &HookInput) -> Result<Session> {
     session::get(store.conn(), &input.session_id)?
         .ok_or_else(|| anyhow::anyhow!("session {} vanished", input.session_id))
+}
+
+/// Our MCP server's tools, as Claude Code names them for the bridge-screen plugin.
+pub const MCP_TOOL_PREFIX: &str = "mcp__plugin_bridge-screen_bridge-screen__";
+
+/// For a call to one of our MCP tools: (tool_use_id, short tool name, arguments).
+fn our_mcp_call(input: &HookInput) -> Option<(&str, &str, serde_json::Value)> {
+    let tool = input.tool_name.as_deref()?.strip_prefix(MCP_TOOL_PREFIX)?;
+    let id = input.tool_use_id.as_deref()?;
+    let args = input
+        .tool_input
+        .clone()
+        .unwrap_or_else(|| serde_json::json!({}));
+    Some((id, tool, args))
 }
 
 /// Find the session's repo. Known sessions never run git; unknown ones outside a git repo

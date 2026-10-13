@@ -90,6 +90,9 @@ pub struct HookInput {
     pub tool_name: Option<String>,
     #[serde(default)]
     pub tool_input: Option<Value>,
+    /// Keys the MCP call binding (see `bridge_screen_core::binding`).
+    #[serde(default, deserialize_with = "lenient_string")]
+    pub tool_use_id: Option<String>,
     /// Stop and SubagentStop.
     #[serde(default, deserialize_with = "lenient_string")]
     pub last_assistant_message: Option<String>,
