@@ -176,6 +176,17 @@ pub fn mark_claimed(tx: &Transaction, repo: &str, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// The agent claims a task is done (L0): todo, active or failed → claimed. Claimed and
+/// verified statuses are left alone.
+pub fn mark_claimed_done(tx: &Transaction, repo: &str, id: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE plan_nodes SET status = 'claimed'
+         WHERE repo_id = ?1 AND id = ?2 AND status IN ('todo', 'active', 'failed')",
+        params![repo, id],
+    )?;
+    Ok(())
+}
+
 /// A released task goes back to todo, unless another live session still has it active.
 pub fn mark_released(tx: &Transaction, repo: &str, id: &str) -> Result<()> {
     tx.execute(

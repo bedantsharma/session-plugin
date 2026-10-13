@@ -1,6 +1,6 @@
 //! SQL schema. Version 1 is the first released schema; later versions append migrations.
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 pub const V1: &str = r"
 CREATE TABLE meta (
@@ -208,4 +208,70 @@ CREATE TABLE notes_sent (
 );
 
 CREATE INDEX notes_sent_session ON notes_sent (session_id, unit_no);
+";
+
+/// Version 4: handoff and recovery — checkpoints, end classification, leftovers, handoff
+/// notes, read-back and claimed-done records (spec §8).
+pub const V4: &str = r"
+ALTER TABLE sessions ADD COLUMN worktree TEXT;
+ALTER TABLE sessions ADD COLUMN end_kind TEXT;
+ALTER TABLE sessions ADD COLUMN last_checkpoint TEXT;
+ALTER TABLE sessions ADD COLUMN checkpoint_pending TEXT;
+ALTER TABLE sessions ADD COLUMN checkpoint_asked_unit INTEGER;
+ALTER TABLE sessions ADD COLUMN checkpoint_missed INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN readback TEXT NOT NULL DEFAULT 'not_needed';
+ALTER TABLE sessions ADD COLUMN briefing_status TEXT;
+ALTER TABLE sessions ADD COLUMN last_task TEXT;
+ALTER TABLE sessions ADD COLUMN leftovers_analysed INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE checkpoints (
+    sha         TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    repo_id     TEXT NOT NULL,
+    task_id     TEXT,
+    next_action TEXT,
+    ts          TEXT NOT NULL
+);
+
+CREATE INDEX checkpoints_session ON checkpoints (session_id, ts);
+
+CREATE TABLE leftovers (
+    leftover_id  TEXT PRIMARY KEY,
+    repo_id      TEXT NOT NULL,
+    from_session TEXT NOT NULL,
+    worktree     TEXT NOT NULL,
+    path         TEXT NOT NULL,
+    task_id      TEXT,
+    suggested    TEXT NOT NULL,
+    state        TEXT NOT NULL,
+    resolution   TEXT,
+    stash_ref    TEXT,
+    commit_sha   TEXT,
+    resolved_by  TEXT,
+    ts           TEXT NOT NULL,
+    resolved_at  TEXT
+);
+
+CREATE INDEX leftovers_repo_state ON leftovers (repo_id, state);
+
+CREATE TABLE handoff_notes (
+    session_id TEXT NOT NULL,
+    repo_id    TEXT NOT NULL,
+    task_id    TEXT,
+    in_flight  TEXT NOT NULL,
+    if_then    TEXT NOT NULL DEFAULT '[]',
+    ts         TEXT NOT NULL
+);
+
+CREATE INDEX handoff_notes_task ON handoff_notes (repo_id, task_id);
+
+CREATE TABLE claims_done (
+    repo_id    TEXT NOT NULL,
+    task_id    TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    evidence   TEXT NOT NULL,
+    ts         TEXT NOT NULL
+);
+
+CREATE INDEX claims_done_task ON claims_done (repo_id, task_id);
 ";

@@ -57,6 +57,7 @@ impl Ctx<'_> {
             source: source.to_string(),
             model: self.input.model.clone(),
             transcript_path: self.input.transcript_path.clone(),
+            worktree: worktree_root(&self.input.cwd).map(|p| p.to_string_lossy().into_owned()),
         }
     }
 }
@@ -296,6 +297,8 @@ fn drafts_for(
             "session_ended",
             &SessionEnded {
                 reason: input.reason.clone(),
+                end_kind: None,
+                dirty_files: Vec::new(),
             },
         )?,
     };

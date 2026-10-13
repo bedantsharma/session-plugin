@@ -13,11 +13,12 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
 
 use crate::error::Result;
+use crate::handoff::{BriefingStatus, EndKind, ReadbackState};
 use crate::tangent::{Label, LabelSource, NavState};
 
 pub use project::{
-    FileEvent, NeedsOwner, NeedsOwnerKind, Prompt, SESSION_KINDS, SessionEnded, SessionStarted,
-    SubagentStopped, TaskClaimed, TaskReleased, UnitStopped, project,
+    FileEvent, NeedsOwner, NeedsOwnerKind, Prompt, SESSION_KINDS, SessionCrashed, SessionEnded,
+    SessionStarted, SubagentStopped, TaskClaimed, TaskReleased, UnitStopped, project,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -81,6 +82,24 @@ pub struct Session {
     pub ack_unit: i64,
     /// An owner answer waiting to be delivered: `<answer>:<owner_action event id>`.
     pub pending_reply: Option<String>,
+    /// The worktree's root directory (spec §8.3).
+    pub worktree: Option<String>,
+    /// How the session ended, once it has.
+    pub end_kind: Option<EndKind>,
+    /// SHA of the last checkpoint commit.
+    pub last_checkpoint: Option<String>,
+    /// Why a checkpoint is due (`claimed_done`, `detour_closed`, `task_switched`).
+    pub checkpoint_pending: Option<String>,
+    /// The unit in which the agent was asked to checkpoint.
+    pub checkpoint_asked_unit: Option<i64>,
+    /// The unit in which a requested checkpoint was missed; 0 when none is.
+    pub checkpoint_missed: i64,
+    pub readback: ReadbackState,
+    pub briefing_status: Option<BriefingStatus>,
+    /// The task the session last claimed; kept after it ends, for recovery.
+    pub last_task: Option<String>,
+    /// A later session has analysed this (dead) session's leftovers.
+    pub leftovers_analysed: bool,
 }
 
 /// One row of the `units` view.
@@ -111,7 +130,9 @@ pub struct Unit {
 const SESSION_COLUMNS: &str = "session_id, repo_id, cwd, branch, source, model, transcript_path,
      started_at, last_event_at, state, active_task, active_since, unit_count, active_secs,
      ended_at, end_reason, current_detour, away_secs, away_since, nav_state, ack_away_secs,
-     ack_unit, pending_reply";
+     ack_unit, pending_reply, worktree, end_kind, last_checkpoint, checkpoint_pending,
+     checkpoint_asked_unit, checkpoint_missed, readback, briefing_status, last_task,
+     leftovers_analysed";
 
 const UNIT_COLUMNS: &str = "session_id, unit_no, prompt_id, task_id, started_at, stopped_at,
      waited_secs, wait_started_at, active_secs, files, label, label_source, drift_score,
@@ -143,6 +164,23 @@ fn read_session(r: &Row) -> rusqlite::Result<Session> {
         ack_away_secs: r.get(20)?,
         ack_unit: r.get(21)?,
         pending_reply: r.get(22)?,
+        worktree: r.get(23)?,
+        end_kind: r
+            .get::<_, Option<String>>(24)?
+            .as_deref()
+            .and_then(EndKind::parse),
+        last_checkpoint: r.get(25)?,
+        checkpoint_pending: r.get(26)?,
+        checkpoint_asked_unit: r.get(27)?,
+        checkpoint_missed: r.get(28)?,
+        readback: ReadbackState::parse(&r.get::<_, String>(29)?)
+            .unwrap_or(ReadbackState::NotNeeded),
+        briefing_status: r
+            .get::<_, Option<String>>(30)?
+            .as_deref()
+            .and_then(BriefingStatus::parse),
+        last_task: r.get(31)?,
+        leftovers_analysed: r.get(32)?,
     })
 }
 
