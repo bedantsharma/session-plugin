@@ -280,21 +280,20 @@ pub fn label_at_stop(
         };
         step.events.push(draft(session, "drift_flagged", &data)?);
     }
-    let ask = if flagged {
-        Candidate::new(
-            NoteKind::LabelRequest,
-            Channel::Stop,
-            DRIFT_REQUEST,
-            "label:drift",
-        )
+    // Each unit is its own question: the repeat window must never stop a unit from being
+    // asked, or a flagged unit would fall back to drift unasked. One note per unit and
+    // `stop_hook_active` still bound the continuations.
+    let text = if flagged {
+        DRIFT_REQUEST
     } else {
-        Candidate::new(
-            NoteKind::LabelRequest,
-            Channel::Stop,
-            LABEL_REQUEST,
-            "label",
-        )
+        LABEL_REQUEST
     };
+    let ask = Candidate::new(
+        NoteKind::LabelRequest,
+        Channel::Stop,
+        text,
+        format!("label:{}", unit.unit_no),
+    );
     let chosen = if stop_hook_active {
         None
     } else {

@@ -170,19 +170,18 @@ fn label_request_is_sent_once_per_unit() {
         (Some(Label::OnTask), Some(LabelSource::Heuristic))
     );
 
-    // Within three units the same request isn't repeated: labelled on the spot.
+    // The next unit is its own question: asked again, not labelled on the spot.
     for f in ["src/login.rs", "scripts/x.sh"] {
         let path = format!("{}/{f}", env.repo_path());
         hook_with(&env, "post-tool-use", "s1", |p| {
             p["tool_input"]["file_path"] = json!(path);
         });
     }
-    assert_eq!(stop(&env, "s1", MIDDLE, false), "");
-    let u = &units(&env, "s1")[1];
     assert_eq!(
-        (u.label, u.label_source),
-        (Some(Label::OnTask), Some(LabelSource::Heuristic))
+        context_of(&stop(&env, "s1", MIDDLE, false), "Stop"),
+        LABEL_REQUEST
     );
+    assert_eq!(units(&env, "s1")[1].label, None);
 }
 
 #[test]
@@ -222,6 +221,31 @@ fn high_score_is_flagged_and_asked_about() {
         .find(|e| e.kind == "drift_flagged")
         .unwrap();
     assert_eq!(flagged.data["unit_no"], 1);
+}
+
+#[test]
+fn every_flagged_unit_is_asked_about() {
+    let env = setup();
+    let docker = ["docker/Dockerfile", ".github/workflows/ci.yml"];
+    assert_eq!(
+        context_of(&unit(&env, "s1", &docker, DOCKER), "Stop"),
+        DRIFT_REQUEST
+    );
+    // The owner settles unit 1, so nothing else competes for unit 2's one note.
+    assert!(
+        env.run(&["label", "s1", "1", "on-task"], "")
+            .status
+            .success()
+    );
+    // Within the 3-unit repeat window, the next flagged unit is still asked, not
+    // silently labelled drift.
+    let infra = ["infra/main.tf", "deploy/values.yaml"];
+    assert_eq!(
+        context_of(&unit(&env, "s1", &infra, DOCKER), "Stop"),
+        DRIFT_REQUEST
+    );
+    let u = &units(&env, "s1")[1];
+    assert!(u.flagged && u.label.is_none(), "{u:?}");
 }
 
 #[test]
