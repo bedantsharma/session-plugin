@@ -207,7 +207,18 @@ fn plain_commit_while_pending_also_clears_it() {
     work(&env, "s1", &["src/login.rs"]);
     claim_done(&env, "s1");
     git(env.repo.path(), &["add", "-A"]);
-    git(env.repo.path(), &["commit", "-q", "-m", "login validation"]);
+    // Commit times are whole seconds: a commit in the boundary's own second can't be told
+    // from one made just before it, so this one is clearly later.
+    let later = (jiff::Timestamp::now() + jiff::SignedDuration::from_secs(2)).as_second();
+    let ok = std::process::Command::new("git")
+        .arg("-C")
+        .arg(env.repo.path())
+        .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+        .args(["commit", "-q", "-m", "login validation"])
+        .env("GIT_COMMITTER_DATE", format!("@{later} +0000"))
+        .status()
+        .unwrap();
+    assert!(ok.success());
     bash(&env, "s1", "git commit -am 'login validation'");
     let cps = of_kind(&env, "checkpoint");
     assert_eq!(cps.len(), 1);

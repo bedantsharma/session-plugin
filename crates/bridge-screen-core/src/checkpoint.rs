@@ -167,7 +167,9 @@ pub fn detect(
     }
     let bridge = head.subject.starts_with(WIP_PREFIX) || trailer(head, TASK_TRAILER).is_some();
     let pending = session.checkpoint_pending.is_some()
-        && pending_since(conn, &session.session_id)?.is_none_or(made_after);
+        // Strictly after: a commit in the same second as the boundary may predate it.
+        && pending_since(conn, &session.session_id)?
+            .is_none_or(|t| head.time > t.as_second());
     if !bridge && !pending {
         return Ok(None);
     }
@@ -430,6 +432,40 @@ mod tests {
         assert_eq!(
             detect(s.conn(), &pending, &head("d", started + 5, "fix", &[])).unwrap(),
             None
+        );
+    }
+
+    /// A plain commit in the same second the checkpoint became due may be the commit
+    /// from before the boundary (HEAD unchanged): it must not clear the request. A
+    /// real checkpoint commit in that second is caught at Stop by the clean worktree.
+    #[test]
+    fn a_plain_commit_in_the_due_second_is_not_the_checkpoint() {
+        let mut s = store();
+        s.append(EventDraft::new(
+            "r",
+            "s1",
+            "task_claimed",
+            json!({"task_id": "1.1", "mode": "auto", "confidence": 0.9}),
+        ))
+        .unwrap();
+        claim_done(&mut s, &req(None)).unwrap();
+        let session = session::get(s.conn(), "s1").unwrap().unwrap();
+        assert!(session.checkpoint_pending.is_some());
+        let due = pending_since(s.conn(), "s1").unwrap().unwrap().as_second();
+        let started = session
+            .started_at
+            .parse::<jiff::Timestamp>()
+            .unwrap()
+            .as_second();
+        assert!(due >= started);
+        assert_eq!(
+            detect(s.conn(), &session, &head("old", due, "init", &[])).unwrap(),
+            None
+        );
+        assert!(
+            detect(s.conn(), &session, &head("new", due + 1, "fix", &[]))
+                .unwrap()
+                .is_some()
         );
     }
 }
