@@ -23,7 +23,8 @@ pub use ops::{
 };
 pub use project::{
     ConfigChanged, DetourClosed, DetourOpened, DetourPromoted, DriftFlagged, ItemResumed,
-    ItemSuspended, NavStateChanged, NoteSent, OwnerAction, TANGENT_KINDS, UnitLabeled, project,
+    ItemSuspended, NavStateChanged, NoteSent, OwnerAction, TANGENT_KINDS, TuningRan, UnitLabeled,
+    project,
 };
 pub use tolerance::{NavEval, drift_pause, evaluate, tolerance_secs};
 

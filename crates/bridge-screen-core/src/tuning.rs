@@ -4,17 +4,18 @@
 //! `drift_samples` row. After 20 new samples, the next SessionStart moves the lower and
 //! upper cut-offs toward the values that best separate on-task from detour/drift in the
 //! repo's last 200 samples, and nudges the tolerance percentage from the owner's
-//! Continue/Stop answers. Each change is a `config_changed` event; guard rails keep every
-//! move small and the cut-offs ordered.
+//! Continue/Stop answers. Each change is a `config_changed` event, and a run that changes
+//! nothing is a `tuning_ran` event, so either way the next run waits for 20 new samples.
+//! Guard rails keep every move small and the cut-offs ordered.
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::config::Config;
 use crate::error::Result;
 use crate::store::{EventDraft, OWNER_SESSION, append_in};
-use crate::tangent::{ConfigChanged, Label, Thresholds, thresholds};
+use crate::tangent::{ConfigChanged, Label, Thresholds, TuningRan, thresholds};
 
-/// A run happens once this many samples have arrived since the last change.
+/// A run happens once this many samples have arrived since the last run.
 pub const RUN_EVERY: i64 = 20;
 /// How many of the most recent samples a run looks at.
 pub const WINDOW: i64 = 200;
@@ -47,7 +48,7 @@ fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
 
-/// How many drift samples the repo has, and how many it had at the last change.
+/// How many drift samples the repo has, and how many it had at the last run.
 fn counts(conn: &Connection, repo_id: &str) -> Result<(i64, i64)> {
     let total: i64 = conn
         .prepare_cached("SELECT count(*) FROM drift_samples WHERE repo_id = ?1")?
@@ -105,10 +106,11 @@ fn samples(conn: &Connection, repo_id: &str) -> Result<Vec<(f64, Label)>> {
     Ok(out)
 }
 
-/// The owner's Continue and Stop answers since the repo's last `config_changed`.
+/// The owner's Continue and Stop answers since the repo's last tuning run or change.
 fn owner_answers(conn: &Connection, repo_id: &str) -> Result<(usize, usize)> {
     let since: i64 = conn.query_row(
-        "SELECT COALESCE(MAX(pos), 0) FROM events WHERE repo_id = ?1 AND kind = 'config_changed'",
+        "SELECT COALESCE(MAX(pos), 0) FROM events
+         WHERE repo_id = ?1 AND kind IN ('config_changed', 'tuning_ran')",
         [repo_id],
         |r| r.get(0),
     )?;
@@ -204,7 +206,7 @@ fn record(
 }
 
 /// Tune the repo's thresholds if a run is due. `None` when it isn't; a run that moves
-/// nothing records nothing.
+/// nothing records a `tuning_ran` so the next one waits for [`RUN_EVERY`] new samples.
 pub fn run(tx: &Transaction, repo_id: &str, cfg: &Config) -> Result<Option<TuningChange>> {
     let (total, last) = counts(tx, repo_id)?;
     if total - last < RUN_EVERY {
@@ -213,6 +215,18 @@ pub fn run(tx: &Transaction, repo_id: &str, cfg: &Config) -> Result<Option<Tunin
     let th = thresholds(tx, repo_id, cfg)?;
     let next = propose(&th, &samples(tx, repo_id)?, owner_answers(tx, repo_id)?);
     let changes = record(tx, repo_id, &th, &next, total)?;
+    if changes.is_empty() {
+        let data = TuningRan { samples: total };
+        append_in(
+            tx,
+            EventDraft::new(
+                repo_id,
+                OWNER_SESSION,
+                "tuning_ran",
+                serde_json::to_value(data)?,
+            ),
+        )?;
+    }
     Ok(Some(TuningChange {
         changes,
         samples: total,
@@ -341,6 +355,26 @@ mod tests {
         // Counted from the last change: 19 more is still not enough.
         add_samples(&s, &[(0.49, "on_task"); 19]);
         assert_eq!(tuned(&mut s), None);
+    }
+
+    #[test]
+    fn a_run_that_moves_nothing_still_waits_for_twenty_new_samples() {
+        let mut s = Store::open_in_memory().unwrap();
+        // Already well separated by the defaults: nothing moves.
+        add_samples(&s, &[(0.1, "on_task"); 20]);
+        let ran = tuned(&mut s).unwrap();
+        assert_eq!((ran.changes, ran.samples), (vec![], 20));
+        assert!(!due(s.conn(), "r").unwrap());
+        assert_eq!(tuned(&mut s), None);
+        add_samples(&s, &[(0.1, "on_task"); 19]);
+        assert_eq!(tuned(&mut s), None);
+        // Rebuild reproduces the run's mark.
+        s.conn().execute("DELETE FROM drift_samples", []).unwrap();
+        s.rebuild().unwrap();
+        add_samples(&s, &[(0.1, "on_task"); 39]);
+        assert!(!due(s.conn(), "r").unwrap());
+        add_samples(&s, &[(0.1, "on_task")]);
+        assert!(due(s.conn(), "r").unwrap());
     }
 
     #[test]

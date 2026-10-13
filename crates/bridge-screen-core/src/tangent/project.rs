@@ -22,6 +22,7 @@ pub const TANGENT_KINDS: &[&str] = &[
     "owner_action",
     "note_sent",
     "config_changed",
+    "tuning_ran",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,6 +132,13 @@ pub struct ConfigChanged {
     pub samples: i64,
 }
 
+/// A tuning run that changed nothing: the next run waits for `RUN_EVERY` samples more.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TuningRan {
+    /// Drift samples the repo had when the run was made.
+    pub samples: i64,
+}
+
 /// Keys of `repo_tuning` a `config_changed` may set.
 pub const TUNING_KEYS: &[&str] = &["drift_lower", "drift_upper", "tolerance_pct"];
 
@@ -143,6 +151,15 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
     match event.kind.as_str() {
         "owner_action" => owner_action(tx, event, &payload(event)?),
         "config_changed" => config_changed(tx, event, &payload(event)?),
+        "tuning_ran" => {
+            let d: TuningRan = payload(event)?;
+            tx.execute(
+                "INSERT INTO repo_tuning (repo_id, samples_at_last_run) VALUES (?1, ?2)
+                 ON CONFLICT(repo_id) DO UPDATE SET samples_at_last_run = excluded.samples_at_last_run",
+                params![event.repo_id, d.samples],
+            )?;
+            Ok(())
+        }
         kind => {
             // Everything else belongs to a session bridge-screen has seen.
             if session::get(tx, &event.session_id)?.is_none() {

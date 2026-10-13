@@ -440,6 +440,7 @@ fn tangent_script() -> Vec<(&'static str, i64, &'static str, Value)> {
             json!({"scope": "repo", "key": "drift_upper",
             "old": 0.7, "new": 0.65, "samples": 20}),
         ),
+        ("owner", 170, "tuning_ran", json!({"samples": 40})),
     ]
 }
 
@@ -478,6 +479,12 @@ fn rebuild_reproduces_tangent_views() {
         let prefix = format!("{table}: ");
         assert!(before.iter().any(|r| r.starts_with(&prefix)), "{table}");
     }
+    assert!(
+        before
+            .iter()
+            .any(|r| r.starts_with("repo_tuning: ") && r.ends_with("|Integer(40)")),
+        "{before:?}"
+    );
     s.rebuild().unwrap();
     assert_eq!(dump(&s), before);
 }
