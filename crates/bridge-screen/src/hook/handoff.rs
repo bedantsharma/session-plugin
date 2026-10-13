@@ -12,6 +12,8 @@ use bridge_screen_core::handoff::{self, EndKind, ReadbackState};
 use bridge_screen_core::navigator::{Candidate, Channel, NoteKind, note_sent_draft};
 use bridge_screen_core::recovery;
 use bridge_screen_core::session::{self, Session};
+use bridge_screen_core::session::{NeedsOwner, NeedsOwnerKind};
+use bridge_screen_core::squash::{self, Outcome, Refusal};
 use bridge_screen_core::store::Store;
 use bridge_screen_core::store::{Actor, EventDraft, append_in};
 use rusqlite::Transaction;
@@ -180,4 +182,92 @@ pub fn readback_nudge(
     );
     let draft = note_sent_draft(&s.repo_id, &s.session_id, unit_no, &note)?;
     Ok(Some((draft, note.text)))
+}
+
+/// Is this tool call about to open a pull request (`gh pr create`, or a GitHub MCP
+/// `create_pull_request` tool)?
+pub fn opens_pr(input: &HookInput) -> bool {
+    bash_command(input).is_some_and(squash::is_pr_command)
+        || input
+            .tool_name
+            .as_deref()
+            .is_some_and(|t| t.ends_with("create_pull_request"))
+}
+
+/// The PR's base branch, as the command or tool names it; resolved against `origin/` when
+/// there is no local branch of that name.
+fn pr_base(wt: &Path, input: &HookInput) -> Option<String> {
+    let named = match bash_command(input) {
+        Some(cmd) => squash::pr_base(cmd),
+        None => input
+            .tool_input
+            .as_ref()
+            .and_then(|t| t.get("base"))
+            .and_then(|b| b.as_str())
+            .map(str::to_string),
+    }?;
+    if git::rev_parse(wt, &named).ok().flatten().is_some() {
+        return Some(named);
+    }
+    let remote = format!("origin/{named}");
+    git::rev_parse(wt, &remote)
+        .ok()
+        .flatten()
+        .map(|_| remote)
+        .or(Some(named))
+}
+
+/// Before a PR opens (spec §8.1): squash the branch's WIP commits (and force-push with
+/// lease if it was pushed). Never blocks: no WIP commits → nothing; any failure →
+/// `squash_failed`, a needs-you item, and a note that the PR will show the WIP commits.
+pub fn before_pr(store: &mut Store, input: &HookInput) -> Result<Option<String>> {
+    if !opens_pr(input) {
+        return Ok(None);
+    }
+    let Some(s) = session::get(store.conn(), &input.session_id)? else {
+        return Ok(None);
+    };
+    let wt = worktree_of(&s);
+    let opts = squash::Options {
+        onto: pr_base(&wt, input),
+        dry_run: false,
+    };
+    let draft = |kind: &str, data: serde_json::Value| {
+        EventDraft::new(&s.repo_id, &s.session_id, kind, data)
+    };
+    let failed = |store: &mut Store, reason: String| -> Result<Option<String>> {
+        store.write(|tx| {
+            append_in(
+                tx,
+                draft("squash_failed", serde_json::json!({ "reason": reason })),
+            )?;
+            let owner = NeedsOwner {
+                kind: NeedsOwnerKind::Squash,
+            };
+            append_in(tx, draft("needs_owner", serde_json::to_value(owner)?))?;
+            Ok(())
+        })?;
+        Ok(Some(format!(
+            "bridge-screen: WIP commits weren't squashed ({reason}); the PR will show them. Run bridge-screen squash later if you want them collapsed."
+        )))
+    };
+    match squash::squash(&wt, &opts, store.conn(), &s.repo_id) {
+        Ok(Outcome::Refused(Refusal::NoWip) | Outcome::DryRun(_)) => Ok(None),
+        Ok(Outcome::Refused(r)) => failed(store, r.to_string()),
+        Err(e) => failed(store, e.to_string()),
+        Ok(Outcome::Squashed(done)) => {
+            store.append(draft("squashed", serde_json::to_value(done.event())?))?;
+            let n = done.old_shas.len();
+            if let Some(Err(e)) = &done.push {
+                return failed(
+                    store,
+                    format!("squashed {n} commits locally but the push failed: {e}"),
+                );
+            }
+            Ok(Some(format!(
+                "bridge-screen: squashed {n} commits into one before the PR (backup: {}).",
+                done.backup_ref
+            )))
+        }
+    }
 }

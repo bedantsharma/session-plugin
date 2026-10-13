@@ -97,7 +97,12 @@ pub fn handle(
     let navigates = ctx.known.is_some() && nav::navigates(event);
     // A known session with nothing to record writes nothing. An unknown one is tracked
     // from first sight (below), so its later hooks take the fast path without git.
-    if drafts.is_empty() && call.is_none() && ctx.known.is_some() && !navigates {
+    if drafts.is_empty()
+        && call.is_none()
+        && ctx.known.is_some()
+        && !navigates
+        && !(event == HookEvent::PreToolUse && handoff::opens_pr(input))
+    {
         return Ok(None);
     }
     let mut all = Vec::with_capacity(drafts.len() + 1);
@@ -140,6 +145,11 @@ pub fn handle(
             jiff::Timestamp::now(),
         )?;
     }
+    // Squash WIP commits before a PR opens (spec §8.1); never blocks the PR.
+    let before_pr = match event {
+        HookEvent::PreToolUse => handoff::before_pr(store, input)?,
+        _ => None,
+    };
     if event == HookEvent::SessionStart && input.source.as_deref() != Some("compact") {
         // Recovery (spec §8.3): crashed sessions, then leftovers of dead ones.
         handoff::recover(store, config, &ctx.repo_id, &input.session_id)?;
@@ -161,7 +171,7 @@ pub fn handle(
                 (r, n) => r.or(n),
             }
         }
-        HookEvent::PreToolUse => nudge.or(note),
+        HookEvent::PreToolUse => before_pr.or(nudge).or(note),
         _ => note,
     };
     Ok(context.map(|text| HookOutput {

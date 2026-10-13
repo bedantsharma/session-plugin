@@ -17,6 +17,7 @@ pub mod projection;
 pub mod recovery;
 pub mod repo;
 pub mod session;
+pub mod squash;
 pub mod store;
 pub mod tangent;
 pub mod tuning;

@@ -442,14 +442,48 @@ pub fn rev_parse(wt: &Path, rev: &str) -> Result<Option<String>> {
     optional(wt, &["rev-parse", "--verify", "-q", &spec])
 }
 
-/// Push HEAD to the current branch's upstream branch, overwriting it only if it still is
-/// `expected_remote_sha` there.
-pub fn push_force_with_lease(wt: &Path, expected_remote_sha: &str) -> Result<()> {
+/// Is `ancestor` an ancestor of (or equal to) `rev`?
+pub fn is_ancestor(wt: &Path, ancestor: &str, rev: &str) -> Result<bool> {
+    let out = command(wt)
+        .args(["merge-base", "--is-ancestor", ancestor, rev])
+        .output()
+        .map_err(|e| Error::Git(format!("could not run git: {e}")))?;
+    match out.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(Error::Git(format!(
+            "git merge-base --is-ancestor: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))),
+    }
+}
+
+/// The current branch's upstream as (remote, remote ref), from its config.
+fn upstream_config(wt: &Path) -> Result<(String, String)> {
     let branch = current_branch(wt)?.ok_or_else(|| Error::Git("HEAD is detached".into()))?;
     let remote = optional(wt, &["config", &format!("branch.{branch}.remote")])?
         .ok_or_else(|| Error::Git(format!("{branch} has no upstream remote")))?;
     let merge = optional(wt, &["config", &format!("branch.{branch}.merge")])?
         .ok_or_else(|| Error::Git(format!("{branch} has no upstream branch")))?;
+    Ok((remote, merge))
+}
+
+/// Where the upstream branch is on the remote right now (`git ls-remote`), or `None` if
+/// it doesn't exist there.
+pub fn upstream_remote_sha(wt: &Path) -> Result<Option<String>> {
+    let (remote, merge) = upstream_config(wt)?;
+    let out = text(wt, &["ls-remote", &remote, &merge])?;
+    Ok(out
+        .lines()
+        .find(|l| l.ends_with(&format!("\t{merge}")))
+        .and_then(|l| l.split_whitespace().next())
+        .map(str::to_string))
+}
+
+/// Push HEAD to the current branch's upstream branch, overwriting it only if it still is
+/// `expected_remote_sha` there.
+pub fn push_force_with_lease(wt: &Path, expected_remote_sha: &str) -> Result<()> {
+    let (remote, merge) = upstream_config(wt)?;
     let lease = format!("--force-with-lease={merge}:{expected_remote_sha}");
     let refspec = format!("HEAD:{merge}");
     run(wt, &["push", "-q", &lease, &remote, &refspec])?;
