@@ -8,7 +8,7 @@ use bridge_screen_core::error::Error;
 use bridge_screen_core::repo;
 use bridge_screen_core::session::{
     self, FileEvent, NeedsOwner, NeedsOwnerKind, Prompt, Session, SessionEnded, SessionStarted,
-    SubagentStopped, UnitStopped,
+    SessionState, SubagentStopped, UnitStopped,
 };
 use bridge_screen_core::store::{Actor, EventDraft, Store, append_in};
 use serde::Serialize;
@@ -187,7 +187,7 @@ fn drafts_for(event: HookEvent, ctx: &Ctx, store: &Store) -> Result<Vec<EventDra
         )?,
         HookEvent::PreToolUse => {
             let Some((tool, files)) = edited_files(input) else {
-                return Ok(Vec::new());
+                return wait_over(ctx, store, "tool_intent");
             };
             let seen = if ctx.known.is_some() {
                 session::open_unit_intents(store.conn(), &input.session_id)?
@@ -195,13 +195,13 @@ fn drafts_for(event: HookEvent, ctx: &Ctx, store: &Store) -> Result<Vec<EventDra
                 std::collections::HashSet::default()
             };
             if files.iter().all(|f| seen.contains(f)) {
-                return Ok(Vec::new());
+                return wait_over(ctx, store, "tool_intent");
             }
             ctx.draft("tool_intent", &FileEvent { tool, files })?
         }
         HookEvent::PostToolUse => {
             let Some((tool, files)) = edited_files(input) else {
-                return Ok(Vec::new());
+                return wait_over(ctx, store, "file_changed");
             };
             ctx.draft("file_changed", &FileEvent { tool, files })?
         }
@@ -231,7 +231,11 @@ fn drafts_for(event: HookEvent, ctx: &Ctx, store: &Store) -> Result<Vec<EventDra
             let kind = match input.notification_type.as_deref() {
                 Some("permission_prompt") => NeedsOwnerKind::PermissionPrompt,
                 Some("idle_prompt") => NeedsOwnerKind::IdlePrompt,
-                _ => NeedsOwnerKind::Other,
+                Some("elicitation_dialog" | "elicitation_url_dialog" | "agent_needs_input") => {
+                    NeedsOwnerKind::Other
+                }
+                // auth_success, agent_completed, elicitation_complete, …: nobody waits.
+                _ => return Ok(Vec::new()),
             };
             ctx.draft("needs_owner", &NeedsOwner { kind })?
         }
@@ -243,6 +247,29 @@ fn drafts_for(event: HookEvent, ctx: &Ctx, store: &Store) -> Result<Vec<EventDra
         )?,
     };
     Ok(vec![draft])
+}
+
+/// A tool running while the session waits on the owner (e.g. a Bash call just approved)
+/// ends the wait. Edit tools record their own events; any other tool records an empty
+/// `kind` event only then, so the common path still writes nothing.
+fn wait_over(ctx: &Ctx, store: &Store, kind: &str) -> Result<Vec<EventDraft>> {
+    let waiting = ctx
+        .known
+        .as_ref()
+        .is_some_and(|s| s.state == SessionState::NeedsOwner)
+        && session::current_unit(store.conn(), &ctx.input.session_id)?
+            .is_some_and(|u| u.wait_started_at.is_some());
+    if !waiting {
+        return Ok(Vec::new());
+    }
+    let tool = ctx.input.tool_name.clone().unwrap_or_default();
+    Ok(vec![ctx.draft(
+        kind,
+        &FileEvent {
+            tool,
+            files: Vec::new(),
+        },
+    )?])
 }
 
 fn summary(input: &HookInput) -> Option<String> {

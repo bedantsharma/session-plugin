@@ -320,7 +320,16 @@ fn subagent_events_carry_actor() {
 fn notification_kinds() {
     let env = Env::new();
     env.hook("session-start", "s1");
-    for kind in ["permission_prompt", "idle_prompt", "auth_success"] {
+    // Only notifications that mean "waiting on the owner" are recorded.
+    for kind in [
+        "permission_prompt",
+        "auth_success",
+        "idle_prompt",
+        "agent_completed",
+        "elicitation_dialog",
+        "elicitation_complete",
+        "something_new",
+    ] {
         hook_with(&env, "notification", "s1", |p| {
             p["notification_type"] = json!(kind);
         });
@@ -564,4 +573,33 @@ fn hook_latency() {
         ms(times[199])
     );
     assert!(p95 < Duration::from_millis(50), "p95 {:.1} ms", ms(p95));
+}
+
+#[test]
+fn permission_wait_ends_when_any_tool_runs_again() {
+    // PreToolUse(Bash) → permission dialog → Notification → approved → PostToolUse(Bash).
+    // Bash isn't an edit tool, but its PostToolUse must still end the wait.
+    let env = Env::new();
+    env.hook("session-start", "s1");
+    env.hook("user-prompt-submit", "s1");
+    let bash = |p: &mut Value| {
+        p["tool_name"] = json!("Bash");
+        p["tool_input"] = json!({"command": "cargo test"});
+    };
+    hook_with(&env, "pre-tool-use", "s1", bash);
+    hook_with(&env, "notification", "s1", |p| {
+        p["notification_type"] = json!("permission_prompt");
+    });
+    let unit = |env: &Env| units(env, "s1").pop().unwrap();
+    assert!(unit(&env).wait_started_at.is_some());
+    hook_with(&env, "post-tool-use", "s1", bash);
+    assert_eq!(unit(&env).wait_started_at, None);
+    let store = Store::open(&env.db_path()).unwrap();
+    let s = session::get(store.conn(), "s1").unwrap().unwrap();
+    assert_eq!(s.state, SessionState::Working);
+    // Outside a wait, non-edit tools record nothing.
+    let before = events(&env).len();
+    hook_with(&env, "post-tool-use", "s1", bash);
+    hook_with(&env, "pre-tool-use", "s1", bash);
+    assert_eq!(events(&env).len(), before);
 }
