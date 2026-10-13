@@ -220,10 +220,10 @@ Active task; suspended items (each with `resume_cue`); state (working, idle, nee
 
 ### 6.5 Archive and compaction
 
-Anything older than **15 days** moves to the archive and is compressed. This applies at two levels:
+Two rules decide what moves to the archive and is compressed:
 
-- **Inactive projects:** a repo with no events for 15 days is archived whole. All its events and view rows move to the archive. The main database keeps only a stub row (name, final done%, last activity, archive location). The project leaves the glance screen and appears in a collapsed "Archived" list.
-- **Active projects:** events older than 15 days are compacted. High-volume detail (`prompt`, `tool_intent`, `unit_stopped`, per-unit `usage`) moves to the archive and is replaced in the main database by per-task and per-session **rollups** (time, tokens, cost, label split). Small, long-lived facts stay in the main database: plan events, decisions, verifications, checkpoints, squashes, leftover resolutions and config changes. Views are rebuilt from rollup snapshots plus the remaining events.
+- **Inactive projects:** a repo with no events for **15 days** is archived whole. All its events and view rows move to the archive. The main database keeps only a stub row (name, final done%, last activity, archive location). The project leaves the glance screen and appears in a collapsed "Archived" list.
+- **Active projects, size-triggered:** when a project's high-volume detail (`prompt`, `tool_intent`, `unit_stopped`, per-unit `usage`) takes up more than **16 MB** in the main database, all of that detail older than **2 days** is compacted. The daily archive run measures the size per repo. Detail from the last 2 days is never compacted, because recovery and the current briefing use it. The compacted detail moves to the archive and is replaced in the main database by per-task and per-session **rollups** (time, tokens, cost, label split). Small, long-lived facts stay in the main database: plan events, decisions, verifications, checkpoints, squashes, leftover resolutions and config changes. Views are rebuilt from rollup snapshots plus the remaining events.
 
 **Archive format**
 - One SQLite file per repo per month, `~/.bridge_screen/archive/<repo-id>/<YYYY-MM>.db.zst` (zstd-compressed). It holds the moved events verbatim, the moved view rows, and a `manifest` (repo, date range, row counts, checksum, schema version).
@@ -543,4 +543,4 @@ All open questions from the first draft were answered by the owner on 2026-10-13
 5. **Retention:** anything older than 15 days is archived and compacted, with retrieval directions and search tooling (§6.5).
 6. **Open-sourcing:** nothing chosen with that in mind. Name: `bridge_screen`.
 
-**Interpretation to confirm:** "older than 15 days" is applied two ways in §6.5: whole projects inactive for 15 days are archived, and inside active projects only high-volume detail older than 15 days is compacted, while plan, decision and verification history stays in the main database.
+**Retention rules, confirmed:** projects inactive for 15 days are archived whole. In active projects, high-volume detail is compacted once it exceeds 16 MB per project, and only the part older than 2 days. Plan, decision and verification history stays in the main database.
