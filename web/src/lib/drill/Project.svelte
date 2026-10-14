@@ -9,6 +9,7 @@
   import ProgressBar from '$lib/glance/ProgressBar.svelte'
   import Chip from '$lib/ui/Chip.svelte'
   import type { Client } from '$lib/api'
+  import { changed } from '$lib/changed'
   import { hhmm } from '$lib/format'
   import { hillWord } from '$lib/words'
   import type { ProjectDrill, ProjectRow, TreeNode } from '$lib/types'
@@ -120,7 +121,9 @@
       <div class="flex items-end gap-6">
         <div class="flex flex-col">
           <span class="text-[1.75rem] leading-8 font-semibold tabular-nums">
-            {#key row.done_pct}<span class="num">{row.done_pct}%</span>{/key}
+            <span class="inline-block" use:changed={{ value: row.done_pct, cls: 'num' }}
+              >{row.done_pct}%</span
+            >
           </span>
           <span class="text-meta text-muted tabular-nums"
             >done{row.claimed_pct > 0 ? ` · +${row.claimed_pct}% claimed` : ''}</span

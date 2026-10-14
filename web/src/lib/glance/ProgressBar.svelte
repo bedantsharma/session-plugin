@@ -14,7 +14,7 @@
     claimed?: number
     muted?: boolean
     size?: 'md' | 'card' | 'mini'
-    /** A working session is on it: a slow sheen sweeps the fill. */
+    /** A working session is on it: a slow sheen sweeps the bar. */
     active?: boolean
     labelled?: boolean
   } = $props()
@@ -26,6 +26,7 @@
   class={[
     'relative flex w-full overflow-hidden rounded-full bg-line',
     height[size],
+    active && 'sheen',
     muted && 'opacity-60',
   ]}
   role={labelled ? 'img' : undefined}
@@ -33,7 +34,7 @@
   aria-hidden={labelled ? undefined : 'true'}
 >
   <div
-    class={['bar-fill relative h-full overflow-hidden bg-clay', active && 'sheen']}
+    class="bar-fill h-full bg-clay"
     style:width={`${done}%`}
     data-testid={labelled ? 'done-bar' : undefined}
   ></div>

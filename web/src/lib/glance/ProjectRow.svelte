@@ -4,6 +4,7 @@
   // and stuck chips, and the leftovers/unestimated footer. The whole card opens the
   // project drill-down.
   import MilestoneList from './MilestoneList.svelte'
+  import { changed } from '$lib/changed'
   import ProgressBar from './ProgressBar.svelte'
   import type { ProjectRow } from '$lib/types'
 
@@ -29,7 +30,9 @@
     </div>
     <div class="flex shrink-0 flex-col items-end" data-testid="progress-text">
       <span class="text-[1.75rem] leading-8 font-semibold tabular-nums">
-        {#key project.done_pct}<span class="num">{project.done_pct}%</span>{/key}
+        <span class="inline-block" use:changed={{ value: project.done_pct, cls: 'num' }}
+          >{project.done_pct}%</span
+        >
       </span>
       {#if project.claimed_pct > 0}
         <span class="text-meta text-muted tabular-nums">+{project.claimed_pct}% claimed</span>

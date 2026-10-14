@@ -4,6 +4,7 @@
   // session is on gets a slow sheen on its bar.
   import ProgressBar from './ProgressBar.svelte'
   import Chip from '$lib/ui/Chip.svelte'
+  import { changed } from '$lib/changed'
   import { hillWord } from '$lib/words'
   import type { ProjectRow } from '$lib/types'
 
@@ -28,7 +29,11 @@
   <ul class="-mt-2 grid grid-cols-[2.5rem_minmax(0,1fr)_7rem_3rem_auto] gap-x-3">
     {#each milestones as m (m.id)}
       {@const hill = hillWord(m.hill, m.done_pct)}
-      <li class="col-span-5 grid h-9 grid-cols-subgrid items-center" data-milestone={m.id}>
+      <li
+        class="col-span-5 -mx-2 grid h-9 grid-cols-subgrid items-center rounded-lg px-2"
+        data-milestone={m.id}
+        use:changed={{ value: [m.done_pct, m.claimed_pct, m.hill, m.stuck] }}
+      >
         <span class="font-mono text-meta text-muted">{m.id}</span>
         <span class="truncate text-row">{m.title}</span>
         <ProgressBar

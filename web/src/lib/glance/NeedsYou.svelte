@@ -5,6 +5,7 @@
   // the reply says how to get the files back). After a click the button waits for the
   // server: no optimistic removal. While the pointer or focus is inside, updates don't
   // move rows; they apply when it leaves.
+  import { untrack } from 'svelte'
   import ActionButton from './ActionButton.svelte'
   import Chip from '$lib/ui/Chip.svelte'
   import * as Dialog from '$lib/components/ui/dialog'
@@ -94,6 +95,9 @@
     void navigator.clipboard?.writeText(text)
   }
 
+  // Items there at first load just appear; later ones arrive (a fade up and a one-off ring).
+  const initial = new Set(untrack(() => items.map((i) => i.id)))
+
   const visible = $derived(showAll ? shown : shown.slice(0, URGENT))
 </script>
 
@@ -112,7 +116,10 @@
     <ul class="flex flex-col gap-4">
       {#each visible as item (item.id)}
         <li
-          class="flex flex-col gap-3 rounded-xl border border-l-[3px] border-line border-l-bad bg-surface p-5"
+          class={[
+            'flex flex-col gap-3 rounded-xl border border-l-[3px] border-line border-l-bad bg-surface p-5',
+            !initial.has(item.id) && 'arrive',
+          ]}
           data-item={item.id}
         >
           <div class="flex flex-col gap-1">

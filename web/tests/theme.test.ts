@@ -1,6 +1,6 @@
 // Theme rules beyond the token contrast: no web fonts (the card is one self-contained
 // file and the palette uses system fonts), no surface painted with the muted *text* grey,
-// and nothing but the escalation fade moves under reduced motion.
+// and under reduced motion only colour and opacity change.
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -30,10 +30,12 @@ describe('theme', () => {
     }
   })
 
-  it('stops every other animation and transition under reduced motion', () => {
+  it('under reduced motion, stops animations and keeps only colour/opacity transitions', () => {
     const block = /@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/.exec(css)
     expect(block).not.toBeNull()
     expect(block![1]).toMatch(/animation:\s*none !important/)
-    expect(block![1]).toMatch(/transition:\s*none !important/)
+    expect(block![1]).toMatch(
+      /transition-property:\s*color, background-color, border-color, outline-color, opacity !important/,
+    )
   })
 })

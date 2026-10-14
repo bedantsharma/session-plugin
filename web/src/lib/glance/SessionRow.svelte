@@ -4,6 +4,7 @@
   // and the active time. A working session gets a green bar, a faint tint and a ring
   // that breathes around its dot (still under Motion off or reduced motion).
   import Chip from '$lib/ui/Chip.svelte'
+  import { changed } from '$lib/changed'
   import { flagText } from '$lib/format'
   import { sessionWord } from '$lib/words'
   import type { SessionRow } from '$lib/types'
@@ -21,6 +22,15 @@
   ]}
   data-session={session.session_id}
   data-working={working || undefined}
+  use:changed={{
+    value: [
+      session.state_label,
+      session.light_word,
+      session.task?.id,
+      session.detour,
+      session.flags.map((f) => f.kind),
+    ],
+  }}
 >
   <div class="flex min-w-0 flex-1 flex-col gap-0.5">
     <div class="flex min-w-0 items-center gap-3">
@@ -52,6 +62,8 @@
     {/if}
   </div>
   <span class="shrink-0 self-start pt-0.5 text-meta text-muted tabular-nums"
-    >{#key session.active_min}<span class="num">{session.active_min} min</span>{/key}</span
+    ><span class="inline-block" use:changed={{ value: session.active_min, cls: 'num' }}
+      >{session.active_min} min</span
+    ></span
   >
 </li>
