@@ -42,6 +42,12 @@
     allProjects ? (glance?.projects ?? []) : (glance?.projects ?? []).slice(0, MAX_PROJECTS),
   )
 
+  const projectRow = $derived(
+    screen.kind === 'project'
+      ? glance?.projects.find((p) => p.repo_id === (screen as { repo: string }).repo)
+      : undefined,
+  )
+
   $effect(() => applyBadge(glance?.needs_you_count ?? 0, conn.connected && glance !== null))
 
   async function act(action: OwnerAction) {
@@ -112,6 +118,7 @@
           {client}
           repo={screen.repo}
           {version}
+          row={projectRow}
           onOpenTask={(repo, id) => (screen = { kind: 'task', repo, id })}
           onOpenHistory={(repo) => (screen = { kind: 'history', repo })}
           onOpenTuning={(repo) => (screen = { kind: 'tuning', repo })}
