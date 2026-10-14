@@ -41,6 +41,14 @@ describe.each(['dark', 'light'])('%s theme', (name) => {
       expect(ratio(t[g], t[bg]), `${g} on ${bg}`).toBeGreaterThanOrEqual(3)
   })
 
+  it.each(['fg', 'bad'])('text %s on a hovered control (line) ≥ 4.5:1', (fg) => {
+    expect(ratio(t[fg], t.line)).toBeGreaterThanOrEqual(4.5)
+  })
+
+  it('primary buttons (bg on fg) keep their text readable', () => {
+    expect(ratio(t.bg, t.fg)).toBeGreaterThanOrEqual(4.5)
+  })
+
   it('filled red buttons keep their text readable', () => {
     expect(ratio(t['on-accent'], t.bad)).toBeGreaterThanOrEqual(4.5)
   })
