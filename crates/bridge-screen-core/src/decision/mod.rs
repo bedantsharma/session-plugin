@@ -213,7 +213,13 @@ impl Logged {
                 .task_id
                 .as_deref()
                 .map_or_else(|| "repo-wide".to_string(), |t| format!("on {t}"));
-            return format!("Merged into {} (same decision {on}).", self.decision_id);
+            return match &self.supersedes {
+                Some(old) => format!(
+                    "Merged into {} (same decision {on}); it supersedes {old}.",
+                    self.decision_id
+                ),
+                None => format!("Merged into {} (same decision {on}).", self.decision_id),
+            };
         }
         match &self.supersedes {
             Some(old) => format!("Logged {} (supersedes {old}).", self.decision_id),
@@ -302,9 +308,19 @@ pub fn log_decision(store: &mut crate::store::Store, req: &LogRequest) -> Result
             }
             let found = get(tx, &s.repo_id, old)?
                 .ok_or_else(|| refuse(format!("no decision {old} in this repo")))?;
-            if let Some(newer) = found.superseded_by {
+            // (Logging the same superseding decision again just merges.)
+            if let Some(newer) = found.superseded_by.filter(|newer| *newer != id) {
                 return Err(refuse(format!(
                     "{old} was already superseded by {newer} — supersede {newer} instead"
+                )));
+            }
+            // A merge keeps one supersede link per decision: the chain stays a line.
+            if dup.is_some()
+                && let Some(prev) = get(tx, &s.repo_id, &id)?.and_then(|d| d.supersedes)
+                && prev != *old
+            {
+                return Err(refuse(format!(
+                    "{id} (the same decision) already supersedes {prev} — log a new decision to supersede {old}"
                 )));
             }
         }

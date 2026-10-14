@@ -302,6 +302,41 @@ fn duplicates_merge_and_rebuild_gives_the_same_rows() {
 }
 
 #[test]
+fn a_merge_that_supersedes_links_both_ways() {
+    let mut s = store_with_task();
+    log_decision(&mut s, &req("Use SQLite", None)).unwrap();
+    log_decision(&mut s, &req("Use Postgres", None)).unwrap();
+    let merged = log_decision(&mut s, &req("use postgres", Some("D1"))).unwrap();
+    assert_eq!(
+        merged.reply(),
+        "Merged into D2 (same decision on 1.1); it supersedes D1."
+    );
+    let d2 = get(s.conn(), "r", "D2").unwrap().unwrap();
+    assert_eq!(d2.supersedes.as_deref(), Some("D1"));
+    let ids = |s: &Store, id: &str| -> Vec<String> {
+        chain(s.conn(), "r", id)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.decision_id)
+            .collect()
+    };
+    assert_eq!(ids(&s, "D2"), vec!["D1", "D2"]);
+    assert_eq!(ids(&s, "D1"), vec!["D1", "D2"]);
+    // The same again merges once more.
+    let again = log_decision(&mut s, &req("Use Postgres", Some("D1"))).unwrap();
+    assert_eq!(again.decision_id, "D2");
+    // A merge can't make one decision supersede two.
+    log_decision(&mut s, &req("Use files", None)).unwrap();
+    assert_eq!(
+        err(log_decision(&mut s, &req("Use Postgres", Some("D3")))),
+        "D2 (the same decision) already supersedes D1 — log a new decision to supersede D3"
+    );
+    let before = list(s.conn(), "r", None, true).unwrap();
+    s.rebuild().unwrap();
+    assert_eq!(list(s.conn(), "r", None, true).unwrap(), before);
+}
+
+#[test]
 fn ids_stay_unique_under_concurrent_writers() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("db.sqlite");

@@ -63,14 +63,16 @@ fn decision(tx: &Transaction, event: &Event, d: &DecisionData) -> Result<()> {
         merged.truncate(MAX_ALTERNATIVES);
         tx.execute(
             "UPDATE decisions SET why = ?3, alternatives = ?4,
-                                      merged_count = merged_count + 1, updated_ts = ?5
+                                      merged_count = merged_count + 1, updated_ts = ?5,
+                                      supersedes = COALESCE(supersedes, ?6)
                  WHERE repo_id = ?1 AND decision_id = ?2",
             params![
                 repo,
                 d.decision_id,
                 d.why,
                 serde_json::to_string(&merged)?,
-                event.ts
+                event.ts,
+                d.supersedes
             ],
         )?;
     } else {
