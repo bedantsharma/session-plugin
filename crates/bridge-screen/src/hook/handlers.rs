@@ -338,7 +338,13 @@ fn drafts_for(
                 // auth_success, agent_completed, elicitation_complete, …: nobody waits.
                 _ => return Ok(Vec::new()),
             };
-            ctx.draft("needs_owner", &NeedsOwner { kind })?
+            ctx.draft(
+                "needs_owner",
+                &NeedsOwner {
+                    kind,
+                    task_id: None,
+                },
+            )?
         }
         HookEvent::SessionEnd => {
             // How it ended (spec §8.2): git runs here, once per session.

@@ -1,6 +1,6 @@
 //! SQL schema. Version 1 is the first released schema; later versions append migrations.
 
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 pub const V1: &str = r"
 CREATE TABLE meta (
@@ -274,4 +274,66 @@ CREATE TABLE claims_done (
 );
 
 CREATE INDEX claims_done_task ON claims_done (repo_id, task_id);
+";
+
+/// Version 5: verification and decisions — the verification ladder with its commit SHAs,
+/// nudges about unverified work, per-repo test settings, decisions with supersede chains,
+/// and the decision-capture flag (spec §8.5–8.6).
+pub const V5: &str = r"
+ALTER TABLE sessions ADD COLUMN decision_capture TEXT;
+ALTER TABLE claims_done ADD COLUMN files TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE claims_done ADD COLUMN symbols TEXT NOT NULL DEFAULT '[]';
+
+CREATE TABLE verifications (
+    verif_id          TEXT PRIMARY KEY,
+    repo_id           TEXT NOT NULL,
+    task_id           TEXT NOT NULL,
+    level             INTEGER NOT NULL,
+    orig_level        INTEGER NOT NULL,
+    sha               TEXT NOT NULL,
+    files             TEXT NOT NULL DEFAULT '[]',
+    evidence          TEXT NOT NULL,
+    verified_by       TEXT NOT NULL,
+    rerun             TEXT,
+    session_id        TEXT NOT NULL,
+    state             TEXT NOT NULL,
+    stale_checked_sha TEXT NOT NULL,
+    ts                TEXT NOT NULL
+);
+
+CREATE INDEX verifications_task ON verifications (repo_id, task_id);
+
+CREATE TABLE decisions (
+    decision_id   TEXT NOT NULL,
+    repo_id       TEXT NOT NULL,
+    task_id       TEXT,
+    session_id    TEXT NOT NULL,
+    what          TEXT NOT NULL,
+    what_key      TEXT NOT NULL,
+    why           TEXT NOT NULL,
+    alternatives  TEXT NOT NULL DEFAULT '[]',
+    supersedes    TEXT,
+    superseded_by TEXT,
+    merged_count  INTEGER NOT NULL DEFAULT 1,
+    ts            TEXT NOT NULL,
+    updated_ts    TEXT NOT NULL,
+    PRIMARY KEY (repo_id, decision_id)
+);
+
+CREATE INDEX decisions_key ON decisions (repo_id, task_id, what_key);
+
+CREATE TABLE verify_nudges (
+    repo_id        TEXT NOT NULL,
+    task_id        TEXT NOT NULL,
+    nudges         INTEGER NOT NULL DEFAULT 0,
+    level_at_first INTEGER NOT NULL,
+    escalated      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (repo_id, task_id)
+);
+
+CREATE TABLE repo_settings (
+    repo_id        TEXT PRIMARY KEY,
+    test_command   TEXT,
+    test_timeout_s INTEGER
+);
 ";

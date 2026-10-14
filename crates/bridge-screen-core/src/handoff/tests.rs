@@ -87,10 +87,15 @@ fn claimed_done_records_l0_and_marks_the_task_claimed() {
         (claims[0].task_id.as_str(), claims[0].evidence.as_str()),
         ("1.1", "tests pass")
     );
-    // A higher status is kept.
-    s.conn()
-        .execute("UPDATE plan_nodes SET status = 'l2' WHERE id = '1.2'", [])
-        .unwrap();
+    // A higher status (from a verification) is kept.
+    ev(
+        &mut s,
+        "s1",
+        "verified",
+        json!({"verif_id": "v1", "task_id": "1.2", "level": 2, "sha": "a",
+               "evidence": "ok", "by": "agent"}),
+        10,
+    );
     ev(
         &mut s,
         "s1",

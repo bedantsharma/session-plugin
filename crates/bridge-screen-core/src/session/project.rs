@@ -76,6 +76,9 @@ pub enum NeedsOwnerKind {
     Drift,
     /// WIP commits weren't squashed before a PR (spec §8.1). Not a wait either.
     Squash,
+    /// A claimed task was nudged twice without being verified (spec §8.5): the owner is
+    /// asked to verify it. Not a wait.
+    Verify,
     #[serde(other)]
     Other,
 }
@@ -83,6 +86,9 @@ pub enum NeedsOwnerKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NeedsOwner {
     pub kind: NeedsOwnerKind,
+    /// For `verify`: the task the owner is asked about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -158,6 +164,9 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
         .ts
         .parse()
         .map_err(|e| Error::BadEvent(format!("timestamp {}: {e}", event.ts)))?;
+    if event.kind == "needs_owner" && escalated_verify(tx, event)? {
+        return Ok(());
+    }
     if event.kind == "session_started" {
         let d: SessionStarted = payload(event)?;
         if d.source != COMPACT
@@ -210,7 +219,10 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
         "prompt" => at.prompt(unit, &payload(event)?)?,
         "needs_owner" => {
             let d: NeedsOwner = payload(event)?;
-            if !matches!(d.kind, NeedsOwnerKind::Drift | NeedsOwnerKind::Squash) {
+            if !matches!(
+                d.kind,
+                NeedsOwnerKind::Drift | NeedsOwnerKind::Squash | NeedsOwnerKind::Verify
+            ) {
                 at.needs_owner(unit)?;
             }
         }
@@ -229,27 +241,39 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
         }
         "unit_stopped" => at.unit_stopped(unit, &payload(event)?)?,
         "session_ended" => at.ended(unit, &payload(event)?)?,
-        "task_claimed" => {
-            let d: TaskClaimed = payload(event)?;
-            tx.execute(
-                "UPDATE sessions SET active_task = ?2, active_since = ?3, last_task = ?2
-                 WHERE session_id = ?1",
-                params![session.session_id, d.task_id, event.ts],
-            )?;
-            if let Some(mut u) = unit.filter(|u| u.task_id.is_none()) {
-                u.task_id = Some(d.task_id.clone());
-                save_unit(tx, &u)?;
-            }
-            mark_claimed(tx, &session.repo_id, &d.task_id)?;
-        }
+        "task_claimed" => at.task_claimed(unit, &payload(event)?)?,
         "task_released" => {
             let d: TaskReleased = payload(event)?;
             at.release(&d.task_id)?;
         }
-        // subagent_stopped and precompact only mark activity.
+        // Decisions are asked for with the next note (spec §8.6).
+        "precompact" => {
+            tx.execute(
+                "UPDATE sessions SET decision_capture = 'precompact' WHERE session_id = ?1",
+                [&session.session_id],
+            )?;
+        }
+        // subagent_stopped only marks activity.
         _ => {}
     }
     Ok(())
+}
+
+/// A `needs_owner {kind: verify}`: the task goes on the owner's queue until it is
+/// verified or fails. It is not a wait, so the session is untouched. Returns whether the
+/// event was one.
+fn escalated_verify(tx: &Transaction, event: &Event) -> Result<bool> {
+    let d: NeedsOwner = payload(event)?;
+    if d.kind != NeedsOwnerKind::Verify {
+        return Ok(false);
+    }
+    if let Some(task) = &d.task_id {
+        tx.execute(
+            "UPDATE verify_nudges SET escalated = 1 WHERE repo_id = ?1 AND task_id = ?2",
+            params![event.repo_id, task],
+        )?;
+    }
+    Ok(true)
 }
 
 /// The session went silent and is declared crashed: its open unit (and any wait in it)
@@ -474,6 +498,21 @@ impl Moment<'_> {
         if open.is_some() && self.session.state == SessionState::NeedsOwner {
             self.set_state(SessionState::Working)?;
         }
+        Ok(())
+    }
+
+    /// The session works on `d.task_id` now; an open unit without a task is charged to it.
+    fn task_claimed(&self, unit: Option<Unit>, d: &TaskClaimed) -> Result<()> {
+        self.tx.execute(
+            "UPDATE sessions SET active_task = ?2, active_since = ?3, last_task = ?2
+             WHERE session_id = ?1",
+            params![self.session.session_id, d.task_id, self.ts_text],
+        )?;
+        if let Some(mut u) = unit.filter(|u| u.task_id.is_none()) {
+            u.task_id = Some(d.task_id.clone());
+            save_unit(self.tx, &u)?;
+        }
+        mark_claimed(self.tx, &self.session.repo_id, &d.task_id)?;
         Ok(())
     }
 

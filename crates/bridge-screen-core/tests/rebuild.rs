@@ -43,6 +43,10 @@ fn dump(store: &Store) -> Vec<String> {
         ("leftovers", "leftover_id"),
         ("handoff_notes", "session_id, ts"),
         ("claims_done", "repo_id, task_id, ts"),
+        ("verifications", "verif_id"),
+        ("decisions", "repo_id, decision_id"),
+        ("verify_nudges", "repo_id, task_id"),
+        ("repo_settings", "repo_id"),
     ] {
         let mut stmt = store
             .conn()
@@ -664,6 +668,166 @@ fn rebuild_reproduces_handoff_views() {
         let prefix = format!("{table}: ");
         assert!(before.iter().any(|r| r.starts_with(&prefix)), "{table}");
     }
+    s.rebuild().unwrap();
+    assert_eq!(dump(&s), before);
+}
+
+/// A task climbs the ladder, fails, climbs again and goes stale; it is squashed, nudged
+/// and escalated; decisions are logged, merged and superseded; a test command is set.
+#[allow(clippy::too_many_lines)] // one event per line, as data
+fn verify_script() -> Vec<(&'static str, i64, &'static str, Value)> {
+    let v = |id: &str, level: i64, sha: &str, by: &str| {
+        json!({"verif_id": id, "task_id": "1.1", "level": level, "sha": sha,
+               "files": ["src/schema.rs"], "evidence": "ok", "by": by})
+    };
+    vec![
+        (
+            "s1",
+            0,
+            "session_started",
+            json!({"cwd": "/a", "worktree": "/a", "source": "startup"}),
+        ),
+        (
+            "s1",
+            1,
+            "task_claimed",
+            json!({"task_id": "1.1", "mode": "auto", "confidence": 0.9}),
+        ),
+        (
+            "s1",
+            2,
+            "claimed_done",
+            json!({"task_id": "1.1", "evidence": "tests pass", "files": ["src/schema.rs"],
+                   "symbols": ["migrate"]}),
+        ),
+        ("s1", 3, "verified", v("v1", 1, "aaa", "auto")),
+        (
+            "s1",
+            4,
+            "verify_nudged",
+            json!({"task_id": "1.1", "level": 1}),
+        ),
+        (
+            "s1",
+            5,
+            "verify_nudged",
+            json!({"task_id": "1.1", "level": 1}),
+        ),
+        (
+            "s1",
+            6,
+            "needs_owner",
+            json!({"kind": "verify", "task_id": "1.1"}),
+        ),
+        ("s1", 7, "verified", v("v2", 2, "aaa", "rerun")),
+        (
+            "s1",
+            8,
+            "verification_failed",
+            json!({"task_id": "1.1", "level": 4, "evidence": "broken", "by": "owner"}),
+        ),
+        (
+            "s1",
+            9,
+            "task_claimed",
+            json!({"task_id": "1.1", "mode": "auto", "confidence": 0.9}),
+        ),
+        (
+            "s1",
+            10,
+            "claimed_done",
+            json!({"task_id": "1.1", "evidence": "fixed"}),
+        ),
+        ("s1", 11, "verified", v("v3", 3, "bbb", "agent")),
+        (
+            "s1",
+            12,
+            "squashed",
+            json!({"branch": "feat", "old_shas": ["aaa", "bbb"], "new_sha": "ccc",
+                   "backup_ref": "refs/bridge-screen/backup/feat/1"}),
+        ),
+        (
+            "s1",
+            13,
+            "verification_stale",
+            json!({"verif_id": "v3", "task_id": "1.1", "from_level": 3, "to_level": 2,
+                   "head_sha": "ddd", "changed": ["src/schema.rs"]}),
+        ),
+        ("s1", 14, "precompact", json!({})),
+        (
+            "s1",
+            15,
+            "decision",
+            json!({"decision_id": "D1", "task_id": "1.1", "what": "Use SQLite",
+                   "why": "one file", "alternatives": ["Postgres"]}),
+        ),
+        (
+            "s1",
+            16,
+            "decision",
+            json!({"decision_id": "D1", "task_id": "1.1", "what": "use sqlite",
+                   "why": "one file, WAL", "alternatives": ["sled"]}),
+        ),
+        (
+            "s1",
+            17,
+            "decision",
+            json!({"decision_id": "D2", "task_id": null, "what": "Events are append-only",
+                   "why": "rebuild", "alternatives": [], "supersedes": "D1"}),
+        ),
+        ("s1", 18, "decision_asked", json!({})),
+        (
+            "owner",
+            19,
+            "config_changed",
+            json!({"scope": "repo", "key": "test_command", "old": null,
+                   "new": "cargo test"}),
+        ),
+        (
+            "owner",
+            20,
+            "config_changed",
+            json!({"scope": "repo", "key": "test_timeout_s", "old": null, "new": 60}),
+        ),
+    ]
+}
+
+#[test]
+fn rebuild_reproduces_verification_and_decision_views() {
+    let mut s = Store::open_in_memory().unwrap();
+    plan_edit(
+        &mut s,
+        &ctx("a", false),
+        &[
+            add(None, NodeKind::Goal, "goal"),
+            add(Some("G"), NodeKind::Milestone, "core"),
+            add(Some("1"), NodeKind::Task, "schema"),
+        ],
+    )
+    .unwrap();
+    let t0: Timestamp = "2026-10-14T09:00:00Z".parse().unwrap();
+    s.write(|tx| {
+        for (session, secs, kind, data) in verify_script() {
+            let draft = EventDraft::new("a", session, kind, data);
+            append_in_at(tx, draft, t0 + SignedDuration::from_secs(secs))?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let before = dump(&s);
+    for table in ["verifications", "decisions", "repo_settings"] {
+        let prefix = format!("{table}: ");
+        assert!(before.iter().any(|r| r.starts_with(&prefix)), "{table}");
+    }
+    let status: String = s
+        .conn()
+        .query_row(
+            "SELECT status FROM plan_nodes WHERE repo_id = 'a' AND id = '1.1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "l2");
     s.rebuild().unwrap();
     assert_eq!(dump(&s), before);
 }

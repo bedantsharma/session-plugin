@@ -457,6 +457,7 @@ pub fn nav_step(
         if e.state == NavState::Red {
             let data = NeedsOwner {
                 kind: NeedsOwnerKind::Drift,
+                task_id: None,
             };
             step.events.push(draft(&session, "needs_owner", &data)?);
         }

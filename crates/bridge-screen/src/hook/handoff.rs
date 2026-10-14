@@ -240,6 +240,7 @@ pub fn before_pr(store: &mut Store, input: &HookInput) -> Result<Option<String>>
             )?;
             let owner = NeedsOwner {
                 kind: NeedsOwnerKind::Squash,
+                task_id: None,
             };
             append_in(tx, draft("needs_owner", serde_json::to_value(owner)?))?;
             Ok(())

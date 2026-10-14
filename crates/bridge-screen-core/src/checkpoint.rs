@@ -88,6 +88,8 @@ fn claim_done_in(tx: &Transaction, req: &ClaimDoneRequest) -> Result<String> {
     let data = ClaimedDone {
         task_id: task.clone(),
         evidence: evidence.chars().take(500).collect(),
+        files: Vec::new(),
+        symbols: Vec::new(),
     };
     append_in(
         tx,
