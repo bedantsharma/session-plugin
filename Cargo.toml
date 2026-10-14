@@ -6,7 +6,7 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
-license = "UNLICENSED"
+license = "PolyForm-Strict-1.0.0"
 repository = "https://github.com/bedantsharma/session-plugin"
 homepage = "https://github.com/bedantsharma/session-plugin"
 
