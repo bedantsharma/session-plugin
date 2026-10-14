@@ -698,8 +698,31 @@ fn hook_latency_stop_path() {
     report("hook stop (30 files, 300-node plan)", times);
 }
 
+/// 50 committed files and 5 symbols in them, for a claim: the L1 check at a commit then
+/// does its full git work.
+fn committed_evidence(env: &Env) -> (Vec<String>, Vec<String>) {
+    let files: Vec<String> = (0..50).map(|n| format!("src/f{n}.rs")).collect();
+    std::fs::create_dir_all(env.repo.path().join("src")).unwrap();
+    for (n, f) in files.iter().enumerate() {
+        std::fs::write(env.repo.path().join(f), format!("fn sym{n}() {{}}\n")).unwrap();
+    }
+    common::git(env.repo.path(), &["add", "-A"]);
+    common::git(env.repo.path(), &["commit", "-q", "-m", "files"]);
+    (files, (0..5).map(|n| format!("sym{n}")).collect())
+}
+
+/// A failed verification of `task`: it is back to work, so its next claim is unverified.
+fn back_to_work(store: &mut Store, repo_id: &str, session: &str, task: &str) {
+    use bridge_screen_core::store::EventDraft;
+    let data = json!({"task_id": task, "level": 1, "evidence": "again", "by": "owner"});
+    store
+        .append(EventDraft::new(repo_id, session, "verification_failed", data).task(task))
+        .unwrap();
+}
+
 /// PostToolUse after a Bash `git commit` while a checkpoint is pending: git runs here
-/// (HEAD, its trailers) and a checkpoint is recorded. Budget p95 < 150 ms.
+/// (HEAD, its trailers), a checkpoint is recorded and the claimed task's L1 is checked
+/// (50 files, 5 symbols). Budget p95 < 150 ms.
 #[test]
 #[ignore = "perf check: run on demand with --release"]
 fn hook_latency_commit_path() {
@@ -742,6 +765,7 @@ fn hook_latency_commit_path() {
     .unwrap();
     let session = "perf-session-07";
     claim_for(&env, session, "1");
+    let (files, symbols) = committed_evidence(&env);
     let mut payload = common::fixture_json("post-tool-use", session, &env.repo_path());
     payload["tool_name"] = json!("Bash");
     payload["tool_input"] = json!({"command": "git commit -q -m 'wip(bridge): 1 Login'"});
@@ -749,14 +773,15 @@ fn hook_latency_commit_path() {
     assert!(env.run(&["--version"], "").status.success());
     let times = (0..200)
         .map(|i| {
+            back_to_work(&mut store, &repo.id, session, "1");
             claim_done(
                 &mut store,
                 &ClaimDoneRequest {
                     session_id: session.into(),
                     task_id: None,
                     evidence: "tests".into(),
-                    files: Vec::new(),
-                    symbols: Vec::new(),
+                    files: files.clone(),
+                    symbols: symbols.clone(),
                     actor: Actor::default(),
                 },
             )
@@ -785,6 +810,15 @@ fn hook_latency_commit_path() {
         .query_row("SELECT count(*) FROM checkpoints", [], |r| r.get(0))
         .unwrap();
     assert_eq!(recorded, 200, "every commit was recorded");
+    let l1: i64 = store
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM verifications WHERE level = 1 AND verified_by = 'auto'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(l1, 200, "every commit reached L1");
     report_within(
         "hook post-tool-use git commit (checkpoint pending)",
         times,

@@ -485,19 +485,32 @@ fn yes_no(wt: &Path, args: &[&str]) -> Result<bool> {
     }
 }
 
-/// Does `path` (relative to the worktree root) exist in commit `rev`?
-pub fn exists_at(wt: &Path, rev: &str, path: &str) -> Result<bool> {
-    let out = command(wt)
-        .args(["cat-file", "-e", &format!("{rev}:{path}")])
-        .output()
-        .map_err(|e| Error::Git(format!("could not run git: {e}")))?;
-    if out.status.success() {
-        return Ok(true);
+/// Of `paths` (relative to the worktree root), those not in commit `rev`'s tree (a
+/// directory counts as there). One git call.
+pub fn missing_at(wt: &Path, rev: &str, paths: &[String]) -> Result<Vec<String>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
     }
-    if String::from_utf8_lossy(&out.stderr).contains("not a git repository") {
-        return Err(Error::NotARepo(wt.display().to_string()));
-    }
-    Ok(false)
+    let mut args = vec![
+        "ls-tree",
+        "-r",
+        "--full-tree",
+        "--name-only",
+        "-z",
+        rev,
+        "--",
+    ];
+    args.extend(paths.iter().map(String::as_str));
+    let listed: std::collections::HashSet<String> =
+        nul_fields(&run(wt, &args)?).into_iter().collect();
+    Ok(paths
+        .iter()
+        .filter(|p| {
+            let dir = format!("{}/", p.trim_end_matches('/'));
+            !listed.contains(p.as_str()) && !listed.iter().any(|l| l.starts_with(&dir))
+        })
+        .cloned()
+        .collect())
 }
 
 /// Does `word` appear as a whole word (fixed string) in any of `paths` in commit `rev`?
@@ -507,12 +520,52 @@ pub fn grep_at(wt: &Path, rev: &str, word: &str, paths: &[String]) -> Result<boo
     yes_no(wt, &args)
 }
 
-/// Paths that differ between commits `from` and `to`; a rename lists both names.
-pub fn changed_between(wt: &Path, from: &str, to: &str) -> Result<Vec<String>> {
-    Ok(nul_fields(&run(
-        wt,
-        &["diff", "--name-only", "-z", "--no-renames", from, to, "--"],
-    )?))
+/// Of `words`, those that don't appear as whole words in any of `paths` in commit `rev`.
+/// One git call for all of them; a word it didn't report (one match can hide another
+/// that starts at the same place) is looked up on its own.
+pub fn words_missing_at(
+    wt: &Path,
+    rev: &str,
+    words: &[String],
+    paths: &[String],
+) -> Result<Vec<String>> {
+    if words.is_empty() {
+        return Ok(Vec::new());
+    }
+    if paths.is_empty() {
+        return Ok(words.to_vec());
+    }
+    let mut args = vec!["grep", "-h", "-o", "-F", "-w", "--no-color"];
+    for w in words {
+        args.extend(["-e", w.as_str()]);
+    }
+    args.extend([rev, "--"]);
+    args.extend(paths.iter().map(String::as_str));
+    let out = command(wt)
+        .args(&args)
+        .output()
+        .map_err(|e| Error::Git(format!("could not run git: {e}")))?;
+    let found: std::collections::HashSet<String> = match out.status.code() {
+        Some(0) => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect(),
+        Some(1) => std::collections::HashSet::new(),
+        _ => {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            if err.contains("not a git repository") {
+                return Err(Error::NotARepo(wt.display().to_string()));
+            }
+            return Err(Error::Git(format!("git grep: {err}")));
+        }
+    };
+    let mut missing = Vec::new();
+    for w in words {
+        if !found.contains(w) && !grep_at(wt, rev, w, paths)? {
+            missing.push(w.clone());
+        }
+    }
+    Ok(missing)
 }
 
 /// One commit of [`history`]: its parents and the paths it touched (merges list none).

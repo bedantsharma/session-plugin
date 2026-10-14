@@ -122,21 +122,14 @@ pub fn check_l1(conn: &Connection, wt: &Path, repo_id: &str, task_id: &str) -> R
     if !pending.is_empty() {
         return Ok(L1Outcome::NotCommitted { paths: pending });
     }
-    let mut missing = Vec::new();
-    let mut present = Vec::new();
-    for f in &files {
-        if git::exists_at(wt, &sha, f)? {
-            present.push(f.clone());
-        } else {
-            missing.push(f.clone());
-        }
-    }
-    let mut missing_symbols = Vec::new();
-    for s in &symbols {
-        if present.is_empty() || !git::grep_at(wt, &sha, s, &present)? {
-            missing_symbols.push(s.clone());
-        }
-    }
+    // Two git calls whatever the number of files and symbols: hooks run this.
+    let missing = git::missing_at(wt, &sha, &files)?;
+    let present: Vec<String> = files
+        .iter()
+        .filter(|f| !missing.contains(f))
+        .cloned()
+        .collect();
+    let missing_symbols = git::words_missing_at(wt, &sha, &symbols, &present)?;
     if missing.is_empty() && missing_symbols.is_empty() {
         return Ok(L1Outcome::Passed { sha, files });
     }

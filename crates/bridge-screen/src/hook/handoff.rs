@@ -55,10 +55,8 @@ pub fn gather(
     event: HookEvent,
     known: Option<&Session>,
     input: &HookInput,
-) -> Result<Option<CheckpointGit>> {
-    let Some(session) = known else {
-        return Ok(None);
-    };
+) -> Option<CheckpointGit> {
+    let session = known?;
     let wt = worktree_of(session);
     let mut found = match event {
         HookEvent::PostToolUse
@@ -74,14 +72,16 @@ pub fn gather(
             dirty: git::is_dirty(&wt).ok(),
             l1: Vec::new(),
         },
-        _ => return Ok(None),
+        _ => return None,
     };
-    for task in verify::unverified_claims(conn, &session.session_id)? {
+    // Like the git reads, a failure here only means no L1 checks: the hook's own events
+    // must still be recorded.
+    for task in verify::unverified_claims(conn, &session.session_id).unwrap_or_default() {
         if let Ok(outcome) = verify::check_l1(conn, &wt, &session.repo_id, &task) {
             found.l1.push((task, outcome));
         }
     }
-    Ok(Some(found))
+    Some(found)
 }
 
 fn head(wt: &Path) -> Option<HeadCommit> {

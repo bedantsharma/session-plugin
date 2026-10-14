@@ -454,7 +454,7 @@ fn pathspecs_are_literal() {
 }
 
 #[test]
-fn exists_at_and_grep_at_read_a_commit_not_the_worktree() {
+fn missing_at_and_grep_at_read_a_commit_not_the_worktree() {
     let r = repo();
     let wt = r.path();
     write(
@@ -462,48 +462,84 @@ fn exists_at_and_grep_at_read_a_commit_not_the_worktree() {
         "src/ü dir/log in.rs",
         "pub fn login_form() {}\nstruct Form;\n",
     );
+    write(wt, "app/[id]/page.tsx", "export function Page() {}\n");
     sh(wt, &["add", "-A"]);
     sh(wt, &["commit", "-q", "-m", "login"]);
     let head = head(wt).unwrap().unwrap();
     let path = "src/ü dir/log in.rs".to_string();
-    assert!(exists_at(wt, &head, &path).unwrap());
-    assert!(exists_at(wt, &head, "a.txt").unwrap());
-    assert!(!exists_at(wt, &head, "src/missing.rs").unwrap());
-    assert!(!exists_at(wt, "HEAD~1", &path).unwrap());
-    let paths = std::slice::from_ref(&path);
-    assert!(grep_at(wt, &head, "login_form", paths).unwrap());
-    assert!(grep_at(wt, &head, "Form", paths).unwrap());
+    let paths = |p: &[&str]| p.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        missing_at(
+            wt,
+            &head,
+            &paths(&[
+                "src/ü dir/log in.rs",
+                "a.txt",
+                "src/missing.rs",
+                "app/[id]/page.tsx",
+                "app/[id]",
+                "app/[i"
+            ])
+        )
+        .unwrap(),
+        vec!["src/missing.rs", "app/[i"]
+    );
+    assert_eq!(missing_at(wt, &head, &[]).unwrap(), Vec::<String>::new());
+    assert_eq!(
+        missing_at(wt, "HEAD~1", std::slice::from_ref(&path)).unwrap(),
+        vec![path.clone()]
+    );
+    let one = std::slice::from_ref(&path);
+    assert!(grep_at(wt, &head, "login_form", one).unwrap());
+    assert!(grep_at(wt, &head, "Form", one).unwrap());
     // Whole words only: `login` is part of `login_form`, `orm` of `Form`.
-    assert!(!grep_at(wt, &head, "login", paths).unwrap());
-    assert!(!grep_at(wt, &head, "orm", paths).unwrap());
+    assert!(!grep_at(wt, &head, "login", one).unwrap());
+    assert!(!grep_at(wt, &head, "orm", one).unwrap());
     // Only in the given files.
-    assert!(!grep_at(wt, &head, "one", paths).unwrap());
+    assert!(!grep_at(wt, &head, "one", one).unwrap());
     assert!(grep_at(wt, &head, "one", &["a.txt".to_string()]).unwrap());
     // Uncommitted text doesn't count.
     write(wt, "src/ü dir/log in.rs", "pub fn signup() {}\n");
-    assert!(!grep_at(wt, &head, "signup", paths).unwrap());
-    assert!(grep_at(wt, "nope", "x", paths).is_err());
+    assert!(!grep_at(wt, &head, "signup", one).unwrap());
+    assert!(grep_at(wt, "nope", "x", one).is_err());
+    assert!(missing_at(wt, "nope", one).is_err());
 }
 
 #[test]
-fn changed_between_lists_both_sides_of_renames() {
+fn words_missing_at_checks_every_word_in_one_go() {
     let r = repo();
     let wt = r.path();
-    let base = head(wt).unwrap().unwrap();
-    write(wt, "b.txt", "b\n");
-    write(wt, "c d.txt", "c\n");
+    write(wt, "src/a.rs", "fn Foo::new() {}\nlet x = foo_bar;\n");
+    write(wt, "app/[id]/page.tsx", "export function Page() {}\n");
     sh(wt, &["add", "-A"]);
-    sh(wt, &["commit", "-q", "-m", "two"]);
-    sh(wt, &["mv", "a.txt", "moved.txt"]);
-    sh(wt, &["commit", "-q", "-m", "mv"]);
-    let now = head(wt).unwrap().unwrap();
-    let mut changed = changed_between(wt, &base, &now).unwrap();
-    changed.sort();
-    assert_eq!(changed, vec!["a.txt", "b.txt", "c d.txt", "moved.txt"]);
+    sh(wt, &["commit", "-q", "-m", "words"]);
+    let head = head(wt).unwrap().unwrap();
+    let list = |p: &[&str]| p.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+    let files = list(&["src/a.rs", "app/[id]/page.tsx"]);
+    // `Foo::new` and `Foo` start at the same place: both are found.
     assert_eq!(
-        changed_between(wt, &now, &now).unwrap(),
+        words_missing_at(
+            wt,
+            &head,
+            &list(&["Foo::new", "Foo", "Page", "foo", "nope", "foo_bar"]),
+            &files
+        )
+        .unwrap(),
+        vec!["foo", "nope"]
+    );
+    assert_eq!(
+        words_missing_at(wt, &head, &[], &files).unwrap(),
         Vec::<String>::new()
     );
+    assert_eq!(
+        words_missing_at(wt, &head, &list(&["Page"]), &[]).unwrap(),
+        vec!["Page"]
+    );
+    assert_eq!(
+        words_missing_at(wt, &head, &list(&["Page"]), &list(&["src/a.rs"])).unwrap(),
+        vec!["Page"]
+    );
+    assert!(words_missing_at(wt, "nope", &list(&["Page"]), &files).is_err());
 }
 
 #[test]
