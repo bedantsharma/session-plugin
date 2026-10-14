@@ -128,9 +128,7 @@ fn context_of(out: &str, event: &str) -> String {
 }
 
 fn head(env: &Env) -> String {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(env.repo.path())
+    let out = common::git_cmd(env.repo.path())
         .args(["rev-parse", "HEAD"])
         .output()
         .unwrap();
@@ -212,9 +210,7 @@ fn plain_commit_while_pending_also_clears_it() {
     // Commit times are whole seconds: a commit in the boundary's own second can't be told
     // from one made just before it, so this one is clearly later.
     let later = (jiff::Timestamp::now() + jiff::SignedDuration::from_secs(2)).as_second();
-    let ok = std::process::Command::new("git")
-        .arg("-C")
-        .arg(env.repo.path())
+    let ok = common::git_cmd(env.repo.path())
         .args(["-c", "user.name=t", "-c", "user.email=t@t"])
         .args(["commit", "-q", "-m", "login validation"])
         .env("GIT_COMMITTER_DATE", format!("@{later} +0000"))

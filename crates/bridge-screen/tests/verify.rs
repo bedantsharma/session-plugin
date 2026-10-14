@@ -50,9 +50,7 @@ fn of_kind(env: &Env, kind: &str) -> Vec<Value> {
 }
 
 fn head(env: &Env) -> String {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(env.repo.path())
+    let out = common::git_cmd(env.repo.path())
         .args(["rev-parse", "HEAD"])
         .output()
         .unwrap();

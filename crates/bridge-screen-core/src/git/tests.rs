@@ -5,13 +5,14 @@ use super::*;
 
 /// Run git in `dir` for test setup, with a scrubbed environment; panics on failure.
 pub(crate) fn sh(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
+    let mut cmd = Command::new("git");
+    for var in SCRUBBED {
+        cmd.env_remove(var);
+    }
+    let out = cmd
         .arg("-C")
         .arg(dir)
         .args(args)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .unwrap();

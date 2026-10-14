@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 /// Variables that would point git somewhere other than `-C <worktree>`.
-const SCRUBBED: &[&str] = &[
+pub(crate) const SCRUBBED: &[&str] = &[
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",

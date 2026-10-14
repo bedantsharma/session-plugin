@@ -15,10 +15,32 @@ use serde_json::{Value, json};
 
 pub const BIN: &str = env!("CARGO_BIN_EXE_bridge-screen");
 
+/// Variables that would point git somewhere other than `-C <dir>`. A git hook (pre-push in a
+/// linked worktree) exports `GIT_DIR`, which would turn a temp repo's setup into commits on
+/// the real repository.
+pub const GIT_SCRUBBED: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+];
+
+/// `git -C <dir>` with the environment scrubbed of [`GIT_SCRUBBED`].
+pub fn git_cmd(dir: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(dir);
+    for var in GIT_SCRUBBED {
+        cmd.env_remove(var);
+    }
+    cmd
+}
+
 pub fn git(dir: &Path, args: &[&str]) {
-    let ok = Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let ok = git_cmd(dir)
         .args([
             "-c",
             "user.name=t",

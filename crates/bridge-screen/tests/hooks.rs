@@ -974,9 +974,7 @@ fn hook_latency_session_start_staleness() {
         std::fs::write(env.repo.path().join(&file), "x\n").unwrap();
         common::git(env.repo.path(), &["add", "-A"]);
         common::git(env.repo.path(), &["commit", "-q", "-m", &file]);
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(env.repo.path())
+        let out = common::git_cmd(env.repo.path())
             .args(["rev-parse", "HEAD"])
             .output()
             .unwrap();

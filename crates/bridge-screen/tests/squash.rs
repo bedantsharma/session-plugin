@@ -3,19 +3,13 @@
 mod common;
 
 use std::path::Path;
-use std::process::Command;
 
 use bridge_screen_core::store::{Store, read_all};
 use common::{Env, fixture_json, git};
 use serde_json::{Value, json};
 
 fn out(dir: &Path, args: &[&str]) -> String {
-    let o = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .unwrap();
+    let o = common::git_cmd(dir).args(args).output().unwrap();
     assert!(o.status.success(), "git {args:?}");
     String::from_utf8(o.stdout).unwrap().trim().to_string()
 }
