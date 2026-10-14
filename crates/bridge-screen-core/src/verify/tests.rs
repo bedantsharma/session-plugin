@@ -549,6 +549,28 @@ mod rerun_tests {
     use crate::verify::rerun::{RerunOutcome, last_line, run};
 
     #[test]
+    fn a_command_that_cannot_run_is_not_a_test_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = run(
+            dir.path(),
+            "bridge-screen-no-such-command --all",
+            Duration::from_secs(10),
+        );
+        assert!(
+            matches!(&out, RerunOutcome::CannotRun { code: 127, last_line }
+                if last_line.contains("not found")),
+            "{out:?}"
+        );
+        // Present but not executable.
+        std::fs::write(dir.path().join("tests.sh"), "echo hi\n").unwrap();
+        let out = run(dir.path(), "./tests.sh", Duration::from_secs(10));
+        assert!(
+            matches!(&out, RerunOutcome::CannotRun { code: 126, .. }),
+            "{out:?}"
+        );
+    }
+
+    #[test]
     fn passes_and_fails_with_the_last_line() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("marker"), "x").unwrap();

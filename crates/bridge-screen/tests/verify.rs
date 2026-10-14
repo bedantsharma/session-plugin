@@ -423,6 +423,31 @@ fn a_failed_rerun_sets_failed_until_the_task_is_claimed_again() {
 }
 
 #[test]
+fn a_test_command_that_cannot_run_records_as_reported() {
+    let (env, mut mcp) = at_l1();
+    set_test_command(&env, "carg test");
+    let (err, text) = verify_call(&env, &mut mcp, &l2());
+    assert!(!err, "{text}");
+    assert!(
+        text.starts_with(
+            "1.1 verified L2 (recorded as reported; the test command couldn't run, exit 127: "
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("Ask the owner to fix it: bridge-screen config set test-command '<cmd>'."),
+        "{text}"
+    );
+    assert_eq!(of_kind(&env, "verification_failed").len(), 0);
+    assert_eq!(status(&env, "1.1"), NodeStatus::L2);
+    let top = rows(&env, "1.1").pop().unwrap();
+    assert_eq!(
+        (top.by, top.rerun),
+        (verify::By::Agent, Some(verify::Rerun::NotConfigured))
+    );
+}
+
+#[test]
 fn a_failing_exit_code_is_refused() {
     let (env, mut mcp) = at_l1();
     let (err, text) = verify_call(

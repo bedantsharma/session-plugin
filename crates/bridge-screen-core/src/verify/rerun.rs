@@ -42,9 +42,18 @@ pub enum RerunOutcome {
     TimedOut {
         secs: u64,
     },
+    /// The shell couldn't run the command: 127 (not found) or 126 (not executable). A
+    /// broken test command, not a test failure.
+    CannotRun {
+        code: i32,
+        last_line: String,
+    },
     /// The command couldn't be started.
     SpawnError(String),
 }
+
+/// Exit codes `sh` uses when it can't run the command at all.
+const CANNOT_RUN: [i32; 2] = [126, 127];
 
 /// Copy everything from `from` into the shared tail buffer; say when done.
 fn reader(mut from: impl Read + Send + 'static, buf: Arc<Mutex<Vec<u8>>>) -> Receiver<()> {
@@ -180,11 +189,14 @@ pub fn run(wt: &Path, command: &str, timeout: Duration) -> RerunOutcome {
     };
     let last_line = buf.lock().map(|b| last_line(&b)).unwrap_or_default();
     let secs = secs(took);
+    let code = status.code().unwrap_or(-1);
     if status.success() {
         RerunOutcome::Passed { secs, last_line }
+    } else if CANNOT_RUN.contains(&code) {
+        RerunOutcome::CannotRun { code, last_line }
     } else {
         RerunOutcome::Failed {
-            code: status.code().unwrap_or(-1),
+            code,
             secs,
             last_line,
         }

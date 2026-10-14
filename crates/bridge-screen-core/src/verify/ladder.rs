@@ -334,6 +334,13 @@ fn level2(
                     timeout.as_secs()
                 ),
             ),
+            RerunOutcome::CannotRun { code, last_line } => (
+                By::Agent,
+                Rerun::NotConfigured,
+                format!(
+                    "{task} verified L2 (recorded as reported; the test command couldn't run, exit {code}: {last_line}). Ask the owner to fix it: bridge-screen config set test-command '<cmd>'."
+                ),
+            ),
             RerunOutcome::SpawnError(e) => (
                 By::Agent,
                 Rerun::NotConfigured,
