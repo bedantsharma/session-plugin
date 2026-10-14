@@ -6,6 +6,7 @@
   // server: no optimistic removal. While the pointer or focus is inside, updates don't
   // move rows; they apply when it leaves.
   import ActionButton from './ActionButton.svelte'
+  import Chip from '$lib/ui/Chip.svelte'
   import * as Dialog from '$lib/components/ui/dialog'
   import { Input } from '$lib/components/ui/input'
   import { Button } from '$lib/components/ui/button'
@@ -99,7 +100,7 @@
 {#if shown.length > 0}
   <section
     aria-label="Needs you"
-    class="rounded-lg border-2 border-bad bg-surface p-2"
+    class="flex flex-col gap-3"
     onpointerenter={() => (pointerInside = true)}
     onpointerleave={() => (pointerInside = false)}
     onfocusin={() => (focusInside = true)}
@@ -108,47 +109,41 @@
       if (!to || !(e.currentTarget as HTMLElement).contains(to)) focusInside = false
     }}
   >
-    <ul class="flex flex-col gap-1">
+    <ul class="flex flex-col gap-4">
       {#each visible as item (item.id)}
         <li
-          class="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md px-2 py-1.5"
+          class="flex flex-col gap-3 rounded-xl border border-l-[3px] border-line border-l-bad bg-surface p-5"
           data-item={item.id}
         >
-          <span class="w-20 shrink-0 text-meta font-medium tracking-wide text-bad uppercase">
-            ■ {kindWord[item.kind] ?? item.kind}
-          </span>
-          <div class="min-w-0 flex-1">
-            <div class="truncate text-sm">
-              {#if item.session_id && onOpenSession}
-                <button
-                  type="button"
-                  class="hover:underline"
-                  onclick={() => onOpenSession?.(item.session_id as string)}>{item.title}</button
-                >
-              {:else}
-                {item.title}
-              {/if}
-              <span class="text-meta text-muted">· {item.repo_name} · {age(item.age_s)}</span>
-            </div>
-            <div class="truncate text-meta text-muted">{item.detail}</div>
-            {#if item.files?.length}
-              <div class="truncate font-mono text-meta text-muted">{item.files.join(' ')}</div>
-            {/if}
-            {#if messages[item.id]}
-              <div
-                class={['text-meta', messages[item.id].ok ? 'text-ok' : 'text-warn']}
-                role="status"
-              >
-                {messages[item.id].text}
+          <div class="flex flex-col gap-1">
+            <div class="flex items-center gap-3">
+              <Chip tone="bad" icon="■" text={kindWord[item.kind] ?? item.kind} upper />
+              <div class="min-w-0 flex-1 truncate text-row font-medium">
+                {#if item.session_id && onOpenSession}
+                  <button
+                    type="button"
+                    class="truncate text-left hover:underline"
+                    onclick={() => onOpenSession?.(item.session_id as string)}>{item.title}</button
+                  >
+                {:else}
+                  {item.title}
+                {/if}
               </div>
+              <span class="shrink-0 text-meta text-muted tabular-nums"
+                >{item.repo_name} · {age(item.age_s)}</span
+              >
+            </div>
+            <p class="line-clamp-2 text-meta text-muted">{item.detail}</p>
+            {#if item.files?.length}
+              <p class="line-clamp-2 font-mono text-meta text-muted">{item.files.join(' ')}</p>
             {/if}
           </div>
           {#if item.actions.length}
-            <div class="flex items-center gap-1.5">
+            <div class="flex flex-wrap items-center gap-2">
               {#each item.actions as spec (spec.label)}
                 {#each spec.inputs.filter((i) => !i.required) as inp (inp.name)}
                   <Input
-                    class="h-8 w-40 text-meta"
+                    class="h-9 w-64 text-sm"
                     placeholder={inp.label}
                     aria-label={`${spec.label}: ${inp.label}`}
                     disabled={disabled || !!pending[item.id]}
@@ -165,19 +160,24 @@
               {/each}
             </div>
           {:else if item.respond_in}
-            <div class="flex items-center gap-1.5 text-meta text-muted">
+            <div class="flex flex-wrap items-center gap-2 text-meta text-muted">
               answer in <span class="font-mono">S {item.respond_in.session_short}</span>
               {#if item.respond_in.worktree}
                 · <span class="font-mono">{item.respond_in.worktree}</span>
                 <Button
-                  size="xs"
+                  size="sm"
                   variant="outline"
-                  class="border-edge"
+                  class="h-8 rounded-lg border-edge px-3"
                   aria-label="Copy the worktree path"
                   onclick={() => copy(item.respond_in?.worktree ?? '')}>copy</Button
                 >
               {/if}
             </div>
+          {/if}
+          {#if messages[item.id]}
+            <p class={['text-meta', messages[item.id].ok ? 'text-ok' : 'text-warn']} role="status">
+              {messages[item.id].text}
+            </p>
           {/if}
         </li>
       {/each}
@@ -185,7 +185,7 @@
     {#if shown.length > URGENT}
       <button
         type="button"
-        class="mt-1 px-2 text-meta text-muted hover:underline"
+        class="self-start rounded-lg px-2 py-1 text-sm font-medium text-muted hover:bg-hover hover:text-fg"
         onclick={() => (showAll = !showAll)}
       >
         {showAll ? 'show the 4 most urgent' : `show all ${shown.length}`}

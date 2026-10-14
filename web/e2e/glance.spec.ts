@@ -1,42 +1,8 @@
 // The glance end to end: the real binary on a seeded temp home, a needs-you item, a
-// Continue click, the item leaving the queue; and the one-screen layout at 1280×720.
-import { type ChildProcess, spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+// Continue click, the item leaving the queue; the header and queue above the fold at
+// 1280×720.
 import { expect, test } from '@playwright/test'
-import { seed, type Seed } from './seed'
-
-const bin =
-  process.env.BRIDGE_BIN ??
-  [resolve('../target/release/bridge-screen'), resolve('../target/debug/bridge-screen')].find((p) =>
-    existsSync(p),
-  ) ??
-  'bridge-screen'
-
-async function serve(repos: Seed[]): Promise<{ url: string; stop: () => void }> {
-  const home = mkdtempSync(join(tmpdir(), 'bridge-screen-e2e-'))
-  seed(bin, home, repos)
-  const child: ChildProcess = spawn(bin, ['ui', '--no-open', '--port', '0'], {
-    env: { ...process.env, BRIDGE_SCREEN_HOME: home },
-  })
-  const url = await new Promise<string>((ok, fail) => {
-    let out = ''
-    child.stdout?.on('data', (d: Buffer) => {
-      out += d.toString()
-      const m = /bridge-screen dashboard: (\S+)/.exec(out)
-      if (m) ok(m[1])
-    })
-    child.on('exit', (code) => fail(new Error(`bridge-screen ui exited ${code}`)))
-  })
-  return {
-    url,
-    stop: () => {
-      child.kill()
-      rmSync(home, { recursive: true, force: true })
-    },
-  }
-}
+import { serve } from './serve'
 
 test('a needs-you item leaves the queue after Continue', async ({ page }) => {
   const s = await serve([{ repo: 'r1', name: 'shop', sessions: [{ id: 'red0001', red: true }] }])
@@ -58,7 +24,9 @@ test('a needs-you item leaves the queue after Continue', async ({ page }) => {
   }
 })
 
-test('the glance fits 1280×720 without scrolling', async ({ page }) => {
+test('the header and the needs-you queue sit above the fold at 1280×720', async ({ page }) => {
+  // The glance may scroll now (projects and sessions are below), but the header and the
+  // 4 most urgent items must be fully visible without it.
   const s = await serve([
     {
       repo: 'r1',
@@ -74,18 +42,21 @@ test('the glance fits 1280×720 without scrolling', async ({ page }) => {
   try {
     await page.goto(s.url)
     await expect(page.getByTestId('pill')).toHaveText(/4 need you/)
-    // The page can't scroll (main is viewport-high with overflow hidden), so check that
-    // nothing inside main is clipped either.
-    const fit = await page.evaluate(() => {
-      const main = document.querySelector('main')!
+    const queue = page.getByRole('region', { name: 'Needs you' })
+    await expect(queue.locator('[data-item]')).toHaveCount(4)
+    const fold = await page.evaluate(() => {
+      const bottom = (el: Element | null) => (el ? el.getBoundingClientRect().bottom : Infinity)
+      const header = document.querySelector('header')
+      const queue = document.querySelector('[aria-label="Needs you"]')
       return {
-        page: document.documentElement.scrollHeight <= window.innerHeight,
-        main: main.scrollHeight <= main.clientHeight,
+        header: bottom(header) <= window.innerHeight,
+        queue: bottom(queue) <= window.innerHeight,
+        scrollX: document.documentElement.scrollWidth <= window.innerWidth,
         vw: window.innerWidth,
         vh: window.innerHeight,
       }
     })
-    expect(fit).toEqual({ page: true, main: true, vw: 1280, vh: 720 })
+    expect(fold).toEqual({ header: true, queue: true, scrollX: true, vw: 1280, vh: 720 })
   } finally {
     s.stop()
   }

@@ -123,6 +123,7 @@ describe.each(['dark', 'light'])('%s theme', (name) => {
     ['fg', 'tint-working'],
     ['muted', 'tint-working'],
     ['ok', 'tint-working'],
+    ['warn', 'tint-working'],
     ['fg', 'tint-flash'],
     ['muted', 'tint-flash'],
   ])('text %s on %s ≥ 4.5:1', (fg, bg) => {

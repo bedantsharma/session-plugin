@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/svelte'
+import { fireEvent, render, screen } from '@testing-library/svelte'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Header from '../src/lib/glance/Header.svelte'
 import { Poller, type ConnState } from '../src/lib/api'
@@ -65,5 +65,29 @@ describe('disconnected_never_shows_all_clear', () => {
     await rerender({ glance: g, conn })
     expect(screen.queryByText(/All clear/)).toBeNull()
     expect(screen.getByTestId('disconnected')).toBeInTheDocument()
+  })
+})
+
+describe('Motion toggle', () => {
+  it('is a labelled pressed/unpressed button that sets data-motion on <html>', async () => {
+    render(Header, { glance: glance([]), conn: up })
+    const btn = screen.getByRole('button', { name: 'Motion' })
+    const before = btn.getAttribute('aria-pressed')
+    expect(['true', 'false']).toContain(before)
+    await fireEvent.click(btn)
+    const after = btn.getAttribute('aria-pressed')
+    expect(after).not.toBe(before)
+    expect(document.documentElement.dataset.motion).toBe(after === 'true' ? 'on' : 'off')
+    expect(localStorage.getItem('bridge-screen/motion')).toBe(after === 'true' ? 'on' : 'off')
+  })
+
+  it('shows Live while connected, and a static Disconnected chip instead when not', async () => {
+    const { rerender } = render(Header, { glance: glance([]), conn: up })
+    expect(screen.getByTestId('live')).toHaveTextContent('Live')
+    await rerender({
+      glance: glance([]),
+      conn: { connected: false, unauthorized: false, lastOk: 0 },
+    })
+    expect(screen.queryByTestId('live')).toBeNull()
   })
 })
