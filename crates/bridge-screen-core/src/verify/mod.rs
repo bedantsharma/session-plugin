@@ -6,7 +6,9 @@
 //! status is derived from its verifications by [`refresh_status`].
 
 pub mod l1;
+pub mod ladder;
 pub mod project;
+pub mod rerun;
 
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use schemars::JsonSchema;
@@ -18,6 +20,7 @@ pub use l1::{
     L1Outcome, check_l1, depended_files, l1_draft, missing_text, uncommitted, unverified_claims,
     verified_draft,
 };
+pub use ladder::{VerifyOutcome, VerifyRequest, change_setting, owner_verdict, verify};
 pub use project::{
     SettingChanged, VERIFY_KINDS, VerificationFailed, VerificationStale, Verified, VerifyNudged,
     project,

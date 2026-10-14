@@ -26,6 +26,9 @@ pub enum Error {
     /// A detour, resume or label request the agent or owner can fix.
     #[error("{0}")]
     Tangent(String),
+    /// A verification or decision the agent or owner can fix (spec §8.5–8.6).
+    #[error("{0}")]
+    Verify(String),
     #[error("invalid event: {0}")]
     BadEvent(String),
     #[error(transparent)]

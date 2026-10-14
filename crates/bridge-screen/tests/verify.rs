@@ -290,3 +290,285 @@ fn a_claimed_task_alone_spawns_no_git_on_tool_use() {
     env.hook("user-prompt-submit", "s1");
     assert_eq!(env.log(), "");
 }
+
+/// `setup`, with `src/login.rs` committed and 1.1 claimed done at L1.
+fn at_l1() -> (Env, Mcp) {
+    let (env, mut mcp) = setup();
+    write(&env, "src/login.rs", "pub fn validate_login() {}\n");
+    edited(&env, "s1", "src/login.rs");
+    commit(&env, "login");
+    let (err, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "claim_done",
+        &json!({"evidence": "tests pass", "files": ["src/login.rs"]}),
+    );
+    assert!(!err, "{text}");
+    assert_eq!(status(&env, "1.1"), NodeStatus::L1);
+    (env, mcp)
+}
+
+fn verify_call(env: &Env, mcp: &mut Mcp, args: &Value) -> (bool, String) {
+    call_as(mcp, env, "s1", "verify", args)
+}
+
+fn l2() -> Value {
+    json!({"level": 2, "evidence": "cargo test", "exit_code": 0, "summary": "3 passed"})
+}
+
+fn set_test_command(env: &Env, cmd: &str) {
+    let out = env.run(&["config", "set", "test-command", cmd], "");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn verify_refuses_uncommitted_work() {
+    let (env, mut mcp) = at_l1();
+    write(
+        &env,
+        "src/login.rs",
+        "pub fn validate_login() { todo!() }\n",
+    );
+    let before = events(&env).len();
+    let (err, text) = verify_call(&env, &mut mcp, &l2());
+    assert!(err);
+    assert_eq!(
+        text,
+        "commit a checkpoint first; verifications are tied to a commit (uncommitted: src/login.rs)"
+    );
+    // Only the hook's binding of the call: nothing recorded.
+    assert_eq!(events(&env).len(), before);
+    assert_eq!(status(&env, "1.1"), NodeStatus::L1);
+    commit(&env, "finish login");
+    let (err, text) = verify_call(&env, &mut mcp, &l2());
+    assert!(!err, "{text}");
+    let top = rows(&env, "1.1").pop().unwrap();
+    assert_eq!((top.level, top.sha.clone()), (2, head(&env)));
+    assert_eq!(top.files, vec!["src/login.rs"]);
+    assert_eq!(status(&env, "1.1"), NodeStatus::L2);
+}
+
+#[test]
+fn l2_without_a_test_command_is_recorded_as_reported() {
+    let (env, mut mcp) = at_l1();
+    let (err, text) = verify_call(&env, &mut mcp, &l2());
+    assert!(!err, "{text}");
+    assert_eq!(
+        text,
+        "1.1 verified L2 (as reported; no test command to re-run). Ask the owner to set a test command: bridge-screen config set test-command '<cmd>'. Project 75% done."
+    );
+    let top = rows(&env, "1.1").pop().unwrap();
+    assert_eq!(
+        (top.by, top.rerun),
+        (verify::By::Agent, Some(verify::Rerun::NotConfigured))
+    );
+    assert_eq!(top.evidence, "cargo test · 3 passed");
+}
+
+#[test]
+fn l2_reruns_the_owners_test_command() {
+    let (env, mut mcp) = at_l1();
+    set_test_command(&env, "test -f src/login.rs && echo '3 passed'");
+    let (err, text) = verify_call(&env, &mut mcp, &l2());
+    assert!(!err, "{text}");
+    assert!(
+        text.starts_with("1.1 verified L2 (re-run passed in "),
+        "{text}"
+    );
+    assert!(text.ends_with("Project 75% done."), "{text}");
+    let top = rows(&env, "1.1").pop().unwrap();
+    assert_eq!(
+        (top.by, top.rerun),
+        (verify::By::Rerun, Some(verify::Rerun::Passed))
+    );
+    assert!(top.evidence.contains("re-run ok in"), "{}", top.evidence);
+}
+
+#[test]
+fn a_failed_rerun_sets_failed_until_the_task_is_claimed_again() {
+    let (env, mut mcp) = at_l1();
+    set_test_command(&env, "echo 'test login ... FAILED'; exit 1");
+    let (err, text) = verify_call(&env, &mut mcp, &l2());
+    assert!(!err, "{text}");
+    assert_eq!(
+        text,
+        "The re-run failed (exit 1): test login ... FAILED. 1.1 is back to failed; fix it and verify again."
+    );
+    assert_eq!(status(&env, "1.1"), NodeStatus::Failed);
+    let failed = of_kind(&env, "verification_failed");
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0]["rerun"], "failed");
+    assert_eq!(failed[0]["evidence"], "test login ... FAILED");
+    let (err, _) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "claim_task",
+        &json!({"id": "1.1", "mode": "auto", "confidence": 0.9}),
+    );
+    assert!(!err);
+    assert_eq!(status(&env, "1.1"), NodeStatus::Active);
+    // Not claimed done any more: verify waits for claim_done.
+    let (err, text) = verify_call(&env, &mut mcp, &l2());
+    assert!(err);
+    assert_eq!(
+        text,
+        "1.1 isn't claimed done (active); call claim_done first"
+    );
+}
+
+#[test]
+fn a_failing_exit_code_is_refused() {
+    let (env, mut mcp) = at_l1();
+    let (err, text) = verify_call(
+        &env,
+        &mut mcp,
+        &json!({"level": 2, "evidence": "cargo test", "exit_code": 101}),
+    );
+    assert!(err);
+    assert_eq!(
+        text,
+        "Exit code 101 means the tests failed — fix them, commit, and verify again."
+    );
+    let (err, text) = verify_call(
+        &env,
+        &mut mcp,
+        &json!({"level": 2, "evidence": "cargo test"}),
+    );
+    assert!(err);
+    assert!(text.starts_with("exit_code is required"), "{text}");
+    assert_eq!(status(&env, "1.1"), NodeStatus::L1);
+}
+
+#[test]
+fn l3_needs_l1_and_l4_needs_the_owners_words() {
+    let (env, mut mcp) = setup();
+    let (err, _) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "claim_done",
+        &json!({"evidence": "done"}),
+    );
+    assert!(!err);
+    let l3 = json!({"level": 3, "evidence": "logged in through the browser"});
+    let (err, text) = verify_call(&env, &mut mcp, &l3);
+    assert!(err);
+    assert!(text.starts_with("1.1 has no L1 yet"), "{text}");
+    let (err, text) = verify_call(
+        &env,
+        &mut mcp,
+        &json!({"level": 4, "evidence": "asked the owner"}),
+    );
+    assert!(err);
+    assert!(text.starts_with("owner_said is required"), "{text}");
+    let (err, text) = verify_call(
+        &env,
+        &mut mcp,
+        &json!({"level": 4, "evidence": "asked", "owner_said": "yes, login works for me"}),
+    );
+    assert!(!err, "{text}");
+    assert_eq!(status(&env, "1.1"), NodeStatus::L4);
+    let top = rows(&env, "1.1").pop().unwrap();
+    assert_eq!(top.by, verify::By::OwnerViaAgent);
+    assert!(top.evidence.contains("yes, login works for me"));
+
+    let (env, mut mcp) = at_l1();
+    let (err, text) = verify_call(&env, &mut mcp, &l3);
+    assert!(!err, "{text}");
+    assert!(text.starts_with("1.1 verified L3"), "{text}");
+    assert_eq!(status(&env, "1.1"), NodeStatus::L3);
+}
+
+#[test]
+fn no_tool_can_set_the_test_command() {
+    let env = Env::new();
+    let mut mcp = Mcp::start(&env, "/nonexistent");
+    let resp = mcp.request("tools/list", &json!({}));
+    let tools = resp["result"]["tools"].to_string();
+    assert!(tools.contains("\"verify\""), "{tools}");
+    for word in ["test_command", "test-command", "config_changed"] {
+        assert!(!tools.contains(word), "{word} in {tools}");
+    }
+}
+
+#[test]
+fn owner_verifies_or_marks_broken_from_the_cli() {
+    let (env, _mcp) = at_l1();
+    let out = env.run(&["verify", "1.1"], "");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let short: String = head(&env).chars().take(7).collect();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        format!("Verified 1.1 Login form L4 at {short}.")
+    );
+    assert_eq!(status(&env, "1.1"), NodeStatus::L4);
+    let top = rows(&env, "1.1").pop().unwrap();
+    assert_eq!(
+        (top.by, top.session_id.as_str()),
+        (verify::By::Owner, "owner")
+    );
+    let out = env.run(&["verify", "1.1", "--broken", "the reset link 404s"], "");
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "Marked 1.1 Login form broken; it's back to failed."
+    );
+    assert_eq!(status(&env, "1.1"), NodeStatus::Failed);
+    let actions = of_kind(&env, "owner_action");
+    assert_eq!(
+        actions,
+        vec![
+            json!({"action": "verify", "answer": "works", "target": "1.1"}),
+            json!({"action": "verify", "answer": "broken", "target": "1.1"}),
+        ]
+    );
+    for bad in [["verify", "1"], ["verify", "9.9"]] {
+        let out = env.run(&bad, "");
+        assert!(!out.status.success(), "{bad:?}");
+    }
+}
+
+#[test]
+fn test_settings_round_trip_through_the_cli() {
+    let env = Env::new();
+    set_test_command(&env, "cargo test -q");
+    let out = env.run(&["config", "set", "test-timeout", "300"], "");
+    assert!(out.status.success());
+    let shown = String::from_utf8_lossy(&env.run(&["config"], "").stdout).into_owned();
+    assert!(shown.contains("verify_timeout_s = 120"), "{shown}");
+    assert!(shown.contains(": cargo test -q"), "{shown}");
+    assert!(shown.contains(": 300 s"), "{shown}");
+    let changes = of_kind_any(&env, "config_changed");
+    assert_eq!(changes.len(), 2);
+    assert_eq!(changes[0]["new"], "cargo test -q");
+    assert_eq!(changes[1]["new"], 300);
+    let bad = env.run(&["config", "set", "test-timeout", "soon"], "");
+    assert!(!bad.status.success());
+    let out = env.run(&["config", "unset", "test-command"], "");
+    assert!(out.status.success());
+    let shown = String::from_utf8_lossy(&env.run(&["config"], "").stdout).into_owned();
+    assert!(!shown.contains("cargo test -q"), "{shown}");
+    assert!(shown.contains(": 300 s"), "{shown}");
+    let changes = of_kind_any(&env, "config_changed");
+    assert_eq!(changes[2]["new"], Value::Null);
+    assert_eq!(changes[2]["old"], "cargo test -q");
+}
+
+/// Events of a kind, from a store that may have no sessions.
+fn of_kind_any(env: &Env, kind: &str) -> Vec<Value> {
+    events(env)
+        .into_iter()
+        .filter(|e| e.kind == kind)
+        .map(|e| e.data)
+        .collect()
+}

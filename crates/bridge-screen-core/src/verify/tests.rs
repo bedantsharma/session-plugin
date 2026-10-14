@@ -470,3 +470,125 @@ fn nudges_count_and_clear_on_l2_or_failure() {
     );
     assert_eq!(nudges(&s, "1.2"), None);
 }
+
+mod rerun_tests {
+    use std::time::{Duration, Instant};
+
+    use crate::verify::rerun::{RerunOutcome, last_line, run};
+
+    #[test]
+    fn passes_and_fails_with_the_last_line() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("marker"), "x").unwrap();
+        // Runs in the worktree, stdin closed.
+        let out = run(
+            dir.path(),
+            "test -f marker && cat; echo '12 passed'; echo '  '",
+            Duration::from_secs(10),
+        );
+        assert!(
+            matches!(&out, RerunOutcome::Passed { last_line, .. } if last_line == "12 passed"),
+            "{out:?}"
+        );
+        let out = run(
+            dir.path(),
+            "echo ok; echo 'test login ... FAILED' >&2; exit 3",
+            Duration::from_secs(10),
+        );
+        assert!(
+            matches!(&out, RerunOutcome::Failed { code: 3, last_line, .. }
+                if last_line == "test login ... FAILED"),
+            "{out:?}"
+        );
+        let long = "x".repeat(500);
+        assert_eq!(last_line(long.as_bytes()).chars().count(), 200);
+        assert_eq!(last_line(b""), "");
+    }
+
+    #[test]
+    fn times_out_and_returns_promptly() {
+        let dir = tempfile::tempdir().unwrap();
+        let start = Instant::now();
+        let out = run(dir.path(), "sleep 30", Duration::from_secs(1));
+        assert!(matches!(out, RerunOutcome::TimedOut { secs: 1 }), "{out:?}");
+        assert!(
+            start.elapsed() < Duration::from_secs(4),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    fn alive(pid: &str) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    /// The test command forks a background child that would outlive it: the whole
+    /// process group is stopped at the time limit, and the call returns.
+    #[cfg(unix)]
+    #[test]
+    fn rerun_timeout_kills_process_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("bg.pid");
+        let cmd = format!("sleep 60 & echo $! > '{}'; sleep 30", pidfile.display());
+        let start = Instant::now();
+        let out = run(dir.path(), &cmd, Duration::from_secs(1));
+        assert!(matches!(out, RerunOutcome::TimedOut { .. }), "{out:?}");
+        assert!(
+            start.elapsed() < Duration::from_secs(6),
+            "{:?}",
+            start.elapsed()
+        );
+        let pid = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .to_string();
+        // The orphan may linger as a zombie for a moment before it is reaped.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while alive(&pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            !alive(&pid),
+            "background child {pid} survived the time limit"
+        );
+    }
+
+    /// A command that exits while a background child still holds its output open
+    /// doesn't hang the re-run.
+    #[cfg(unix)]
+    #[test]
+    fn a_leftover_background_child_does_not_hang_a_finished_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let start = Instant::now();
+        let out = run(dir.path(), "sleep 30 & echo done", Duration::from_secs(20));
+        assert!(
+            matches!(&out, RerunOutcome::Passed { last_line, .. } if last_line == "done"),
+            "{out:?}"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn output_larger_than_a_pipe_does_not_deadlock() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = run(
+            dir.path(),
+            "i=0; while [ $i -lt 20000 ]; do echo \"line $i of output that fills the pipe\"; echo err $i >&2; i=$((i+1)); done; echo last",
+            Duration::from_secs(60),
+        );
+        assert!(
+            matches!(&out, RerunOutcome::Passed { last_line, .. } if last_line == "last"),
+            "{out:?}"
+        );
+    }
+}

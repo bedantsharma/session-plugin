@@ -202,6 +202,30 @@ pub struct ClaimDoneInput {
     pub symbols: Vec<String>,
 }
 
+/// Climb the verification ladder for a task you claimed done.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VerifyInput {
+    /// The task; defaults to your active task.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// 2: the unit tests pass (committed; give exit_code and summary). 3: end-to-end — you
+    /// drove it (browser or CLI) and saw it work. 4: the owner said it works (owner_said).
+    pub level: i64,
+    /// What you ran or drove and what it showed.
+    pub evidence: String,
+    /// Level 2: the exit code of your test run. Report it as it was; a non-zero code is
+    /// refused.
+    #[serde(default)]
+    pub exit_code: Option<i64>,
+    /// Level 2: the test summary line, e.g. "42 passed, 0 failed".
+    #[serde(default)]
+    pub summary: Option<String>,
+    /// Level 4: the owner's own words, at most 200 characters.
+    #[serde(default)]
+    pub owner_said: Option<String>,
+}
+
 /// Resolve leftovers a dead session left in a worktree.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -305,6 +329,19 @@ impl Bridge {
         Parameters(args): Parameters<Args<ClaimDoneInput>>,
     ) -> CallToolResult {
         text(self.do_claim_done(&args))
+    }
+
+    #[tool(
+        description = "Climb the verification ladder for a task you claimed done, honestly: level 2 when its unit tests pass and the work is committed (give the exit code and summary; bridge-screen re-runs the owner's test command), level 3 when you drove it end to end (say what you drove), level 4 only with the owner's own words. Every level is tied to the current commit."
+    )]
+    async fn verify(&self, Parameters(args): Parameters<Args<VerifyInput>>) -> CallToolResult {
+        // The re-run can take minutes: keep the server responsive meanwhile.
+        let this = self.clone();
+        text(
+            tokio::task::spawn_blocking(move || this.do_verify(&args))
+                .await
+                .unwrap_or_else(|e| Err(format!("verify stopped: {e}"))),
+        )
     }
 
     #[tool(
@@ -503,6 +540,30 @@ impl Bridge {
             " Commit a checkpoint before you stop, then leave a handoff_note if work remains in flight.",
         );
         Ok(reply)
+    }
+
+    fn do_verify(&self, args: &Args<VerifyInput>) -> Result<String, String> {
+        let mut store = self.open()?;
+        let session = self.caller(&store, "verify", &args.raw)?;
+        let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        let config = Config::load(&self.home.config_path()).unwrap_or_default();
+        let out = verify::verify(
+            &mut store,
+            &verify::VerifyRequest {
+                session_id: session.session_id.clone(),
+                task_id: input.id.clone(),
+                level: input.level,
+                evidence: input.evidence.clone(),
+                exit_code: input.exit_code,
+                summary: input.summary.clone(),
+                owner_said: input.owner_said.clone(),
+                actor: Actor::default(),
+            },
+            &worktree_of(&session),
+            std::time::Duration::from_secs(config.verify_timeout_s),
+        )
+        .map_err(msg)?;
+        Ok(out.reply)
     }
 
     fn do_resolve_leftover(&self, args: &Args<ResolveLeftoverInput>) -> Result<String, String> {

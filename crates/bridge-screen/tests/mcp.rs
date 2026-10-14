@@ -54,7 +54,8 @@ fn lists_three_tools_with_schemas() {
             "resolve_leftover",
             "resume",
             "start_detour",
-            "status"
+            "status",
+            "verify"
         ]
     );
     for tool in tools {

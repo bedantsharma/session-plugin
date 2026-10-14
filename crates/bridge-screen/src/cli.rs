@@ -73,6 +73,20 @@ pub enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// The owner's verdict on a task (spec §8.5 L4): it works, or `--broken "<note>"`.
+    Verify {
+        /// The task or subtask id, e.g. 2.3.
+        task: String,
+        /// It doesn't work: what's wrong. The task goes back to failed.
+        #[arg(long, value_name = "NOTE")]
+        broken: Option<String>,
+        /// The level reached (the owner's own check is L4).
+        #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(i64).range(1..=4))]
+        level: i64,
+        /// Any directory inside the worktree whose HEAD was checked.
+        #[arg(short = 'C', long = "dir", default_value = ".")]
+        dir: PathBuf,
+    },
     /// Rebuild all views from the event log.
     Rebuild,
     /// Print the effective configuration (and this repo's tuned drift thresholds).
@@ -152,4 +166,27 @@ pub enum LabelArg {
 pub enum ConfigCommand {
     /// Put this repo's auto-tuned drift thresholds back to the config defaults.
     ResetDrift,
+    /// Set a per-repo setting: `test-command "<cmd>"` (re-run at verify level 2) or
+    /// `test-timeout <secs>`.
+    Set { key: SettingArg, value: String },
+    /// Unset a per-repo setting.
+    Unset { key: SettingArg },
+}
+
+/// Per-repo settings only the owner sets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum SettingArg {
+    /// The command bridge-screen re-runs (`sh -c`, in the session's worktree) at L2.
+    TestCommand,
+    /// Seconds the re-run may take (default: `verify_timeout_s` in config.toml).
+    TestTimeout,
+}
+
+impl SettingArg {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::TestCommand => "test_command",
+            Self::TestTimeout => "test_timeout_s",
+        }
+    }
 }
