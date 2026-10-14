@@ -95,6 +95,28 @@ describe('desktop card', () => {
     expect(host.calls).toHaveLength(1)
   })
 
+  it('keeps milestones behind "show milestones", with the hill in words', async () => {
+    const host = new FakeHost()
+    const { container } = render(Card, { host })
+    host.push(result())
+    const toggle = await screen.findByRole('button', { name: 'show milestones' })
+    expect(container.querySelector('[data-milestone]')).toBeNull()
+    await userEvent.click(toggle)
+    expect(container.querySelector('[data-milestone="1"]')).toHaveTextContent('exploring')
+    expect(container.querySelector('[data-milestone="2"]')).toHaveTextContent('executing')
+    expect(container.textContent).not.toMatch(/uphill|downhill/)
+  })
+
+  it('has its own Motion switch', async () => {
+    const host = new FakeHost()
+    render(Card, { host })
+    host.push(result())
+    const btn = await screen.findByRole('button', { name: 'Motion' })
+    const before = btn.getAttribute('aria-pressed')
+    await userEvent.click(btn)
+    expect(btn.getAttribute('aria-pressed')).not.toBe(before)
+  })
+
   it('Refresh re-calls show_progress', async () => {
     const host = new FakeHost()
     render(Card, { host })

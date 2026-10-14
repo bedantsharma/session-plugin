@@ -283,6 +283,16 @@
   }
 }
 
+@keyframes breathe-soft {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
 @keyframes sweep {
   0% {
     transform: translateX(-100%);
@@ -329,6 +339,10 @@
   }
   :root:not([data-motion='off']) .bar-fill {
     transition: width 600ms cubic-bezier(0.2, 0, 0, 1);
+  }
+  /* The desktop card: the working dot breathes (opacity only, no ring). */
+  :root:not([data-motion='off']) .card-root .working-dot {
+    animation: breathe-soft 2.4s ease-in-out infinite;
   }
 }
 
@@ -431,6 +445,23 @@
 
 .arrive::after {
   animation: ring-out 1.2s ease-out 1;
+}
+
+/*
+ * The desktop card keeps only the breathing dot and a shorter row flash (plan §5): no
+ * ring, no bar transitions, no sheen, no number or pill cues.
+ */
+.card-root .working-dot::after,
+.card-root .sheen::after {
+  display: none;
+}
+
+.card-root .bar-fill {
+  transition: none !important;
+}
+
+:root:not([data-motion='off']) .card-root .flash {
+  animation-duration: 600ms;
 }
 
 /* With Motion off the spinner gives way to the label's "…". */
