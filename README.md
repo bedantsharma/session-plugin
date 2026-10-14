@@ -108,3 +108,9 @@ Hooks must stay under 50 ms p95. To check on a database with 100k events:
 ```sh
 cargo test --release -p bridge-screen --test hooks -- --ignored hook_latency --nocapture
 ```
+
+## License
+
+Copyright © 2026 Bedant Sharma.
+
+bridge-screen is source-available under the [PolyForm Strict License 1.0.0](LICENSE.md): you may use it for any noncommercial purpose, but not distribute it or make changes or new works based on it. For any other use, contact the author.
