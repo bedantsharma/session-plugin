@@ -74,11 +74,18 @@ test('the glance fits 1280×720 without scrolling', async ({ page }) => {
   try {
     await page.goto(s.url)
     await expect(page.getByTestId('pill')).toHaveText(/4 need you/)
-    const scroll = await page.evaluate(() => ({
-      h: document.documentElement.scrollHeight,
-      vh: window.innerHeight,
-    }))
-    expect(scroll.h).toBeLessThanOrEqual(scroll.vh)
+    // The page can't scroll (main is viewport-high with overflow hidden), so check that
+    // nothing inside main is clipped either.
+    const fit = await page.evaluate(() => {
+      const main = document.querySelector('main')!
+      return {
+        page: document.documentElement.scrollHeight <= window.innerHeight,
+        main: main.scrollHeight <= main.clientHeight,
+        vw: window.innerWidth,
+        vh: window.innerHeight,
+      }
+    })
+    expect(fit).toEqual({ page: true, main: true, vw: 1280, vh: 720 })
   } finally {
     s.stop()
   }
