@@ -373,3 +373,105 @@ fn stale_owner_action_records_nothing() {
     );
     assert_eq!(env.log(), "");
 }
+
+#[test]
+fn racing_clicks_on_one_item_record_it_once() {
+    // A double click, a second tab and the CLI at once: the freshness check runs again
+    // inside the write, after the git step, so only one resolution is recorded.
+    let env = env();
+    let id = leftover(&env);
+    let before = events(&env).len();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(6));
+    let handles: Vec<_> = (0..6)
+        .map(|_| {
+            let barrier = barrier.clone();
+            let home = env.home.path().to_path_buf();
+            let db = env.db_path();
+            let id = id.clone();
+            std::thread::spawn(move || {
+                let home = Home::at(&home);
+                let cfg = Config::default();
+                let ctx = ActCtx {
+                    home: &home,
+                    cfg: &cfg,
+                    now: Timestamp::now(),
+                    dir: None,
+                };
+                let mut s = Store::open(&db).unwrap();
+                barrier.wait();
+                act(
+                    &mut s,
+                    &ctx,
+                    &OwnerAction::Resolve {
+                        repo: None,
+                        leftover_ids: vec![id],
+                        action: LeftoverAction::Undo,
+                    },
+                )
+            })
+        })
+        .collect();
+    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    assert_eq!(
+        results.iter().filter(|r| r.is_ok()).count(),
+        1,
+        "{results:?}"
+    );
+    let new = since(&env, before);
+    let count = |kind: &str| new.iter().filter(|(k, _)| k == kind).count();
+    assert_eq!(count("leftover_resolved"), 1, "{new:?}");
+    assert_eq!(count("owner_action"), 1, "{new:?}");
+
+    // The same for a verdict: two ✓ Works at once record one verification.
+    let repo = repo_id(&env);
+    let before = events(&env).len();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(6));
+    let handles: Vec<_> = (0..6)
+        .map(|_| {
+            let barrier = barrier.clone();
+            let home = env.home.path().to_path_buf();
+            let db = env.db_path();
+            let repo = repo.clone();
+            std::thread::spawn(move || {
+                let home = Home::at(&home);
+                let cfg = Config::default();
+                let ctx = ActCtx {
+                    home: &home,
+                    cfg: &cfg,
+                    now: Timestamp::now(),
+                    dir: None,
+                };
+                let mut s = Store::open(&db).unwrap();
+                barrier.wait();
+                act(
+                    &mut s,
+                    &ctx,
+                    &OwnerAction::Verify {
+                        repo,
+                        task: "1.2".into(),
+                        level: 4,
+                    },
+                )
+            })
+        })
+        .collect();
+    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    assert_eq!(
+        results.iter().filter(|r| r.is_ok()).count(),
+        1,
+        "{results:?}"
+    );
+    assert!(
+        results
+            .iter()
+            .filter_map(|r| r.as_ref().err())
+            .all(|e| matches!(e, Error::Stale(_))),
+        "{results:?}"
+    );
+    let new = since(&env, before);
+    assert_eq!(
+        new.iter().filter(|(k, _)| k == "verified").count(),
+        1,
+        "{new:?}"
+    );
+}

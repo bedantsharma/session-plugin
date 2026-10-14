@@ -391,7 +391,8 @@ fn rerun_failed(
 
 /// The owner's verdict from the CLI (spec §10.1): it works (`verified` at `level`, by
 /// owner, at HEAD of `wt`) or it's broken (`verification_failed` with the note). Also an
-/// `owner_action`. Returns the line to print.
+/// `owner_action`. Returns the line to print. `fresh` (given the connection and HEAD)
+/// runs first inside the write transaction and refuses a verdict that is no longer needed.
 pub fn owner_verdict(
     store: &mut Store,
     repo_id: &str,
@@ -399,6 +400,7 @@ pub fn owner_verdict(
     wt: &Path,
     level: i64,
     broken: Option<&str>,
+    fresh: impl FnOnce(&Connection, Option<&str>) -> Result<()>,
 ) -> Result<String> {
     leaf(store.conn(), repo_id, task)?;
     if !(1..=4).contains(&level) {
@@ -408,6 +410,9 @@ pub fn owner_verdict(
     let files = depended_files(store.conn(), repo_id, task)?;
     let title = crate::claim::task_title(store.conn(), repo_id, task)?.unwrap_or_default();
     store.write(|tx| {
+        // Still open? Checked here, inside the write, so a racing second click (another
+        // tab, the CLI) sees the first one's verdict and records nothing.
+        fresh(tx, sha.as_deref())?;
         let (answer, line) = if let Some(note) = broken {
             let note = clip(note, super::MAX_EVIDENCE);
             let data = VerificationFailed {

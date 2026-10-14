@@ -398,7 +398,9 @@ fn resolve(
             )));
         }
     }
-    let res = recovery::resolve(
+    // The owner action is recorded in the resolution's own write, which checks again that
+    // the leftovers are still open (after the git step): racing clicks record one.
+    let res = recovery::resolve_then(
         store,
         &repo,
         &ctx.home.snapshots_dir(&repo),
@@ -407,14 +409,14 @@ fn resolve(
         &Caller::Owner,
         // The owner's choice needs no waiting.
         &recovery::Takeover::new(ctx.now, 0),
+        |tx, res| {
+            record(
+                tx,
+                &repo,
+                &owner_data("resolve", Some(action.as_str()), Some(res.ids.join(" "))),
+            )
+        },
     )?;
-    store.write(|tx| {
-        record(
-            tx,
-            &repo,
-            &owner_data("resolve", Some(action.as_str()), Some(res.ids.join(" "))),
-        )
-    })?;
     resolution_text(store.conn(), &repo, &res)
 }
 
@@ -484,28 +486,29 @@ fn verdict(
     broken: Option<&str>,
 ) -> Result<String> {
     let wt = verdict_worktree(store.conn(), ctx, repo, task)?;
-    let node = get_node(store.conn(), repo, task)?;
-    if broken.is_some()
-        && node
-            .as_ref()
-            .is_some_and(|n| n.status == NodeStatus::Failed)
-    {
-        return Err(stale(format!(
-            "already resolved: {task} is already marked broken"
-        )));
-    }
-    if broken.is_none()
-        && level == 4
-        && let Some(top) = verify::top_verification(store.conn(), repo, task)?
-        && top.level == 4
-        && top.state == verify::VerifState::Current
-        && crate::git::head(&wt)?.is_some_and(|h| h == top.sha)
-    {
-        return Err(stale(format!(
-            "already resolved: {task} is already verified L4 at this commit"
-        )));
-    }
-    verify::owner_verdict(store, repo, task, &wt, level, broken)
+    // Checked inside the verdict's write transaction (after HEAD is read), so racing
+    // clicks record one verdict.
+    let fresh = |conn: &Connection, head: Option<&str>| -> Result<()> {
+        let node = get_node(conn, repo, task)?;
+        if broken.is_some() && node.is_some_and(|n| n.status == NodeStatus::Failed) {
+            return Err(stale(format!(
+                "already resolved: {task} is already marked broken"
+            )));
+        }
+        if broken.is_none()
+            && level == 4
+            && let Some(top) = verify::top_verification(conn, repo, task)?
+            && top.level == 4
+            && top.state == verify::VerifState::Current
+            && head.is_some_and(|h| h == top.sha)
+        {
+            return Err(stale(format!(
+                "already resolved: {task} is already verified L4 at this commit"
+            )));
+        }
+        Ok(())
+    };
+    verify::owner_verdict(store, repo, task, &wt, level, broken, fresh)
 }
 
 fn reset_drift(store: &mut Store, ctx: &ActCtx, repo: &str) -> Result<String> {
