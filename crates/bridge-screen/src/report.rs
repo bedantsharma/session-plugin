@@ -181,14 +181,15 @@ fn project_html(
     if !p.milestones.is_empty() {
         html.push_str("<ul>");
         for m in &p.milestones {
-            let hill = match m.hill {
-                Some(bridge_screen_core::plan::Hill::Uphill) => {
-                    " <span class=\"warn\">▲ uphill</span>"
+            let hill = match (m.hill, crate::words::hill(m.hill, m.done_pct)) {
+                (Some(h), Some((icon, word))) => {
+                    let class = if word == "exploring" { "warn" } else { "ok" };
+                    format!(
+                        " <span class=\"{class}\" title=\"{}\">{icon} {word}</span>",
+                        esc(crate::words::hill_tip(h))
+                    )
                 }
-                Some(bridge_screen_core::plan::Hill::Downhill) => {
-                    " <span class=\"ok\">▼ downhill</span>"
-                }
-                None => "",
+                _ => String::new(),
             };
             let stuck = if m.stuck {
                 format!(

@@ -7,6 +7,7 @@ mod report;
 mod status;
 mod ui;
 mod watch;
+mod words;
 
 use std::process::ExitCode;
 
