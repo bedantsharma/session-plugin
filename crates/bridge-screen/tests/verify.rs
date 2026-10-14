@@ -899,3 +899,47 @@ fn dependency_ready_outranks_the_verify_nudge() {
     // One note per unit: the nudge waits for the next prompt.
     assert_eq!(prompt(&env, "s1"), NUDGE);
 }
+
+#[test]
+fn status_and_plan_show_the_ladder() {
+    let (env, mut mcp) = at_l1();
+    let text = status_text(&env);
+    assert!(
+        text.contains("goal: Ship  · done 0% · claimed 75%"),
+        "{text}"
+    );
+    assert!(text.contains("· verify pending: 1.1"), "{text}");
+    let agent = ok_call(&env, &mut mcp, "status", &json!({}));
+    assert!(
+        agent.contains("Verification: L1 (code exists) — next: run tests, verify level 2"),
+        "{agent}"
+    );
+    assert!(
+        agent.contains("Unverified: 1.1 (L1) — verify them"),
+        "{agent}"
+    );
+    let (err, _) = verify_call(&env, &mut mcp, &l2());
+    assert!(!err);
+    let text = status_text(&env);
+    assert!(text.contains("· done 75% · claimed 0%"), "{text}");
+    assert!(!text.contains("verify pending"), "{text}");
+    // Stale and owner markers in the plan.
+    write(
+        &env,
+        "src/login.rs",
+        "pub fn validate_login() { /* v2 */ }\n",
+    );
+    commit(&env, "login v2");
+    start(&env, "s2");
+    let plan = String::from_utf8(env.run(&["plan", "show"], "").stdout).unwrap();
+    assert!(plan.contains("1.1  Login form  [l1] stale 30m"), "{plan}");
+    assert!(env.run(&["verify", "1.1"], "").status.success());
+    let plan = String::from_utf8(env.run(&["plan", "show"], "").stdout).unwrap();
+    assert!(plan.contains("1.1  Login form  [l4] ✓owner 30m"), "{plan}");
+}
+
+fn ok_call(env: &Env, mcp: &mut Mcp, tool: &str, args: &Value) -> String {
+    let (err, text) = call_as(mcp, env, "s1", tool, args);
+    assert!(!err, "{text}");
+    text
+}

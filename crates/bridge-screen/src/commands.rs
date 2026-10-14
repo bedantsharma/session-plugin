@@ -7,7 +7,7 @@ use bridge_screen_core::config::Config;
 use bridge_screen_core::handoff::LeftoverAction;
 use bridge_screen_core::navigator::{self, Channel};
 use bridge_screen_core::paths::Home;
-use bridge_screen_core::plan::{EditContext, PlanOp, load_tree, plan_edit, render_text};
+use bridge_screen_core::plan::{EditContext, PlanOp, load_tree, plan_edit, render_annotated};
 use bridge_screen_core::recovery::{self, Caller};
 use bridge_screen_core::repo;
 use bridge_screen_core::session::{self, Session};
@@ -129,7 +129,8 @@ fn plan_show(dir: &Path, all: bool) -> Result<()> {
             repo.name
         );
     } else {
-        print!("{}", render_text(&nodes));
+        let marks = verify::plan_marks(store.conn(), &repo.id)?;
+        print!("{}", render_annotated(&nodes, &marks));
     }
     Ok(())
 }

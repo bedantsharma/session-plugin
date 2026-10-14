@@ -515,6 +515,53 @@ pub fn changed_between(wt: &Path, from: &str, to: &str) -> Result<Vec<String>> {
     )?))
 }
 
+/// One commit of [`history`]: its parents and the paths it touched (merges list none).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitTouch {
+    pub sha: String,
+    pub parents: Vec<String>,
+    pub files: Vec<String>,
+}
+
+/// The newest `limit` commits reachable from `rev`, newest first, with the paths each
+/// touched (renames as both names). One git call.
+pub fn history(wt: &Path, rev: &str, limit: usize) -> Result<Vec<CommitTouch>> {
+    let n = format!("-n{limit}");
+    let out = run(
+        wt,
+        &[
+            "log",
+            &n,
+            "--no-renames",
+            "--name-only",
+            "-z",
+            "--format=%x1e%H %P",
+            rev,
+            "--",
+        ],
+    )?;
+    let mut commits = Vec::new();
+    for record in out.split(|b| *b == 0x1e).filter(|r| !r.is_empty()) {
+        let mut fields = record.split(|b| *b == 0).map(String::from_utf8_lossy);
+        let Some(header) = fields.next() else {
+            continue;
+        };
+        let mut ids = header.split_whitespace().map(str::to_string);
+        let Some(sha) = ids.next() else {
+            continue;
+        };
+        commits.push(CommitTouch {
+            sha,
+            parents: ids.collect(),
+            files: fields
+                .map(|f| f.trim_start_matches('\n').to_string())
+                .filter(|f| !f.is_empty())
+                .collect(),
+        });
+    }
+    Ok(commits)
+}
+
 /// The current branch's upstream as (remote, remote ref), from its config.
 fn upstream_config(wt: &Path) -> Result<(String, String)> {
     let branch = current_branch(wt)?.ok_or_else(|| Error::Git("HEAD is detached".into()))?;

@@ -158,7 +158,7 @@ fn sessions_grouped_by_project_needs_you_first() {
 bridge-screen · 4 live sessions · 2 projects
 api  no plan yet
   S apis00  idle      (no task)             2 units · 2m · on task
-shop  goal: Online shop
+shop  goal: Online shop  · done 0% · claimed 0% · 2 unestimated
   S wait00  needs you (no task)             1 unit  · 2m · on task
   S work00  working   2 Login form          3 units · 18m · on task
   S idle00  idle      (no task)             0 units · 0m · on task

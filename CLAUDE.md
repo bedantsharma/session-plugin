@@ -16,6 +16,13 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
     leftover analysis and adopt/resume/undo (§8.2–8.3); `handoff/` — the handoff model
     (schema v4 views) plus the I-PASS briefing and read-back (§8.4); `squash/` — WIP
     squash, by hand and before a PR (§8.1)
+  - `verify/` — the verification ladder (§8.5): L1 at HEAD (`l1.rs`), the `verify` tool's
+    L2–L4 and the owner's verdict (`ladder.rs`), the bounded L2 test re-run with
+    process-group kill (`rerun.rs`, never from a hook), staleness at SessionStart and its
+    briefing note (`stale.rs`), nudges and owner escalation (`nudge.rs`), status
+    derivation and done%/claimed% (`mod.rs`), schema v5 views (`project.rs`)
+  - `decision/` — decisions with supersede chains, duplicate merging and the capture ask
+    (§8.6)
 - `crates/bridge-screen/` — the single binary: CLI, `hook`, `mcp`, `status`, `ui`
   - `src/hook/` — `bridge-screen hook <event>`: payload parsing, per-event handlers, injected context
   - `src/hook/nav.rs` — the navigator's part of a hook (label at Stop, tolerance band, notes)
@@ -23,7 +30,7 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
     SessionStart recovery and briefing, read-back nudge, squash before a PR
   - `src/mcp.rs` — `bridge-screen mcp`: stdio MCP server (`claim_task`, `plan_edit`, `status`,
     `start_detour`, `close_detour`, `resume`, `promote_detour`, `label_unit`, `claim_done`,
-    `handoff_readback`, `handoff_note`, `resolve_leftover`)
+    `handoff_readback`, `handoff_note`, `resolve_leftover`, `verify`, `log_decision`)
   - `tests/fixtures/hooks/` — one recorded-style hook payload per event
 - `plugin/` — the Claude Code plugin: `.claude-plugin/plugin.json`, `hooks/hooks.json`,
   `.mcp.json`, `skills/bridge-screen/SKILL.md`, `commands/bridge-screen.md`, and the
@@ -44,10 +51,14 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
   `bridge-screen label <session-prefix> <unit_no> on-task|detour|drift`
 - Recovery: `bridge-screen resolve <leftover-id|prefix>… adopt|resume|undo [-C DIR]`;
   `bridge-screen squash [-C DIR] [--onto BASE] [--dry-run]`
-- Config: `bridge-screen config [-C DIR]` (shows the repo's tuned drift thresholds),
-  `bridge-screen config reset-drift [-C DIR]`
+- Config: `bridge-screen config [-C DIR]` (shows the repo's tuned drift thresholds and test
+  settings), `bridge-screen config reset-drift [-C DIR]`,
+  `bridge-screen config set test-command "<cmd>" | test-timeout <secs> [-C DIR]`,
+  `bridge-screen config unset test-command|test-timeout [-C DIR]` (owner only; the L2 re-run)
+- Verification and decisions: `bridge-screen verify <task> [--broken "<note>"] [--level N] [-C DIR]`
+  (the owner's verdict), `bridge-screen decisions [-C DIR] [--task ID] [--all]`
 - Plugin check: `claude plugin validate ./plugin` (read-only)
-- Hook latency (release, on demand; PostToolUse, the Stop scoring path, and PostToolUse after `git commit` with a checkpoint pending — budget 150 ms): `cargo test --release -p bridge-screen --test hooks -- --ignored hook_latency --nocapture`
+- Hook latency (release, on demand; PostToolUse, the Stop scoring path, UserPromptSubmit with verification and dependency notes, and — budget 150 ms — PostToolUse after `git commit` with a checkpoint pending and SessionStart's staleness scan over 50 verifications): `cargo test --release -p bridge-screen --test hooks -- --ignored hook_latency --nocapture`
 - Releases: see `docs/RELEASING.md` (`dist plan` to preview); keep `plugin/.claude-plugin/plugin.json`'s `version` equal to the workspace version (a test checks it)
 
 ## Rules
@@ -56,6 +67,8 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
 - The pre-commit hook runs fmt/clippy/web lint; pre-push runs all tests and the web build. Don't bypass them with `--no-verify`.
 - Never write bridge-screen state inside a repo; runtime data lives in `~/.bridge-screen/` (spec §6).
 - Hooks must stay fast (≤ 50 ms p95) and must never fail a Claude session: log errors and exit 0. A known session's hooks run `git` only when a checkpoint is pending (Stop), after a Bash `git commit`, at SessionStart/SessionEnd, and before `gh pr create`.
+- Never run tests from a hook: the L2 re-run happens only in the `verify` MCP call. Only the
+  owner sets the test command (CLI); every verification is tied to a commit SHA.
 - Tangents are never blocked. Stop continuations (checkpoint request first, then the label request) go out at most once per unit, never when `stop_hook_active`.
 - Never lose work: undo is a `git stash push` plus a snapshot record; squash leaves a backup ref; never `reset --hard`, `clean` or `checkout --` on unstashed files; never touch a live session's worktree.
 - Projectors use event timestamps only; "now" (live away time) is for hook decisions and never written into views.

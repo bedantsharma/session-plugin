@@ -505,3 +505,30 @@ fn changed_between_lists_both_sides_of_renames() {
         Vec::<String>::new()
     );
 }
+
+#[test]
+fn history_lists_commits_parents_and_touched_files() {
+    let r = repo();
+    let wt = r.path();
+    let first = head(wt).unwrap().unwrap();
+    write(wt, "a b.txt", "x\n");
+    write(wt, "a.txt", "two\n");
+    sh(wt, &["add", "-A"]);
+    sh(wt, &["commit", "-q", "-m", "two"]);
+    let second = head(wt).unwrap().unwrap();
+    sh(wt, &["mv", "a b.txt", "c.txt"]);
+    sh(wt, &["commit", "-q", "-m", "mv"]);
+    let third = head(wt).unwrap().unwrap();
+    let h = history(wt, "HEAD", 10).unwrap();
+    assert_eq!(h.len(), 3);
+    assert_eq!(h[0].sha, third);
+    assert_eq!(h[0].parents, vec![second.clone()]);
+    let mut moved = h[0].files.clone();
+    moved.sort();
+    assert_eq!(moved, vec!["a b.txt", "c.txt"]);
+    let mut touched = h[1].files.clone();
+    touched.sort();
+    assert_eq!(touched, vec!["a b.txt", "a.txt"]);
+    assert_eq!((h[2].sha.as_str(), h[2].parents.len()), (first.as_str(), 0));
+    assert_eq!(history(wt, "HEAD", 1).unwrap().len(), 1);
+}

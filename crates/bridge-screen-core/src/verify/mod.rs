@@ -280,6 +280,32 @@ pub fn refresh_status(tx: &Transaction, repo_id: &str, task_id: &str, failed: bo
     Ok(())
 }
 
+/// Plan-tree markers from verifications: `stale` when a task's newest verification went
+/// stale, `✓owner` when its L4 came from the owner.
+pub fn plan_marks(
+    conn: &Connection,
+    repo_id: &str,
+) -> Result<std::collections::HashMap<String, String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT task_id FROM verifications
+         WHERE repo_id = ?1 AND state IN ('current', 'stale')",
+    )?;
+    let tasks = stmt
+        .query_map([repo_id], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut marks = std::collections::HashMap::new();
+    for task in tasks {
+        if stale_note(conn, repo_id, &task)?.is_some() {
+            marks.insert(task, "stale".to_string());
+        } else if top_verification(conn, repo_id, &task)?
+            .is_some_and(|v| v.level == 4 && v.by == By::Owner)
+        {
+            marks.insert(task, "✓owner".to_string());
+        }
+    }
+    Ok(marks)
+}
+
 /// Per-repo test settings.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepoSettings {

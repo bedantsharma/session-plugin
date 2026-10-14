@@ -4,11 +4,12 @@
 //!
 //! Idempotent: a drop moves the row's `stale_checked_sha` to the HEAD it was found at, so
 //! a second start at the same HEAD skips it. A row whose files weren't touched keeps its
-//! old `stale_checked_sha`: the next start diffs from there again (one git call per
-//! distinct commit). Commits that aren't ancestors of HEAD (another branch, rewritten
-//! history) are left alone.
+//! old `stale_checked_sha`: the next start looks from there again. One `git log` of
+//! HEAD's newest [`HISTORY`] commits answers every row: a file counts as changed when a
+//! commit after the verification's (and not before it) touched it. Commits that aren't
+//! in that history (another branch, rewritten history, or older) are left alone.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -20,6 +21,35 @@ use crate::store::{EventDraft, Store, append_in};
 
 /// How many of the newest verifications a start looks at.
 pub const SCAN_LIMIT: usize = 50;
+
+/// How far back from HEAD a start looks: verifications on older commits are left alone.
+pub const HISTORY: usize = 1000;
+
+/// The paths touched by the commits in `sha..HEAD` (`history` is HEAD's newest commits,
+/// newest first), or `None` when `sha` isn't among them: another branch, rewritten
+/// history, or too old. Commits reachable from `sha` are the ones not counted.
+fn touched_since<'a>(history: &'a [git::CommitTouch], sha: &str) -> Option<HashSet<&'a str>> {
+    let index: HashMap<&str, &git::CommitTouch> =
+        history.iter().map(|c| (c.sha.as_str(), c)).collect();
+    index.get(sha)?;
+    let mut before: HashSet<&str> = HashSet::new();
+    let mut queue = vec![sha];
+    while let Some(id) = queue.pop() {
+        if !before.insert(id) {
+            continue;
+        }
+        if let Some(c) = index.get(id) {
+            queue.extend(c.parents.iter().map(String::as_str));
+        }
+    }
+    Some(
+        history
+            .iter()
+            .filter(|c| !before.contains(c.sha.as_str()))
+            .flat_map(|c| c.files.iter().map(String::as_str))
+            .collect(),
+    )
+}
 
 /// One drop a scan recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,20 +80,26 @@ pub fn scan_stale(
             .or_default()
             .push(row);
     }
+    if groups.keys().all(|sha| *sha == head) {
+        return Ok(Vec::new());
+    }
+    let Ok(history) = git::history(wt, &head, HISTORY) else {
+        return Ok(Vec::new());
+    };
     let mut drafts = Vec::new();
     let mut changes = Vec::new();
     for (sha, group) in groups {
-        if sha == head || !git::is_ancestor(wt, sha, &head).unwrap_or(false) {
+        if sha == head {
             continue;
         }
-        let Ok(touched) = git::changed_between(wt, sha, &head) else {
+        let Some(touched) = touched_since(&history, sha) else {
             continue;
         };
         for row in group {
             let hit: Vec<String> = row
                 .files
                 .iter()
-                .filter(|f| touched.contains(f))
+                .filter(|f| touched.contains(f.as_str()))
                 .cloned()
                 .collect();
             if hit.is_empty() {
@@ -159,4 +195,40 @@ pub fn stale_note(conn: &Connection, repo_id: &str, task_id: &str) -> Result<Opt
         "stale: {} changed @{short}",
         d.changed.join(", ")
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::touched_since;
+    use crate::git::CommitTouch;
+
+    fn c(sha: &str, parents: &[&str], files: &[&str]) -> CommitTouch {
+        CommitTouch {
+            sha: sha.into(),
+            parents: parents.iter().map(|p| (*p).to_string()).collect(),
+            files: files.iter().map(|f| (*f).to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn only_commits_after_the_verification_count() {
+        // a ← b ← d (merge of b and c) ← e;  a ← c (a side branch).
+        let history = vec![
+            c("e", &["d"], &["e.rs"]),
+            c("d", &["b", "c"], &[]),
+            c("c", &["a"], &["c.rs"]),
+            c("b", &["a"], &["b.rs"]),
+            c("a", &[], &["a.rs"]),
+        ];
+        let set = |sha: &str| {
+            let mut v: Vec<&str> = touched_since(&history, sha).unwrap().into_iter().collect();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(set("e"), Vec::<&str>::new());
+        assert_eq!(set("b"), vec!["c.rs", "e.rs"]);
+        assert_eq!(set("c"), vec!["b.rs", "e.rs"]);
+        assert_eq!(set("a"), vec!["b.rs", "c.rs", "e.rs"]);
+        assert_eq!(touched_since(&history, "zzz"), None);
+    }
 }

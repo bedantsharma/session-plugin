@@ -12,6 +12,11 @@
 
 **Branch / worktree:** `feat/sp5-verification-decisions` in `/Users/bedantsharma/PycharmProjects/session-plugin-sp5` (branched from `feat/sp4-handoff-recovery`, which is not merged yet). Work only in that worktree — the main checkout belongs to another live session.
 
+## Not in this sub-project (deferred on purpose)
+
+- **Ad-hoc dependencies — `waiting_on` / `wait_cleared` (spec §5.2, §9.1, §11.2).** Not implemented in SP5; the owner decided on 2026-10-14 to leave it for a later run. SP5 only builds the dependency-ready note for **plan links** (`depends_on`, Task 5). Still to do, in a later sub-project (fits SP8's dependency work, or earlier if wanted): the `waiting_on {target, reason}` and `wait_cleared` events and a `waits` view; the MCP tool `waiting_on(target, reason)`; clearing a wait when its target reaches ≥ L2 and sending the same "X is done on `<branch>` @sha" note to the waiting session (reuse Task 5's `DependencyReady` candidate); waits in the briefing's Dependencies line and in `status`; offering to promote a wait to a plan link. Do not stub or half-build it here.
+- **"Agent asked the owner a question" is not distinguished from a plain idle stop.** Both show as `idle`, then `needs_owner` after Claude Code's `idle_prompt`. Ideas for SP6 (needs-you queue): a Stop heuristic (the turn ended on a question, checked without storing text) or an explicit `ask_owner(question)` tool. Out of scope here.
+
 ## Global Constraints
 
 - Everything from sub-projects 1–4 still applies: clippy pedantic `-D warnings`, no `unsafe`/`set_var`, never-fail fast hooks (log + exit 0), no prompt text or full assistant messages stored, tests never touch the real `~/.claude`/`~/.bridge-screen` or run the real `claude`, commit per task ending with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`, pre-commit/pre-push hooks never bypassed (`--no-verify` is forbidden), never leave a command waiting on stdin.

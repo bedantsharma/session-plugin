@@ -9,7 +9,7 @@ pub mod render;
 pub use model::{Hill, NodeKind, NodeStatus, PlanNode};
 pub use ops::{EditContext, EditOutcome, PlanError, PlanOp, plan_edit, plan_edit_in};
 pub use query::{get_node, is_in_subtree, load_tree, next_child, would_cycle};
-pub use render::render_text;
+pub use render::{render_annotated, render_text};
 
 #[cfg(test)]
 mod tests {

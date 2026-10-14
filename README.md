@@ -26,6 +26,24 @@ When a session ends, crashes or is abandoned, the next one picks up where it sto
   commits into one (leaving a backup ref), and it happens automatically before
   `gh pr create`.
 
+## Verification and decisions
+
+A task claimed done is checked, not taken on trust:
+
+- **The ladder.** L0 claimed (`claim_done` with the files that show the work) → L1 the
+  code exists at HEAD (checked automatically) → L2 the unit tests pass (the agent reports
+  the exit code; bridge-screen re-runs your test command, set with
+  `bridge-screen config set test-command "cargo test"`, within a time limit) → L3
+  end-to-end, as the agent drove it → L4 you (`bridge-screen verify <task>`, or
+  `--broken "<note>"`). Every level is tied to a commit; when later commits touch the
+  files it depended on, it drops a level at the next session start. Squashing keeps them.
+- **Progress.** `bridge-screen status` shows done% (tasks at L2 or above, by estimate) and
+  claimed% separately. Unverified work leads the next briefing and is nudged; after two
+  ignored nudges it lands in your needs-you list.
+- **Decisions.** Agents log what they decided, why and the alternatives
+  (`log_decision`) when a task is done, before compaction and at the end of a session; a
+  changed decision supersedes the old one. `bridge-screen decisions [--all]` lists them.
+
 ## Install
 
 *After the first release:*

@@ -75,6 +75,16 @@ fn tuned_suffix(store: &Store, repo_id: &str, cfg: &Config) -> Result<String> {
     ))
 }
 
+/// `  · done 41% · claimed 12% · 2 unestimated` (spec §5.6).
+fn progress_suffix(store: &Store, repo_id: &str) -> Result<String> {
+    let p = verify::progress(store.conn(), repo_id)?;
+    let mut text = format!("  · done {}% · claimed {}%", p.done_pct, p.claimed_pct);
+    if p.unestimated > 0 {
+        let _ = write!(text, " · {} unestimated", p.unestimated);
+    }
+    Ok(text)
+}
+
 /// The status text for every live session.
 pub fn render(store: &Store, cfg: &Config) -> Result<String> {
     let conn = store.conn();
@@ -98,8 +108,9 @@ pub fn render(store: &Store, cfg: &Config) -> Result<String> {
             Some(goal) => {
                 let _ = writeln!(
                     out,
-                    "{name}  goal: {}{}",
+                    "{name}  goal: {}{}{}",
                     goal.title,
+                    progress_suffix(store, &repo_id)?,
                     tuned_suffix(store, &repo_id, cfg)?
                 );
             }
@@ -111,7 +122,16 @@ pub fn render(store: &Store, cfg: &Config) -> Result<String> {
         if open > 0 {
             let _ = writeln!(out, "  leftovers: {open} open ({report_only} report-only)");
         }
-        // Claimed work nudged twice without being verified (spec §8.5, §10.1).
+        // `list_live` is newest first; a stable sort keeps that within each state.
+        sessions.sort_by_key(state_rank);
+        // Needs-you order: red, missed checkpoints and unstable sessions, waits, then
+        // claimed work nudged twice without being verified (spec §8.5, §10.1), then the
+        // rest.
+        let (urgent, rest): (Vec<&Session>, Vec<&Session>) =
+            sessions.iter().partition(|s| state_rank(s) <= 2);
+        for s in urgent {
+            out.push_str(&session_line(store, s)?);
+        }
         for (task, title) in verify::overdue(conn, &repo_id)? {
             let _ = writeln!(
                 out,
@@ -119,9 +139,7 @@ pub fn render(store: &Store, cfg: &Config) -> Result<String> {
                 format!("{task} {title}").trim_end()
             );
         }
-        // `list_live` is newest first; a stable sort keeps that within each state.
-        sessions.sort_by_key(state_rank);
-        for s in &sessions {
+        for s in rest {
             out.push_str(&session_line(store, s)?);
         }
     }
@@ -158,6 +176,11 @@ fn session_line(store: &Store, s: &Session) -> Result<String> {
     }
     if s.readback == ReadbackState::Pending {
         nav.push_str(" · read-back pending");
+    }
+    let pending = verify::pending_claims(store.conn(), &s.session_id, jiff::Timestamp::MAX)?;
+    if !pending.is_empty() {
+        let ids: Vec<&str> = pending.iter().map(|(t, _)| t.as_str()).collect();
+        let _ = write!(nav, " · verify pending: {}", ids.join(", "));
     }
     Ok(format!(
         "  S {short}  {left:<TASK_COLUMN$}{units:<7} · {minutes}m · {nav}\n"

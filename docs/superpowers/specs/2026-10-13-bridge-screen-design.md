@@ -537,10 +537,10 @@ All features ship. Each sub-project gets its own implementation plan, built in d
 2. **Hooks and sessions.** All hook handlers, units, active time, claiming, the MCP server skeleton with claim/plan tools, the skill.
 3. **Navigator and tangents.** Drift score, labels, tolerance band, suspended items and resume cues, note rules, drift auto-tuning.
 4. **Handoff and recovery.** Checkpoints and the Stop block, end classification, leftover analysis and resolution, briefing, read-back, `bridge-screen squash` and the automatic squash on PR creation.
-5. **Verification and decisions.** Ladder, staleness, decision capture.
+5. **Verification and decisions.** Ladder, staleness, decision capture, and the dependency-ready note for plan links. *Deferred from this run (owner, 2026-10-14):* ad-hoc `waiting_on` / `wait_cleared` dependencies (§9.1, §11.2) — the tool, `waits` view, clearing at ≥ L2 with the ready note, briefing/status display and promotion to plan links. Pick it up in sub-project 8 (or earlier); see the SP5 plan's "Not in this sub-project" section.
 6. **Screens.** Starts with a spike testing MCP Apps in the desktop app's Code tab. Then the axum API, Svelte dashboard (glance, needs-you actions, drill-downs, theme), the ratatui `watch` view, the desktop `show_progress` card, and the opt-in `progress_report`.
 7. **Telemetry and forecast.** Transcript parsing, cost, calibration, Monte Carlo.
-8. **Imports and onboarding.** Superpowers import and diff, `bridge-screen init` for existing repos, branch groups and cross-repo dependencies.
+8. **Imports and onboarding.** Superpowers import and diff, `bridge-screen init` for existing repos, branch groups and cross-repo dependencies, and the ad-hoc `waiting_on` dependencies deferred from sub-project 5.
 9. **Archive.** Compaction and rollups, archive files, full-text index, `archive` commands, `archive_search` tool, Archive page, auto-restore.
 
 Sub-projects 1–4 make bridge-screen useful on its own. The glance view from sub-project 6 can start early as a read-only page.

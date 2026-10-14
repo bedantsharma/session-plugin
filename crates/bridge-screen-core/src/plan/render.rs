@@ -1,10 +1,20 @@
 //! Plain-text rendering of the plan tree for the CLI.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::hash::BuildHasher;
 
 use super::model::{Hill, PlanNode};
 
 pub fn render_text(nodes: &[PlanNode]) -> String {
+    render_annotated(nodes, &HashMap::new())
+}
+
+/// [`render_text`] with a marker after a node's status (`stale`, `✓owner`).
+pub fn render_annotated<S: BuildHasher>(
+    nodes: &[PlanNode],
+    marks: &HashMap<String, String, S>,
+) -> String {
     let mut out = String::new();
     for node in nodes {
         let indent = "  ".repeat(node.depth);
@@ -15,6 +25,9 @@ pub fn render_text(nodes: &[PlanNode]) -> String {
             node.title,
             node.status.as_str()
         );
+        if let Some(mark) = marks.get(&node.id) {
+            let _ = write!(out, " {mark}");
+        }
         if let Some(min) = node.estimate_min {
             let _ = write!(out, " {min}m");
         }
@@ -74,6 +87,17 @@ G  Ship bridge-screen  [todo]
     1.1  Schema  [l2] 30m (needs 1.2, 2.1)
 ";
         assert_eq!(render_text(&[goal, m, t]), expected);
+    }
+
+    #[test]
+    fn marks_follow_the_status() {
+        let mut t = n("1.1", NodeKind::Task, "Schema", 0);
+        t.status = NodeStatus::L4;
+        let marks = std::collections::HashMap::from([("1.1".to_string(), "✓owner".to_string())]);
+        assert_eq!(
+            super::render_annotated(&[t], &marks),
+            "1.1  Schema  [l4] ✓owner\n"
+        );
     }
 
     #[test]

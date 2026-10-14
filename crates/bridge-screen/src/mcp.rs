@@ -1010,6 +1010,21 @@ fn handoff_status(
     Ok(())
 }
 
+/// Where a task stands on the verification ladder and the next step (spec §8.5).
+fn ladder_step(status: NodeStatus) -> Option<&'static str> {
+    Some(match status {
+        NodeStatus::Claimed => {
+            "claimed (L0) — next: commit the files you named, then run tests and verify level 2"
+        }
+        NodeStatus::L1 => "L1 (code exists) — next: run tests, verify level 2",
+        NodeStatus::L2 => "L2 (tests pass) — next: drive it end to end, verify level 3",
+        NodeStatus::L3 => "L3 (end-to-end) — next: ask the owner, verify level 4 with their words",
+        NodeStatus::L4 => "L4 (the owner confirmed)",
+        NodeStatus::Failed => "failed — fix it, commit, claim_done again",
+        _ => return None,
+    })
+}
+
 /// Compact state for the agent.
 fn agent_status(store: &Store, s: &Session) -> bridge_screen_core::error::Result<String> {
     let conn = store.conn();
@@ -1030,6 +1045,11 @@ fn agent_status(store: &Store, s: &Session) -> bridge_screen_core::error::Result
         Some(id) => {
             let title = claim::task_title(conn, &s.repo_id, id)?.unwrap_or_default();
             let _ = writeln!(out, "Active task: {id} {title}");
+            if let Some(node) = get_node(conn, &s.repo_id, id)?
+                && let Some(step) = ladder_step(node.status)
+            {
+                let _ = writeln!(out, "Verification: {step}");
+            }
             let live = decision::list(conn, &s.repo_id, Some(id), false)?;
             if let Some(last) = live.last() {
                 let _ = writeln!(
@@ -1044,6 +1064,14 @@ fn agent_status(store: &Store, s: &Session) -> bridge_screen_core::error::Result
         None => out.push_str("Active task: none — claim one with claim_task.\n"),
     }
     handoff_status(conn, s, &mut out)?;
+    let pending = verify::pending_claims(conn, &s.session_id, jiff::Timestamp::MAX)?;
+    if !pending.is_empty() {
+        let list: Vec<String> = pending
+            .iter()
+            .map(|(t, level)| format!("{t} (L{level})"))
+            .collect();
+        let _ = writeln!(out, "Unverified: {} — verify them", list.join(" · "));
+    }
     let open = tangent::open_detours(conn, &s.session_id)?;
     if !open.is_empty() {
         let list: Vec<String> = open
