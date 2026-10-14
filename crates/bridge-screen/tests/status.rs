@@ -372,3 +372,116 @@ shop  no plan yet
 "
     );
 }
+
+/// Every needs-you kind and the escalation line, rendered from the glance model.
+#[test]
+#[allow(clippy::too_many_lines)] // one scenario with every kind
+fn status_from_glance_matches_every_kind() {
+    let env = Env::new();
+    let mut s = Store::open(&env.db_path()).unwrap();
+    register(&s, "r1", "shop");
+    plan_edit(
+        &mut s,
+        &EditContext {
+            repo_id: "r1".into(),
+            session_id: "owner".into(),
+            actor: Actor::default(),
+            reason: None,
+            replan: false,
+        },
+        &[
+            PlanOp::AddNode {
+                parent: None,
+                kind: NodeKind::Goal,
+                title: "Online shop".into(),
+                intent: Some("People can buy things.".into()),
+                estimate_min: None,
+                expected_files: vec![],
+            },
+            PlanOp::AddNode {
+                parent: Some("G".into()),
+                kind: NodeKind::Task,
+                title: "Cart".into(),
+                intent: None,
+                estimate_min: Some(30),
+                expected_files: vec![],
+            },
+        ],
+    )
+    .unwrap();
+    // drift_red: 40 minutes of drift, red.
+    start(&mut s, "r1", "red00aaa", 0);
+    ev(&mut s, "r1", "red00aaa", "prompt", json!({}), 10);
+    ev(
+        &mut s,
+        "r1",
+        "red00aaa",
+        "unit_stopped",
+        json!({"score": 0.9}),
+        2410,
+    );
+    ev(
+        &mut s,
+        "r1",
+        "red00aaa",
+        "unit_labeled",
+        json!({"unit_no": 1, "label": "drift", "source": "owner"}),
+        2410,
+    );
+    ev(
+        &mut s,
+        "r1",
+        "red00aaa",
+        "nav_state_changed",
+        json!({"from": "green", "to": "red", "away_secs": 2400}),
+        2410,
+    );
+    // permission_wait, twice.
+    for (sid, t) in [("perm0bbb", 20), ("perm0ccc", 30)] {
+        start(&mut s, "r1", sid, t);
+        ev(&mut s, "r1", sid, "prompt", json!({}), t + 1);
+        ev(
+            &mut s,
+            "r1",
+            sid,
+            "needs_owner",
+            json!({"kind": "permission_prompt"}),
+            t + 2,
+        );
+    }
+    // verify_overdue: 1 Cart, claimed done and nudged twice.
+    start(&mut s, "r1", "ver00ddd", 40);
+    for (kind, data) in [
+        ("claimed_done", json!({"task_id": "1", "evidence": "ok"})),
+        ("verify_nudged", json!({"task_id": "1", "level": 0})),
+        ("verify_nudged", json!({"task_id": "1", "level": 0})),
+        ("needs_owner", json!({"kind": "verify", "task_id": "1"})),
+    ] {
+        ev(&mut s, "r1", "ver00ddd", kind, data, 50);
+    }
+    // leftover: a dead session's file.
+    ev(
+        &mut s,
+        "r1",
+        "ver00ddd",
+        "leftover_found",
+        json!({"leftover_id": "l1", "from_session": "dead0eee", "worktree": "/w",
+               "path": "a.rs", "suggested": "undo"}),
+        60,
+    );
+    drop(s);
+    assert_eq!(
+        status(&env),
+        "\
+5 need you
+bridge-screen · 4 live sessions · 1 project
+shop  goal: Online shop  · done 0% · claimed 100%
+  leftovers: 1 open (0 report-only)
+  S red00a  needs you (no task)             1 unit  · 40m · drift ⚠ 40m
+  S perm0c  needs you (no task)             0 units · 0m · on task
+  S perm0b  needs you (no task)             0 units · 0m · on task
+  needs you: verify 1 Cart — bridge-screen verify 1 (or --broken \"…\")
+  S ver00d  idle      (no task)             0 units · 0m · on task · verify pending: 1
+"
+    );
+}

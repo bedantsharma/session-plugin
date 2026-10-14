@@ -88,7 +88,13 @@ pub fn run(cli: Cli) -> Result<()> {
                     cfg.crash_timeout_min,
                 )?;
             }
-            print!("{}", crate::status::render(&store, &cfg)?);
+            let glance =
+                bridge_screen_core::view::glance(store.conn(), &cfg, jiff::Timestamp::now())?;
+            let opts = crate::status::Options {
+                color: crate::status::stdout_color(),
+                dashboard: None,
+            };
+            print!("{}", crate::status::render(&glance, &opts));
             Ok(())
         }
         Command::Hook { .. } => unreachable!("main handles hooks before dispatching commands"),
