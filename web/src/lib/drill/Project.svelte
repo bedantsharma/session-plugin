@@ -58,12 +58,12 @@
     <h2 class="text-lg font-medium">{m.data.name}</h2>
     <button
       type="button"
-      class="text-xs text-muted hover:underline"
+      class="text-meta text-muted hover:underline"
       onclick={() => onOpenHistory(repo)}>history</button
     >
     <button
       type="button"
-      class="text-xs text-muted hover:underline"
+      class="text-meta text-muted hover:underline"
       onclick={() => onOpenTuning(repo)}>drift tuning</button
     >
   </div>
@@ -80,7 +80,7 @@
       />
     </div>
     {#if added.length}
-      <p class="mt-1 text-xs text-muted">
+      <p class="mt-1 text-meta text-muted">
         scope added: {added.map((a) => `+${a.by}m at ${hhmm(a.ts)}`).join(' · ')}
       </p>
     {/if}
@@ -90,7 +90,7 @@
       <li style:padding-left={`${n.depth * 1.25}rem`} class="py-0.5 text-sm">
         <Collapsible.Root>
           <div class="flex items-baseline gap-2">
-            <span class="w-10 shrink-0 font-mono text-xs text-muted">{n.id}</span>
+            <span class="w-10 shrink-0 font-mono text-meta text-muted">{n.id}</span>
             {#if n.kind === 'task' || n.kind === 'subtask'}
               <button type="button" class="hover:underline" onclick={() => onOpenTask(repo, n.id)}
                 >{n.title}</button
@@ -98,26 +98,27 @@
             {:else}
               <span class="font-medium">{n.title}</span>
             {/if}
-            <span class="rounded border border-edge px-1 text-xs">{n.status}</span>
-            {#if n.stale}<span class="rounded border border-warn px-1 text-xs text-warn">stale</span
+            <span class="rounded border border-edge px-1 text-meta">{n.status}</span>
+            {#if n.stale}<span class="rounded border border-warn px-1 text-meta text-warn"
+                >stale</span
               >{/if}
-            {#if n.owner_checked}<span class="text-xs text-clay">✓ owner</span>{/if}
-            {#if n.hill}<span class="text-xs text-warn">{n.hill}</span>{/if}
+            {#if n.owner_checked}<span class="text-meta text-clay">✓ owner</span>{/if}
+            {#if n.hill}<span class="text-meta text-warn">{n.hill}</span>{/if}
             {#if n.estimate_min !== null || n.actual_min > 0}
-              <span class="text-xs text-muted">{n.actual_min}m of {n.estimate_min ?? '?'}m</span>
+              <span class="text-meta text-muted">{n.actual_min}m of {n.estimate_min ?? '?'}m</span>
             {/if}
-            {#if n.depends_on.length}<span class="text-xs text-muted"
+            {#if n.depends_on.length}<span class="text-meta text-muted"
                 >after {n.depends_on.join(', ')}</span
               >{/if}
-            {#if n.decisions}<span class="text-xs text-muted">{n.decisions} decisions</span>{/if}
+            {#if n.decisions}<span class="text-meta text-muted">{n.decisions} decisions</span>{/if}
             {#if n.intent}
-              <Collapsible.Trigger class="text-xs text-muted hover:underline"
+              <Collapsible.Trigger class="text-meta text-muted hover:underline"
                 >intent</Collapsible.Trigger
               >
             {/if}
           </div>
           {#if n.intent}
-            <Collapsible.Content class="ml-12 text-xs text-muted">{n.intent}</Collapsible.Content>
+            <Collapsible.Content class="ml-12 text-meta text-muted">{n.intent}</Collapsible.Content>
           {/if}
         </Collapsible.Root>
       </li>
@@ -125,7 +126,7 @@
   </ul>
   {#if m.data.replans.length}
     <h3 class="mt-4 text-sm font-medium">Re-plans</h3>
-    <ul class="text-xs text-muted">
+    <ul class="text-meta text-muted">
       {#each m.data.replans as r (r.ts)}
         <li>{hhmm(r.ts)} · {r.op_count} ops · {r.reason ?? ''}</li>
       {/each}

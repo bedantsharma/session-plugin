@@ -21,7 +21,7 @@
 {:else if m.data}
   {@const t = m.data}
   <h2 class="text-lg font-medium">{t.id} {t.title}</h2>
-  <p class="text-xs text-muted">
+  <p class="text-meta text-muted">
     {t.status ?? ''} · {t.actual_min}m of {t.estimate_min ?? '?'}m · {t.retries} retries
     {#if t.actors.length}· {t.actors
         .map((a) => [a.agent_type, a.model].filter(Boolean).join(' '))
@@ -32,19 +32,19 @@
     <ol class="mb-2 text-sm">
       {#each chain as d (d.decision_id)}
         <li class={d.superseded_by ? 'text-muted line-through' : ''}>
-          <span class="font-mono text-xs">{d.decision_id}</span>
+          <span class="font-mono text-meta">{d.decision_id}</span>
           {d.what} — {d.why}
-          {#if d.superseded_by}<span class="text-xs no-underline">
+          {#if d.superseded_by}<span class="text-meta no-underline">
               → superseded by {d.superseded_by}</span
             >{/if}
         </li>
       {/each}
     </ol>
   {:else}
-    <p class="text-xs text-muted">None logged.</p>
+    <p class="text-meta text-muted">None logged.</p>
   {/each}
   <h3 class="mt-3 text-sm font-medium">Verification</h3>
-  <ul class="text-xs">
+  <ul class="text-meta">
     {#each t.verifications as v (v.verif_id)}
       <li class={v.state === 'current' ? '' : 'text-muted'}>
         L{v.level} by {v.by}{v.rerun ? ` (re-run ${v.rerun})` : ''} at

@@ -128,7 +128,41 @@
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
+  /* Cards are 12 px; inner rows and buttons 8 px (rounded-lg). */
+  --radius-xl: 0.75rem;
+  --color-hover: var(--hover);
+  --color-tint-bad: var(--tint-bad);
+  --color-tint-ok: var(--tint-ok);
+  --color-tint-warn: var(--tint-warn);
+  --color-tint-working: var(--tint-working);
+}
+
+/*
+ * Type scale (plan §2): rows 15/22, metadata 13/20, chips 12/16 — the only 12 px text.
+ * Page title text-xl (20/28), section headings text-base (16/24), buttons text-sm (14/20).
+ */
+@theme {
+  --text-row: 0.9375rem;
+  --text-row--line-height: 1.375rem;
+  --text-meta: 0.8125rem;
+  --text-meta--line-height: 1.25rem;
+  --text-chip: 0.75rem;
+  --text-chip--line-height: 1rem;
+}
+
+/*
+ * Tints: mixes of palette tokens over the card surface (never new hues). Every
+ * text-on-tint pair is checked in tests/contrast.test.ts.
+ */
+:root {
+  /* tints */
+  --hover: color-mix(in oklab, var(--fg) 4%, var(--surface));
+  --tint-bad: color-mix(in oklab, var(--bad) 10%, var(--surface));
+  --tint-ok: color-mix(in oklab, var(--ok) 10%, var(--surface));
+  --tint-warn: color-mix(in oklab, var(--warn) 10%, var(--surface));
+  --tint-working: color-mix(in oklab, var(--ok) 6%, var(--surface));
+  --tint-flash: color-mix(in oklab, var(--clay) 14%, var(--surface));
+  /* end */
 }
 
 @layer base {

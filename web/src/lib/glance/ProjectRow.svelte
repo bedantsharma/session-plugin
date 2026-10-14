@@ -15,12 +15,12 @@
       onclick={() => onOpen?.(project.repo_id)}>{project.name}</button
     >
     {#if project.goal}<span class="truncate text-muted">{project.goal.title}</span>{/if}
-    <span class="ml-auto shrink-0 text-xs" data-testid="progress-text">
+    <span class="ml-auto shrink-0 text-meta" data-testid="progress-text">
       {project.done_pct}% done{#if project.claimed_pct > 0}&nbsp;· +{project.claimed_pct}% claimed{/if}
     </span>
   </div>
   <ProgressBar done={project.done_pct} claimed={project.claimed_pct} />
-  <div class="flex flex-wrap gap-x-3 gap-y-0.5 text-xs">
+  <div class="flex flex-wrap gap-x-3 gap-y-0.5 text-meta">
     {#each project.milestones as m (m.id)}
       <span class="flex items-center gap-1" data-milestone={m.id}>
         <span class="text-muted">{m.id}</span>

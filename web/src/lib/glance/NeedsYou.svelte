@@ -114,7 +114,7 @@
           class="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md px-2 py-1.5"
           data-item={item.id}
         >
-          <span class="w-20 shrink-0 text-xs font-medium tracking-wide text-bad uppercase">
+          <span class="w-20 shrink-0 text-meta font-medium tracking-wide text-bad uppercase">
             ■ {kindWord[item.kind] ?? item.kind}
           </span>
           <div class="min-w-0 flex-1">
@@ -128,15 +128,15 @@
               {:else}
                 {item.title}
               {/if}
-              <span class="text-xs text-muted">· {item.repo_name} · {age(item.age_s)}</span>
+              <span class="text-meta text-muted">· {item.repo_name} · {age(item.age_s)}</span>
             </div>
-            <div class="truncate text-xs text-muted">{item.detail}</div>
+            <div class="truncate text-meta text-muted">{item.detail}</div>
             {#if item.files?.length}
-              <div class="truncate font-mono text-xs text-muted">{item.files.join(' ')}</div>
+              <div class="truncate font-mono text-meta text-muted">{item.files.join(' ')}</div>
             {/if}
             {#if messages[item.id]}
               <div
-                class={['text-xs', messages[item.id].ok ? 'text-ok' : 'text-warn']}
+                class={['text-meta', messages[item.id].ok ? 'text-ok' : 'text-warn']}
                 role="status"
               >
                 {messages[item.id].text}
@@ -148,7 +148,7 @@
               {#each item.actions as spec (spec.label)}
                 {#each spec.inputs.filter((i) => !i.required) as inp (inp.name)}
                   <Input
-                    class="h-8 w-40 text-xs"
+                    class="h-8 w-40 text-meta"
                     placeholder={inp.label}
                     aria-label={`${spec.label}: ${inp.label}`}
                     disabled={disabled || !!pending[item.id]}
@@ -165,7 +165,7 @@
               {/each}
             </div>
           {:else if item.respond_in}
-            <div class="flex items-center gap-1.5 text-xs text-muted">
+            <div class="flex items-center gap-1.5 text-meta text-muted">
               answer in <span class="font-mono">S {item.respond_in.session_short}</span>
               {#if item.respond_in.worktree}
                 · <span class="font-mono">{item.respond_in.worktree}</span>
@@ -185,7 +185,7 @@
     {#if shown.length > URGENT}
       <button
         type="button"
-        class="mt-1 px-2 text-xs text-muted hover:underline"
+        class="mt-1 px-2 text-meta text-muted hover:underline"
         onclick={() => (showAll = !showAll)}
       >
         {showAll ? 'show the 4 most urgent' : `show all ${shown.length}`}

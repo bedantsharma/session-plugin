@@ -93,20 +93,20 @@
     <header class="flex items-center gap-2">
       <span class="text-clay" aria-hidden="true">✱</span>
       <span class="font-medium">bridge-screen</span>
-      <span class="text-xs text-muted">as of {hhmm(glance.as_of)}</span>
+      <span class="text-meta text-muted">as of {hhmm(glance.as_of)}</span>
       <span class="ml-auto">
         {#if glance.needs_you_count > 0}
           <span
-            class="rounded-full border-2 border-bad px-2 text-xs font-medium text-bad"
+            class="rounded-full border-2 border-bad px-2 text-meta font-medium text-bad"
             data-testid="pill">■ {glance.needs_you_count} need you</span
           >
         {:else}
-          <span class="rounded-full border border-ok px-2 text-xs text-ok">● All clear</span>
+          <span class="rounded-full border border-ok px-2 text-meta text-ok">● All clear</span>
         {/if}
       </span>
       <button
         type="button"
-        class="rounded border border-edge px-2 text-xs"
+        class="rounded border border-edge px-2 text-meta"
         disabled={refreshing}
         onclick={refresh}>{refreshing ? 'Refreshing…' : 'Refresh'}</button
       >
@@ -115,14 +115,14 @@
       <ul class="flex flex-col gap-1 rounded-md border-2 border-bad p-2" aria-label="Needs you">
         {#each glance.needs_you.slice(0, URGENT) as item (item.id)}
           <li class="flex flex-col gap-1" data-item={item.id}>
-            <div>{item.title} <span class="text-xs text-muted">· {item.repo_name}</span></div>
-            <div class="text-xs text-muted">{item.detail}</div>
+            <div>{item.title} <span class="text-meta text-muted">· {item.repo_name}</span></div>
+            <div class="text-meta text-muted">{item.detail}</div>
             {#if item.actions.length}
               <div class="flex flex-wrap items-center gap-1">
                 {#each item.actions as spec (spec.label)}
                   {#each spec.inputs as inp (inp.name)}
                     <input
-                      class="h-7 w-32 rounded border border-edge bg-surface px-1 text-xs"
+                      class="h-7 w-32 rounded border border-edge bg-surface px-1 text-meta"
                       placeholder={inp.label}
                       aria-label={`${spec.label}: ${inp.label}`}
                       bind:value={inputs[`${item.id}:${inp.name}`]}
@@ -131,7 +131,7 @@
                   <button
                     type="button"
                     class={[
-                      'h-7 rounded border px-2 text-xs',
+                      'h-7 rounded border px-2 text-meta',
                       spec.tone === 'danger' ? 'border-bad text-bad' : 'border-edge',
                     ]}
                     disabled={!!pending[item.id] || missing(item, spec)}
@@ -141,7 +141,7 @@
                 {/each}
               </div>
             {:else if item.respond_in}
-              <div class="text-xs text-muted">
+              <div class="text-meta text-muted">
                 answer in <span class="font-mono">S {item.respond_in.session_short}</span>
                 {#if item.respond_in.worktree}· <span class="font-mono"
                     >{item.respond_in.worktree}</span
@@ -150,7 +150,7 @@
             {/if}
             {#if messages[item.id]}
               <div
-                class={['text-xs', messages[item.id].ok ? 'text-ok' : 'text-warn']}
+                class={['text-meta', messages[item.id].ok ? 'text-ok' : 'text-warn']}
                 role="status"
               >
                 {messages[item.id].text}
@@ -160,7 +160,7 @@
         {/each}
       </ul>
       {#if glance.needs_you.length > URGENT}
-        <p class="text-xs text-muted">
+        <p class="text-meta text-muted">
           {glance.needs_you.length - URGENT} more — open the dashboard (<span class="font-mono"
             >bridge-screen ui</span
           >)
@@ -170,7 +170,7 @@
     <ul class="flex flex-col gap-1">
       {#each glance.projects as p (p.repo_id)}
         <li>
-          <div class="flex justify-between text-xs">
+          <div class="flex justify-between text-meta">
             <span class="font-medium">{p.name}</span>
             <span
               >{p.done_pct}% done{#if p.claimed_pct > 0}&nbsp;· +{p.claimed_pct}% claimed{/if}</span
@@ -182,7 +182,7 @@
     </ul>
     <ul class="flex flex-col">
       {#each sessions as s (s.session_id)}
-        <li class="flex gap-2 text-xs">
+        <li class="flex gap-2 text-meta">
           <span class={['w-20', colour[s.light]]}>{shape[s.light]} {s.light_word}</span>
           <span class="font-mono">S {s.short}</span>
           <span class="truncate">{s.task ? `${s.task.id} ${s.task.title}` : ''}</span>

@@ -46,7 +46,7 @@
   <Input class="h-8 w-40" placeholder="task" aria-label="task" bind:value={task} />
 </div>
 {#if error}<p class="text-warn">{error}</p>{/if}
-<ol class="mt-2 font-mono text-xs">
+<ol class="mt-2 font-mono text-meta">
   {#each rows as e (e.pos)}
     <li class="truncate">
       <span class="text-muted">{hhmm(e.ts)}</span>
@@ -57,7 +57,7 @@
   {/each}
 </ol>
 {#if next !== null}
-  <button type="button" class="mt-2 text-xs text-muted hover:underline" onclick={() => load(next)}
+  <button type="button" class="mt-2 text-meta text-muted hover:underline" onclick={() => load(next)}
     >older</button
   >
 {/if}

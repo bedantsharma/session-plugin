@@ -143,7 +143,7 @@
       {#if glance.projects.length > MAX_PROJECTS && !allProjects}
         <button
           type="button"
-          class="px-2 text-xs text-muted hover:underline"
+          class="px-2 text-meta text-muted hover:underline"
           onclick={() => (allProjects = true)}>{glance.projects.length - MAX_PROJECTS} more</button
         >
       {/if}
@@ -157,7 +157,7 @@
       {#if sessions.length > MAX_SESSIONS && !allSessions}
         <button
           type="button"
-          class="px-2 text-xs text-muted hover:underline"
+          class="px-2 text-meta text-muted hover:underline"
           onclick={() => (allSessions = true)}>{sessions.length - MAX_SESSIONS} more</button
         >
       {/if}

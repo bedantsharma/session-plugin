@@ -49,7 +49,7 @@
     {/each}
     <div class="bg-bad" style:width={`${(d.split.drift_s / total) * 100}%`}></div>
   </div>
-  <p class="mt-1 text-xs text-muted">
+  <p class="mt-1 text-meta text-muted">
     on task {minutes(d.split.on_task_s)}
     {#each d.split.detours as dt (dt.label)}
       · {dt.label} {dt.reason} {minutes(dt.secs)}{/each}
@@ -74,20 +74,20 @@
       </li>
     {/each}
     {#each d.owner_answers as a (a.ts)}
-      <li class="text-xs text-clay">
+      <li class="text-meta text-clay">
         {hhmm(a.ts)} owner: {a.answer}{a.reason ? ` — “${a.reason}”` : ''}
       </li>
     {/each}
   </ol>
   {#if d.suspended.length}
     <h3 class="mt-3 text-sm font-medium">Suspended</h3>
-    <ul class="text-xs">
+    <ul class="text-meta">
       {#each d.suspended as s (s.item_id)}<li>{s.what} — on return: {s.resume_cue}</li>{/each}
     </ul>
   {/if}
   {#if d.checkpoints.length}
     <h3 class="mt-3 text-sm font-medium">Checkpoints</h3>
-    <ul class="text-xs">
+    <ul class="text-meta">
       {#each d.checkpoints as c (c.sha)}<li>
           <span class="font-mono">{c.sha.slice(0, 8)}</span>
           {c.task_id ?? ''} — next: {c.next_action ?? ''}
@@ -96,7 +96,7 @@
   {/if}
   {#if d.leftovers.length}
     <h3 class="mt-3 text-sm font-medium">Leftovers</h3>
-    <ul class="text-xs">
+    <ul class="text-meta">
       {#each d.leftovers as l (l.leftover_id)}<li>
           <span class="font-mono">{l.path}</span> → {l.resolution ??
             `${l.state} (suggested ${l.suggested})`}
@@ -105,12 +105,12 @@
   {/if}
   {#if d.handoff_note}
     <h3 class="mt-3 text-sm font-medium">Handoff note</h3>
-    <p class="text-xs">{d.handoff_note.in_flight}</p>
-    <ul class="text-xs text-muted">
+    <p class="text-meta">{d.handoff_note.in_flight}</p>
+    <ul class="text-meta text-muted">
       {#each d.handoff_note.if_then as w (w)}<li>{w}</li>{/each}
     </ul>
   {/if}
-  <p class="mt-3 text-xs text-muted">read-back: {d.readback}</p>
+  <p class="mt-3 text-meta text-muted">read-back: {d.readback}</p>
 {:else}
   <p class="text-muted">Loading…</p>
 {/if}

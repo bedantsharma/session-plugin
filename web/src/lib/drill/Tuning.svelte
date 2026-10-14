@@ -52,8 +52,8 @@
       />
     </div>
   {/if}
-  {#if message}<p class="text-xs" role="status">{message}</p>{/if}
-  <ul class="mt-3 text-xs">
+  {#if message}<p class="text-meta" role="status">{message}</p>{/if}
+  <ul class="mt-3 text-meta">
     {#each t.changes as c (c.ts + c.key)}
       <li>{hhmm(c.ts)} {c.key}: {c.old ?? '—'} → {c.new} ({c.samples} samples)</li>
     {:else}

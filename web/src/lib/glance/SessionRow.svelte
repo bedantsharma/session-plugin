@@ -11,13 +11,13 @@
 </script>
 
 <li class="flex items-center gap-3 px-2 py-1 text-sm" data-session={session.session_id}>
-  <span class={['w-24 shrink-0 text-xs font-medium', colour[session.light]]}>
+  <span class={['w-24 shrink-0 text-meta font-medium', colour[session.light]]}>
     <span aria-hidden="true">{shape[session.light]}</span>
     {session.light_word}
   </span>
   <button
     type="button"
-    class="shrink-0 font-mono text-xs hover:underline"
+    class="shrink-0 font-mono text-meta hover:underline"
     onclick={() => onOpen?.(session.session_id)}>S {session.short}</button
   >
   <span class="min-w-0 flex-1 truncate">
@@ -31,11 +31,11 @@
       <span class="text-muted">(no task)</span>
     {/if}
     {#each session.flags as f (f.kind)}
-      <span class="ml-2 text-xs text-muted">· {flagText(f)}</span>
+      <span class="ml-2 text-meta text-muted">· {flagText(f)}</span>
     {/each}
   </span>
-  {#if session.branch}<span class="hidden shrink-0 font-mono text-xs text-muted lg:inline"
+  {#if session.branch}<span class="hidden shrink-0 font-mono text-meta text-muted lg:inline"
       >{session.branch}</span
     >{/if}
-  <span class="shrink-0 text-xs text-muted">{session.active_min}m</span>
+  <span class="shrink-0 text-meta text-muted">{session.active_min}m</span>
 </li>
