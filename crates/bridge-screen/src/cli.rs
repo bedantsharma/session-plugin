@@ -30,6 +30,8 @@ pub enum Command {
     },
     /// Live sessions per project: state, active task, units and active minutes.
     Status,
+    /// The glance as a live full-terminal view (q quits; prints `status` when not a TTY).
+    Watch,
     /// Answer a drift question about a session (spec §7.3).
     Drift {
         /// A unique prefix of a live session id (as `status` shows it).

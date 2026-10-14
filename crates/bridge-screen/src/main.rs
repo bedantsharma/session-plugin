@@ -5,6 +5,7 @@ mod install;
 mod mcp;
 mod status;
 mod ui;
+mod watch;
 
 use std::process::ExitCode;
 

@@ -25,8 +25,21 @@ pub struct Options {
 /// Colour is allowed on this stream: a terminal, `NO_COLOR` unset or empty, `TERM` not
 /// `dumb` (no-color.org).
 pub fn color_allowed(is_tty: bool) -> bool {
-    let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
-    let dumb = std::env::var_os("TERM").is_some_and(|t| t == "dumb");
+    color_with(
+        is_tty,
+        std::env::var_os("NO_COLOR").as_deref(),
+        std::env::var_os("TERM").as_deref(),
+    )
+}
+
+/// [`color_allowed`] with the environment passed in.
+pub fn color_with(
+    is_tty: bool,
+    no_color: Option<&std::ffi::OsStr>,
+    term: Option<&std::ffi::OsStr>,
+) -> bool {
+    let no_color = no_color.is_some_and(|v| !v.is_empty());
+    let dumb = term.is_some_and(|t| t == "dumb");
     is_tty && !no_color && !dumb
 }
 
@@ -220,7 +233,7 @@ fn session_line(s: &SessionRow, c: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{color_allowed, cut};
+    use super::{color_allowed, color_with, cut};
 
     #[test]
     fn cut_keeps_short_text_and_marks_long_text() {
@@ -230,7 +243,64 @@ mod tests {
     }
 
     #[test]
-    fn no_colour_off_a_terminal() {
+    fn no_colour_off_a_terminal_with_no_color_or_a_dumb_terminal() {
+        use std::ffi::OsStr;
         assert!(!color_allowed(false));
+        let xterm = Some(OsStr::new("xterm-256color"));
+        assert!(color_with(true, None, xterm));
+        assert!(
+            color_with(true, Some(OsStr::new("")), xterm),
+            "empty NO_COLOR is unset"
+        );
+        assert!(!color_with(true, Some(OsStr::new("1")), xterm));
+        assert!(!color_with(true, None, Some(OsStr::new("dumb"))));
+        assert!(!color_with(false, None, xterm));
+    }
+
+    #[test]
+    fn colour_marks_the_roles_and_plain_text_stays_plain() {
+        use bridge_screen_core::config::Config;
+        use bridge_screen_core::store::{EventDraft, Store};
+        let mut s = Store::open_in_memory().unwrap();
+        s.append(EventDraft::new(
+            "r",
+            "s1",
+            "session_started",
+            serde_json::json!({"cwd": "/w", "source": "startup"}),
+        ))
+        .unwrap();
+        s.append(EventDraft::new(
+            "r",
+            "s1",
+            "nav_state_changed",
+            serde_json::json!({"from": "green", "to": "red", "away_secs": 1}),
+        ))
+        .unwrap();
+        let g =
+            bridge_screen_core::view::glance(s.conn(), &Config::default(), jiff::Timestamp::now())
+                .unwrap();
+        let plain = super::render(&g, &super::Options::default());
+        assert!(!plain.contains('\x1b'));
+        let colour = super::render(
+            &g,
+            &super::Options {
+                color: true,
+                dashboard: None,
+            },
+        );
+        assert!(colour.contains("\x1b[31mneeds you\x1b[0m"), "{colour}");
+        // Same text once the escapes are removed.
+        let stripped = colour
+            .split('\x1b')
+            .enumerate()
+            .map(|(i, part)| {
+                if i == 0 {
+                    part
+                } else {
+                    part.split_once('m').map_or(part, |(_, r)| r)
+                }
+            })
+            .collect::<String>();
+        assert_eq!(stripped, plain);
     }
 }

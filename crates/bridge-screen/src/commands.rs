@@ -71,36 +71,39 @@ pub fn run(cli: Cli) -> Result<()> {
         } => set_setting(&dir, key, None),
         Command::Mcp => crate::mcp::run(),
         Command::Ui { port, no_open } => crate::ui::run(port, no_open),
-        Command::Status => {
-            let home = Home::resolve()?;
-            let mut store = open_store(&home)?;
-            let cfg = Config::load(&home.config_path())?;
-            // Sessions silent past the crash timeout are shown as crashed, not live.
-            let mut repos: Vec<String> = session::list_live(store.conn(), None)?
-                .into_iter()
-                .map(|s| s.repo_id)
-                .collect();
-            repos.sort();
-            repos.dedup();
-            for repo_id in repos {
-                recovery::scan_crashed(
-                    &mut store,
-                    &repo_id,
-                    jiff::Timestamp::now(),
-                    cfg.crash_timeout_min,
-                )?;
-            }
-            let glance =
-                bridge_screen_core::view::glance(store.conn(), &cfg, jiff::Timestamp::now())?;
-            let opts = crate::status::Options {
-                color: crate::status::stdout_color(),
-                dashboard: crate::ui::running(&home).map(|l| l.address()),
-            };
-            print!("{}", crate::status::render(&glance, &opts));
-            Ok(())
-        }
+        Command::Status => print_status(),
+        Command::Watch => crate::watch::run(),
         Command::Hook { .. } => unreachable!("main handles hooks before dispatching commands"),
     }
+}
+
+/// `bridge-screen status` (also what `watch` prints when stdout isn't a terminal).
+pub fn print_status() -> Result<()> {
+    let home = Home::resolve()?;
+    let mut store = open_store(&home)?;
+    let cfg = Config::load(&home.config_path())?;
+    // Sessions silent past the crash timeout are shown as crashed, not live.
+    let mut repos: Vec<String> = session::list_live(store.conn(), None)?
+        .into_iter()
+        .map(|s| s.repo_id)
+        .collect();
+    repos.sort();
+    repos.dedup();
+    for repo_id in repos {
+        recovery::scan_crashed(
+            &mut store,
+            &repo_id,
+            jiff::Timestamp::now(),
+            cfg.crash_timeout_min,
+        )?;
+    }
+    let glance = bridge_screen_core::view::glance(store.conn(), &cfg, jiff::Timestamp::now())?;
+    let opts = crate::status::Options {
+        color: crate::status::stdout_color(),
+        dashboard: crate::ui::running(&home).map(|l| l.address()),
+    };
+    print!("{}", crate::status::render(&glance, &opts));
+    Ok(())
 }
 
 fn open_store(home: &Home) -> Result<Store> {

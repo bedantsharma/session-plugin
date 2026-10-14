@@ -18,6 +18,7 @@ bridge-screen-core = { path = "../bridge-screen-core" }
 clap = { version = "4.6.7", features = ["derive"] }
 getrandom = "0.4.3"
 jiff = "0.2.38"
+ratatui = "0.30.2"
 rmcp = { version = "3.5.1", features = ["server", "macros", "schemars", "transport-io"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 rust-embed = { version = "8.13.0", features = ["interpolate-folder-path", "mime-guess"] }

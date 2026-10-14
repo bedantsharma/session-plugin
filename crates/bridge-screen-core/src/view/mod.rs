@@ -46,6 +46,19 @@ pub struct Glance {
     pub escalated: bool,
 }
 
+impl Glance {
+    /// The glance narrowed to one repo (the count and escalation follow).
+    #[must_use]
+    pub fn for_repo(mut self, repo_id: &str) -> Self {
+        self.projects.retain(|p| p.repo_id == repo_id);
+        self.needs_you.retain(|i| i.repo_id == repo_id);
+        self.live_sessions = self.projects.iter().map(|p| p.sessions.len()).sum();
+        self.needs_you_count = self.needs_you.len();
+        self.escalated = self.needs_you_count > ESCALATE_ABOVE;
+        self
+    }
+}
+
 /// A plan node by id and title.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NodeRef {
