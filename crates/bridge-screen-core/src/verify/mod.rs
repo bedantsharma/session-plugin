@@ -9,6 +9,7 @@ pub mod l1;
 pub mod ladder;
 pub mod project;
 pub mod rerun;
+pub mod stale;
 
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use schemars::JsonSchema;
@@ -25,6 +26,7 @@ pub use project::{
     SettingChanged, VERIFY_KINDS, VerificationFailed, VerificationStale, Verified, VerifyNudged,
     project,
 };
+pub use stale::{StaleChange, scan_stale, stale_note};
 
 /// Longest evidence kept, in characters.
 pub const MAX_EVIDENCE: usize = 500;

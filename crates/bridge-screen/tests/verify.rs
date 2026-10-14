@@ -572,3 +572,201 @@ fn of_kind_any(env: &Env, kind: &str) -> Vec<Value> {
         .map(|e| e.data)
         .collect()
 }
+
+/// Start a new session (a SessionStart in the repo); its briefing.
+fn start(env: &Env, session: &str) -> String {
+    context(&env.hook("session-start", session))
+}
+
+fn stale_events(env: &Env) -> Vec<Value> {
+    of_kind(env, "verification_stale")
+}
+
+fn at_l2() -> (Env, Mcp) {
+    let (env, mut mcp) = at_l1();
+    let (err, text) = verify_call(&env, &mut mcp, &l2());
+    assert!(!err, "{text}");
+    assert_eq!(status(&env, "1.1"), NodeStatus::L2);
+    (env, mcp)
+}
+
+#[test]
+fn stale_drops_once_per_change() {
+    let (env, _mcp) = at_l2();
+    let l2_id = rows(&env, "1.1").pop().unwrap().verif_id;
+    // No new commits: nothing changes, however often a session starts.
+    start(&env, "s2");
+    start(&env, "s3");
+    assert_eq!(stale_events(&env), Vec::<Value>::new());
+    // A commit that touches only an unrelated file drops nothing.
+    write(&env, "src/other.rs", "x\n");
+    commit(&env, "other");
+    start(&env, "s4");
+    assert_eq!(stale_events(&env), Vec::<Value>::new());
+    assert_eq!(status(&env, "1.1"), NodeStatus::L2);
+    // A commit that touches a depended-on file drops each verification one level.
+    write(
+        &env,
+        "src/login.rs",
+        "pub fn validate_login() { /* v2 */ }\n",
+    );
+    commit(&env, "login v2");
+    let briefing = start(&env, "s5");
+    let drops: Vec<Value> = stale_events(&env)
+        .into_iter()
+        .filter(|e| e["verif_id"] == l2_id)
+        .collect();
+    assert_eq!(drops.len(), 1);
+    assert_eq!(
+        (&drops[0]["from_level"], &drops[0]["to_level"]),
+        (&json!(2), &json!(1))
+    );
+    assert_eq!(drops[0]["changed"], json!(["src/login.rs"]));
+    assert_eq!(drops[0]["head_sha"], head(&env));
+    assert_eq!(status(&env, "1.1"), NodeStatus::L1);
+    // The L1 row dropped to 0; the dropped L2 row still holds L1, so no re-check.
+    let levels: Vec<(i64, verify::VerifState)> = rows(&env, "1.1")
+        .iter()
+        .map(|v| (v.level, v.state))
+        .collect();
+    assert_eq!(
+        levels,
+        vec![
+            (0, verify::VerifState::Stale),
+            (1, verify::VerifState::Stale)
+        ]
+    );
+    assert!(
+        briefing.contains("1.1 Login form (stale: src/login.rs changed @"),
+        "{briefing}"
+    );
+    // Starting again at the same HEAD drops nothing more.
+    let before = stale_events(&env).len();
+    start(&env, "s6");
+    start(&env, "s7");
+    assert_eq!(stale_events(&env).len(), before);
+    assert_eq!(status(&env, "1.1"), NodeStatus::L1);
+    assert_eq!(env.log(), "");
+}
+
+#[test]
+fn verifications_on_another_branch_are_left_alone() {
+    let (env, _mcp) = setup();
+    git(env.repo.path(), &["checkout", "-q", "-b", "other"]);
+    write(&env, "x.rs", "one\n");
+    commit(&env, "x on other");
+    let other = head(&env);
+    git(env.repo.path(), &["checkout", "-q", "main"]);
+    {
+        let mut s = store(&env);
+        let repo = sess(&env, "s1").repo_id;
+        s.append(
+            verify::verified_draft(
+                &repo,
+                "s1",
+                "1.2",
+                2,
+                &other,
+                vec!["x.rs".into()],
+                "ok",
+                verify::By::Agent,
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    write(&env, "x.rs", "two\n");
+    commit(&env, "x on main");
+    start(&env, "s2");
+    assert_eq!(stale_events(&env), Vec::<Value>::new());
+    assert_eq!(status(&env, "1.2"), NodeStatus::L2);
+}
+
+#[test]
+fn a_deleted_file_leaves_the_task_claimed_and_listed() {
+    let (env, _mcp) = at_l1();
+    git(env.repo.path(), &["rm", "-q", "src/login.rs"]);
+    commit(&env, "drop login");
+    let briefing = start(&env, "s2");
+    assert_eq!(status(&env, "1.1"), NodeStatus::Claimed);
+    assert!(
+        briefing.contains("1.1 Login form (stale: src/login.rs changed @"),
+        "{briefing}"
+    );
+    assert_eq!(env.log(), "");
+}
+
+#[test]
+fn squash_keeps_verifications() {
+    let (env, mut mcp) = setup();
+    git(env.repo.path(), &["checkout", "-q", "-b", "feat"]);
+    write(&env, "src/login.rs", "pub fn validate_login() {}\n");
+    edited(&env, "s1", "src/login.rs");
+    commit(&env, "wip(bridge): 1.1 Login form");
+    write(&env, "README.md", "notes\n");
+    commit(&env, "docs: notes");
+    let (err, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "claim_done",
+        &json!({"evidence": "tests pass", "files": ["src/login.rs"]}),
+    );
+    assert!(!err, "{text}");
+    let (err, text) = verify_call(&env, &mut mcp, &l2());
+    assert!(!err, "{text}");
+    let wip_head = head(&env);
+    let out = env.run(&["squash", "--onto", "main"], "");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let new_sha = head(&env);
+    assert_ne!(new_sha, wip_head);
+    // Every commit of the range is in old_shas, not only the WIP one.
+    let squashed = of_kind(&env, "squashed");
+    assert_eq!(squashed[0]["old_shas"].as_array().unwrap().len(), 2);
+    start(&env, "s2");
+    assert_eq!(stale_events(&env), Vec::<Value>::new());
+    assert_eq!(status(&env, "1.1"), NodeStatus::L2);
+    for v in rows(&env, "1.1") {
+        assert_eq!(
+            (v.sha.as_str(), v.stale_checked_sha.as_str()),
+            (new_sha.as_str(), new_sha.as_str())
+        );
+    }
+    // The re-pointed verification is still watched: a later change drops it.
+    write(
+        &env,
+        "src/login.rs",
+        "pub fn validate_login() { /* v2 */ }\n",
+    );
+    commit(&env, "login v2");
+    start(&env, "s3");
+    assert_eq!(status(&env, "1.1"), NodeStatus::L1);
+    assert_eq!(env.log(), "");
+}
+
+#[test]
+fn an_l1_that_drops_to_nothing_is_rechecked_at_head() {
+    let (env, _mcp) = at_l1();
+    write(
+        &env,
+        "src/login.rs",
+        "pub fn validate_login() { /* v2 */ }\n",
+    );
+    commit(&env, "login v2");
+    start(&env, "s2");
+    assert_eq!(status(&env, "1.1"), NodeStatus::L1);
+    let rechecked = rows(&env, "1.1").pop().unwrap();
+    assert_eq!(
+        (rechecked.level, rechecked.by, rechecked.sha.clone()),
+        (1, verify::By::Auto, head(&env))
+    );
+    assert_eq!(
+        verify::stale_note(store(&env).conn(), &sess(&env, "s1").repo_id, "1.1").unwrap(),
+        None
+    );
+}

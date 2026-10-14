@@ -154,6 +154,8 @@ pub fn handle(
     if event == HookEvent::SessionStart && input.source.as_deref() != Some("compact") {
         // Recovery (spec §8.3): crashed sessions, then leftovers of dead ones.
         handoff::recover(store, config, &ctx.repo_id, &input.session_id)?;
+        // Verifications whose files changed since drop a level (spec §8.5).
+        handoff::staleness(store, &ctx.repo_id, &input.session_id)?;
     }
     if event == HookEvent::SessionStart && tuning::due(store.conn(), &ctx.repo_id)? {
         // Enough new drift samples: tune this repo's thresholds (spec §7.6).

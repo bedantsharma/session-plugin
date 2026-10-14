@@ -174,9 +174,10 @@ fn gather(conn: &Connection, me: &Session) -> Result<Facts> {
         if !matches!(n.kind, NodeKind::Task | NodeKind::Subtask) {
             continue;
         }
-        match n.status {
-            NodeStatus::Claimed => unverified.push(format!("{} {}", n.id, n.title)),
-            NodeStatus::Failed => failed.push(format!("{} {}", n.id, n.title)),
+        match (n.status, crate::verify::stale_note(conn, repo, &n.id)?) {
+            (NodeStatus::Failed, _) => failed.push(format!("{} {}", n.id, n.title)),
+            (_, Some(note)) => unverified.push(format!("{} {} ({note})", n.id, n.title)),
+            (NodeStatus::Claimed, None) => unverified.push(format!("{} {}", n.id, n.title)),
             _ => {}
         }
     }

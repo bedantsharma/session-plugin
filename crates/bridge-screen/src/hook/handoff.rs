@@ -186,6 +186,16 @@ pub fn recover(store: &mut Store, config: &Config, repo_id: &str, session_id: &s
     Ok(())
 }
 
+/// At SessionStart (after recovery, before the briefing): drop verifications whose files
+/// changed since their commit, in the starting session's worktree.
+pub fn staleness(store: &mut Store, repo_id: &str, session_id: &str) -> Result<()> {
+    let Some(me) = session::get(store.conn(), session_id)? else {
+        return Ok(());
+    };
+    verify::scan_stale(store, repo_id, session_id, &worktree_of(&me))?;
+    Ok(())
+}
+
 /// At SessionStart: the briefing (recorded as `briefed`), or the short re-briefing after
 /// a compaction.
 pub fn start_context(store: &mut Store, input: &HookInput) -> Result<Option<String>> {
