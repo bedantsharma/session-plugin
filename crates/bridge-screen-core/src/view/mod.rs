@@ -353,10 +353,19 @@ fn open_wait(conn: &Connection, session_id: &str) -> Result<Option<(String, Stri
 }
 
 /// The question the session asked the owner, if one is open: (source, since).
-/// Questions are recorded from sub-project 6's question hooks (Task 2b).
-#[allow(clippy::unnecessary_wraps)]
-fn open_question(_conn: &Connection, _session_id: &str) -> Result<Option<(String, String)>> {
-    Ok(None)
+fn open_question(conn: &Connection, session_id: &str) -> Result<Option<(String, String)>> {
+    Ok(conn
+        .prepare_cached(
+            "SELECT question_source, question_since FROM sessions
+             WHERE session_id = ?1 AND question_unit IS NOT NULL",
+        )?
+        .query_row([session_id], |r| {
+            Ok((
+                r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            ))
+        })
+        .optional()?)
 }
 
 fn node_ref(conn: &Connection, repo_id: &str, id: &str) -> Result<NodeRef> {

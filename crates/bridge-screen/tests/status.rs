@@ -459,6 +459,18 @@ fn status_from_glance_matches_every_kind() {
     ] {
         ev(&mut s, "r1", "ver00ddd", kind, data, 50);
     }
+    // question: the agent ended its turn with a question.
+    start(&mut s, "r1", "ask0fff", 70);
+    ev(&mut s, "r1", "ask0fff", "prompt", json!({}), 71);
+    ev(&mut s, "r1", "ask0fff", "unit_stopped", json!({}), 131);
+    ev(
+        &mut s,
+        "r1",
+        "ask0fff",
+        "owner_question",
+        json!({"unit_no": 1, "source": "turn_end"}),
+        131,
+    );
     // leftover: a dead session's file.
     ev(
         &mut s,
@@ -473,11 +485,12 @@ fn status_from_glance_matches_every_kind() {
     assert_eq!(
         status(&env),
         "\
-5 need you
-bridge-screen · 4 live sessions · 1 project
+6 need you
+bridge-screen · 5 live sessions · 1 project
 shop  goal: Online shop  · done 0% · claimed 100%
   leftovers: 1 open (0 report-only)
   S red00a  needs you (no task)             1 unit  · 40m · drift ⚠ 40m
+  S ask0ff  needs you (no task)             1 unit  · 1m · on task · asked you a question
   S perm0c  needs you (no task)             0 units · 0m · on task
   S perm0b  needs you (no task)             0 units · 0m · on task
   needs you: verify 1 Cart — bridge-screen verify 1 (or --broken \"…\")

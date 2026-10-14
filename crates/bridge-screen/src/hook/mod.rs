@@ -8,6 +8,7 @@ pub mod context;
 pub mod handlers;
 pub mod handoff;
 pub mod nav;
+pub mod question;
 
 use std::io::{Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};

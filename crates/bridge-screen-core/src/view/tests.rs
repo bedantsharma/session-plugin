@@ -591,3 +591,37 @@ fn ended_sessions_are_left_out() {
         })
     );
 }
+
+#[test]
+fn a_question_is_a_needs_you_rest() {
+    let mut s = store();
+    start(&mut s, "ask00001", 0);
+    claim(&mut s, "ask00001", 1, "1.1");
+    unit(&mut s, "ask00001", 2, 10);
+    ev(
+        &mut s,
+        "ask00001",
+        12,
+        "owner_question",
+        json!({"unit_no": 1, "source": "turn_end"}),
+    );
+    let g = glance_at(&s, 312);
+    let r = row(&g, "ask00001");
+    assert_eq!(
+        r.rest,
+        Some(Rest::NeedsYou {
+            why: NeedsKind::Question
+        })
+    );
+    assert_eq!((r.light, r.state_label.as_str()), (Light::Red, "needs you"));
+    let q = &g.needs_you[0];
+    assert_eq!(q.kind, NeedsKind::Question);
+    assert_eq!(q.detail, "5 min ago · answer in that session · on 1.1 T1.1");
+    assert_eq!(q.rank, 1);
+    assert_eq!(
+        q.respond_in.as_ref().unwrap().worktree.as_deref(),
+        Some("/wt/ask00001")
+    );
+    ev(&mut s, "ask00001", 400, "prompt", json!({}));
+    assert_eq!(glance_at(&s, 401).needs_you, vec![]);
+}
