@@ -511,7 +511,7 @@ pub fn nav_step(
     if channel == Channel::PromptSubmit {
         candidates.extend(dependency_ready(conn, &session)?);
         if let Some(u) = &unit {
-            candidates.extend(verify_nudge(conn, &session, u)?);
+            candidates.extend(verify_nudges(conn, &session, u)?);
         }
     }
     if candidates.is_empty() {
@@ -559,24 +559,27 @@ fn deliver(
     Ok(())
 }
 
-/// The first task this session claimed done in an earlier unit that is still claimed or
-/// at L1 (spec §8.5): a nudge to verify it.
-fn verify_nudge(conn: &Connection, session: &Session, unit: &Unit) -> Result<Option<Candidate>> {
+/// Tasks this session claimed done in an earlier unit that are still claimed or at L1
+/// (spec §8.5): a nudge to verify each (one goes out; a task inside its repeat window
+/// gives way to the next).
+fn verify_nudges(conn: &Connection, session: &Session, unit: &Unit) -> Result<Vec<Candidate>> {
     let Ok(started) = unit.started_at.parse::<jiff::Timestamp>() else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
     let pending = crate::verify::pending_claims(conn, &session.session_id, started)?;
-    let Some((task, level)) = pending.into_iter().next() else {
-        return Ok(None);
-    };
-    Ok(Some(Candidate::new(
-        NoteKind::VerifyNudge,
-        Channel::PromptSubmit,
-        format!(
-            "bridge-screen: {task} is claimed done but not verified (L{level}). Run the tests and call verify({task}, level 2)."
-        ),
-        format!("verify:{task}:{level}"),
-    )))
+    Ok(pending
+        .into_iter()
+        .map(|(task, level)| {
+            Candidate::new(
+                NoteKind::VerifyNudge,
+                Channel::PromptSubmit,
+                format!(
+                    "bridge-screen: {task} is claimed done but not verified (L{level}). Run the tests and call verify({task}, level 2)."
+                ),
+                format!("verify:{task}:{level}"),
+            )
+        })
+        .collect())
 }
 
 /// Dependencies of the active task that reached L2 or above, verified by another session

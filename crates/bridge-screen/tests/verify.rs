@@ -887,6 +887,26 @@ fn the_prompt_nudge_repeats_only_after_the_window_and_escalates() {
 }
 
 #[test]
+fn a_second_unverified_task_is_nudged_while_the_first_waits_out_its_window() {
+    let (env, mut mcp) = at_l1();
+    let (err, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "claim_done",
+        &json!({"id": "1.2", "evidence": "tests pass", "files": ["src/login.rs"]}),
+    );
+    assert!(!err, "{text}");
+    assert_eq!(prompt(&env, "s1"), NUDGE);
+    assert_eq!(
+        prompt(&env, "s1"),
+        "bridge-screen: 1.2 is claimed done but not verified (L1). Run the tests and call verify(1.2, level 2)."
+    );
+    assert_eq!(prompt(&env, "s1"), "");
+    assert_eq!(env.log(), "");
+}
+
+#[test]
 fn dependency_ready_goes_once_to_the_waiting_session_only() {
     let (env, mut mcp) = setup();
     let deps = r#"[{"op":"add_dep","id":"1.1","depends_on":"1.2"}]"#;
