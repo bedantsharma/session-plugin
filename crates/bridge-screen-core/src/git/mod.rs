@@ -488,9 +488,14 @@ fn yes_no(wt: &Path, args: &[&str]) -> Result<bool> {
 /// Of `paths` (relative to the worktree root), those not in commit `rev`'s tree (a
 /// directory counts as there). One git call.
 pub fn missing_at(wt: &Path, rev: &str, paths: &[String]) -> Result<Vec<String>> {
-    if paths.is_empty() {
-        return Ok(Vec::new());
-    }
+    // A path outside the worktree can't be in its tree (and would fail the whole call).
+    let inside = |p: &str| {
+        let p = Path::new(p);
+        !p.is_absolute()
+            && !p
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+    };
     let mut args = vec![
         "ls-tree",
         "-r",
@@ -500,14 +505,18 @@ pub fn missing_at(wt: &Path, rev: &str, paths: &[String]) -> Result<Vec<String>>
         rev,
         "--",
     ];
-    args.extend(paths.iter().map(String::as_str));
-    let listed: std::collections::HashSet<String> =
-        nul_fields(&run(wt, &args)?).into_iter().collect();
+    args.extend(paths.iter().map(String::as_str).filter(|p| inside(p)));
+    let listed: std::collections::HashSet<String> = if args.len() > 7 {
+        nul_fields(&run(wt, &args)?).into_iter().collect()
+    } else {
+        std::collections::HashSet::new()
+    };
     Ok(paths
         .iter()
         .filter(|p| {
             let dir = format!("{}/", p.trim_end_matches('/'));
-            !listed.contains(p.as_str()) && !listed.iter().any(|l| l.starts_with(&dir))
+            !inside(p)
+                || (!listed.contains(p.as_str()) && !listed.iter().any(|l| l.starts_with(&dir)))
         })
         .cloned()
         .collect())

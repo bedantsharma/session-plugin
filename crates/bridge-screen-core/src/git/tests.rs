@@ -485,6 +485,15 @@ fn missing_at_and_grep_at_read_a_commit_not_the_worktree() {
         vec!["src/missing.rs", "app/[i"]
     );
     assert_eq!(missing_at(wt, &head, &[]).unwrap(), Vec::<String>::new());
+    // Paths outside the worktree are simply missing, not an error.
+    assert_eq!(
+        missing_at(wt, &head, &paths(&["../x.rs", "/abs/x.rs", "a.txt"])).unwrap(),
+        vec!["../x.rs", "/abs/x.rs"]
+    );
+    assert_eq!(
+        missing_at(wt, &head, &paths(&["../x.rs"])).unwrap(),
+        vec!["../x.rs"]
+    );
     assert_eq!(
         missing_at(wt, "HEAD~1", std::slice::from_ref(&path)).unwrap(),
         vec![path.clone()]
