@@ -165,6 +165,7 @@ fn restarts() -> Vec<(&'static str, i64, &'static str, Value)> {
     ]
 }
 
+#[allow(clippy::too_many_lines)] // one event per line, as data
 fn script_sessions(s: &mut Store) -> usize {
     let t0: Timestamp = "2026-10-13T09:00:00Z".parse().unwrap();
     let mut script: Vec<(&str, i64, &str, Value)> = vec![
@@ -235,6 +236,31 @@ fn script_sessions(s: &mut Store) -> usize {
             json!({"cwd": "/a", "source": "resume"}),
         ),
         ("s1", 410, "prompt", json!({"prompt_id": "p2", "chars": 3})),
+        // Questions to the owner: s2's ask tool answered, s1's turn-end question open.
+        (
+            "s2",
+            100,
+            "owner_question",
+            json!({"unit_no": 2, "source": "ask_tool"}),
+        ),
+        (
+            "s2",
+            105,
+            "question_answered",
+            json!({"source": "ask_tool"}),
+        ),
+        (
+            "s1",
+            420,
+            "unit_stopped",
+            json!({"unit_no": 2, "summary": null}),
+        ),
+        (
+            "s1",
+            420,
+            "owner_question",
+            json!({"unit_no": 2, "source": "turn_end"}),
+        ),
     ];
     script.extend(restarts());
     let n = script.len();
