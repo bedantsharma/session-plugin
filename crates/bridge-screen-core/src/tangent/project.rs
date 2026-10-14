@@ -96,7 +96,8 @@ pub struct NavStateChanged {
 }
 
 /// Something the owner did. For drift answers: `action = "drift"`, `answer` is
-/// `continue`, `make_task` or `stop`, and `target` is the session.
+/// `continue`, `make_task` or `stop`, `target` is the session and `reason` the owner's
+/// optional why. Also `label`, `resolve`, `verify` and `reset_drift`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnerAction {
     pub action: String,
@@ -104,6 +105,9 @@ pub struct OwnerAction {
     pub answer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
+    /// The owner's reason, in their words (drift continue only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

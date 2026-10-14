@@ -44,6 +44,9 @@ pub enum Command {
         /// make-task: estimate in agent-minutes.
         #[arg(long)]
         estimate: Option<u32>,
+        /// continue: why, in your words (at least 8 characters and 2 words).
+        #[arg(long)]
+        reason: Option<String>,
     },
     /// Set a unit's label: on-task, detour or drift (overrides the agent and heuristic).
     Label {
@@ -157,12 +160,12 @@ pub enum DriftAnswer {
     Stop,
 }
 
-impl DriftAnswer {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Continue => "continue",
-            Self::MakeTask => "make_task",
-            Self::Stop => "stop",
+impl From<DriftAnswer> for bridge_screen_core::owner::DriftAnswer {
+    fn from(a: DriftAnswer) -> Self {
+        match a {
+            DriftAnswer::Continue => Self::Continue,
+            DriftAnswer::MakeTask => Self::MakeTask,
+            DriftAnswer::Stop => Self::Stop,
         }
     }
 }

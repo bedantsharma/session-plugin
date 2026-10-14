@@ -373,7 +373,19 @@ pub fn promote_detour(
     estimate_min: Option<u32>,
     actor: &Actor,
 ) -> Result<Promoted> {
-    store.write(|tx| {
+    store.write(|tx| promote_detour_in(tx, session_id, parent, title, estimate_min, actor))
+}
+
+/// [`promote_detour`] inside the caller's transaction.
+pub fn promote_detour_in(
+    tx: &Transaction,
+    session_id: &str,
+    parent: &str,
+    title: &str,
+    estimate_min: Option<u32>,
+    actor: &Actor,
+) -> Result<Promoted> {
+    {
         let session = live_session(tx, session_id)?;
         let detour = match &session.current_detour {
             Some(id) => get_detour(tx, id)?,
@@ -411,7 +423,7 @@ pub fn promote_detour(
             detour,
             task_id: out.task_id,
         })
-    })
+    }
 }
 
 /// Longest `why` kept with a label.
@@ -446,7 +458,23 @@ pub fn label_unit(
         why,
     } = req;
     let (session_id, unit_no, label, source) = (session_id.as_str(), *unit_no, *label, *source);
-    store.write(|tx| {
+    let why = why.as_deref();
+    store.write(|tx| label_unit_in(tx, session_id, unit_no, label, source, why, th, actor))
+}
+
+/// [`label_unit`] inside the caller's transaction.
+#[allow(clippy::too_many_arguments)]
+pub fn label_unit_in(
+    tx: &Transaction,
+    session_id: &str,
+    unit_no: Option<i64>,
+    label: Label,
+    source: LabelSource,
+    why: Option<&str>,
+    th: &Thresholds,
+    actor: &Actor,
+) -> Result<i64> {
+    {
         let session = session::get(tx, session_id)?
             .ok_or_else(|| err(format!("unknown session {session_id}")))?;
         let finished: Vec<session::Unit> = session::units(tx, session_id)?
@@ -471,9 +499,7 @@ pub fn label_unit(
             source,
             score: unit.drift_score,
             heuristic: unit.drift_score.and_then(|s| th.heuristic(s)),
-            why: why
-                .as_deref()
-                .map(|w| w.trim().chars().take(MAX_WHY_CHARS).collect()),
+            why: why.map(|w| w.trim().chars().take(MAX_WHY_CHARS).collect()),
         };
         Writer {
             tx,
@@ -482,5 +508,5 @@ pub fn label_unit(
         }
         .append("unit_labeled", &data, unit.task_id.as_deref())?;
         Ok(unit.unit_no)
-    })
+    }
 }

@@ -463,6 +463,7 @@ pub fn owner_verdict(
             action: "verify".into(),
             answer: Some(answer.into()),
             target: Some(task.to_string()),
+            reason: None,
         };
         append_in(
             tx,

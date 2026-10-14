@@ -417,13 +417,26 @@ fn red_text(on_detour: bool, pause: bool, task: &str) -> String {
 }
 
 /// The owner's answer to a drift question, as a note.
-fn reply_text(answer: &str, task: &str) -> String {
-    let says = match answer {
-        "continue" => "continue".to_string(),
-        "make_task" => "make this a task".to_string(),
-        _ => format!("stop the detour and return to {task}"),
+fn reply_text(answer: &str, reason: Option<&str>, task: &str) -> String {
+    let says = match (answer, reason) {
+        ("continue", Some(why)) => format!("continue: {}", why.trim_end_matches('.')),
+        ("continue", None) => "continue".to_string(),
+        ("make_task", _) => "make this a task".to_string(),
+        (_, _) => format!("stop the detour and return to {task}"),
     };
     format!("bridge-screen: the owner says {says}.")
+}
+
+/// The reason the owner gave with the `owner_action` event `id`, if any.
+fn owner_reason(conn: &Connection, id: &str) -> Result<Option<String>> {
+    Ok(conn
+        .prepare_cached(
+            "SELECT json_extract(data, '$.reason') FROM events
+             WHERE id = ?1 AND kind = 'owner_action'",
+        )?
+        .query_row([id], |r| r.get::<_, Option<String>>(0))
+        .optional()?
+        .flatten())
 }
 
 /// Track the tolerance band and pick a note for `channel` (spec §7.3, §7.5):
@@ -500,10 +513,11 @@ pub fn nav_step(
     }
     if let Some(pending) = &session.pending_reply {
         let (answer, id) = pending.split_once(':').unwrap_or((pending.as_str(), ""));
+        let reason = owner_reason(conn, id)?;
         candidates.push(Candidate::new(
             NoteKind::OwnerReply,
             channel,
-            reply_text(answer, &task),
+            reply_text(answer, reason.as_deref(), &task),
             format!("reply:{id}"),
         ));
     }
