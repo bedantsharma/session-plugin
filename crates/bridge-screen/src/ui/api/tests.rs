@@ -326,3 +326,51 @@ async fn ui_without_built_assets() {
     assert_eq!(s, StatusCode::OK);
     assert!(body.contains("\"needs_you_count\":0"), "{body}");
 }
+
+#[tokio::test]
+async fn drill_endpoints_return_the_models() {
+    let f = Fixture::new();
+    f.red_session();
+    let (s, body) = f.get("/api/project/r1").await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let p: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(p["name"], "shop");
+    let (s, body) = f.get("/api/session/red1").await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let d: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(d["units"][0]["label"], "drift");
+    let (s, _) = f.get("/api/session/nope").await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, body) = f.get("/api/task/r1/1.1").await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let (s, body) = f.get("/api/tuning/r1").await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["tuned"],
+        false
+    );
+}
+
+#[tokio::test]
+async fn history_pages_and_filters() {
+    let f = Fixture::new();
+    f.red_session();
+    let (s, body) = f.get("/api/history/r1?limit=2").await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let p1: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(p1["events"].as_array().unwrap().len(), 2);
+    assert_eq!(p1["events"][0]["kind"], "nav_state_changed");
+    let before = p1["next_before"].as_i64().unwrap();
+    let (_, body) = f
+        .get(&format!("/api/history/r1?limit=2&before={before}"))
+        .await;
+    let p2: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(p2["events"][0]["kind"], "unit_stopped");
+    let (_, body) = f.get("/api/history/r1?kind=prompt&session=red1").await;
+    let only: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(only["events"].as_array().unwrap().len(), 1);
+    assert_eq!(only["next_before"], Value::Null);
+    // At most 200 per page, whatever is asked.
+    let (s, _) = f.get("/api/history/r1?limit=100000").await;
+    assert_eq!(s, StatusCode::OK);
+}

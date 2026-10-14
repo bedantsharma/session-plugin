@@ -13,7 +13,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -24,6 +24,7 @@ use bridge_screen_core::owner::{self, OwnerAction};
 use bridge_screen_core::paths::Home;
 use bridge_screen_core::store::Store;
 use bridge_screen_core::view;
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 /// Largest request body accepted.
@@ -64,6 +65,11 @@ pub fn router(state: AppState) -> Router {
         .route("/ping", get(ping))
         .route("/version", get(version))
         .route("/glance", get(glance))
+        .route("/project/{repo}", get(project))
+        .route("/session/{id}", get(session))
+        .route("/task/{repo}/{id}", get(task))
+        .route("/history/{repo}", get(history))
+        .route("/tuning/{repo}", get(tuning))
         .route("/action", post(action))
         .fallback(|| async { error(StatusCode::NOT_FOUND, "no such API route") })
         .layer(middleware::from_fn_with_state(state.clone(), require_token));
@@ -162,6 +168,7 @@ async fn with_store<T: serde::Serialize + Send + 'static>(
 fn error_response(e: &Error) -> Response {
     let status = match e {
         Error::Stale(_) => StatusCode::CONFLICT,
+        Error::NotFound(_) => StatusCode::NOT_FOUND,
         Error::Invalid(_)
         | Error::Claim(_)
         | Error::Tangent(_)
@@ -187,6 +194,61 @@ async fn version(State(st): State<AppState>) -> Response {
 async fn glance(State(st): State<AppState>) -> Response {
     with_store(&st, |s, st| {
         view::glance(s.conn(), &st.cfg, jiff::Timestamp::now())
+    })
+    .await
+}
+
+async fn project(State(st): State<AppState>, Path(repo): Path<String>) -> Response {
+    with_store(&st, move |s, _| {
+        view::drill::project(s.conn(), &repo, jiff::Timestamp::now())
+    })
+    .await
+}
+
+async fn session(State(st): State<AppState>, Path(id): Path<String>) -> Response {
+    with_store(&st, move |s, _| {
+        view::drill::session(s.conn(), &id, jiff::Timestamp::now())?
+            .ok_or_else(|| Error::NotFound(format!("no session {id}")))
+    })
+    .await
+}
+
+async fn task(State(st): State<AppState>, Path((repo, id)): Path<(String, String)>) -> Response {
+    with_store(&st, move |s, _| view::drill::task(s.conn(), &repo, &id)).await
+}
+
+/// `/api/history/{repo}` filters.
+#[derive(Debug, Default, Deserialize)]
+pub struct HistoryQuery {
+    pub kind: Option<String>,
+    pub session: Option<String>,
+    pub task: Option<String>,
+    /// Events before this position (the next page).
+    pub before: Option<i64>,
+    pub limit: Option<usize>,
+}
+
+async fn history(
+    State(st): State<AppState>,
+    Path(repo): Path<String>,
+    Query(q): Query<HistoryQuery>,
+) -> Response {
+    with_store(&st, move |s, _| {
+        let filter = view::drill::HistoryFilter {
+            kind: q.kind.filter(|k| !k.is_empty()),
+            session: q.session.filter(|k| !k.is_empty()),
+            task: q.task.filter(|k| !k.is_empty()),
+            before: q.before,
+            limit: q.limit.unwrap_or(view::drill::HISTORY_MAX),
+        };
+        view::drill::history(s.conn(), &repo, &filter)
+    })
+    .await
+}
+
+async fn tuning(State(st): State<AppState>, Path(repo): Path<String>) -> Response {
+    with_store(&st, move |s, st| {
+        view::drill::tuning(s.conn(), &repo, &st.cfg)
     })
     .await
 }
