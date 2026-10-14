@@ -57,6 +57,11 @@ test('the header and the needs-you queue sit above the fold at 1280×720', async
       }
     })
     expect(fold).toEqual({ header: true, queue: true, scrollX: true, vw: 1280, vh: 720 })
+    // A phone: one column, no sideways scroll.
+    await page.setViewportSize({ width: 375, height: 812 })
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    ).toBe(true)
   } finally {
     s.stop()
   }
