@@ -52,7 +52,9 @@ fn lists_three_tools_with_schemas() {
             "log_decision",
             "owner_action",
             "plan_edit",
+            "progress_report",
             "promote_detour",
+            "report_published",
             "resolve_leftover",
             "resume",
             "show_progress",
@@ -905,5 +907,124 @@ mod progress_card {
         assert!(err && text.starts_with("refused"), "{text}");
         assert_eq!(events(&env), before, "nothing recorded");
         // (Expiry is a unit test in src/mcp.rs: it needs a clock 30 minutes on.)
+    }
+}
+
+mod reports {
+    //! Opt-in progress reports (spec §10.6).
+
+    use super::common::{Env, Mcp, call_as};
+    use bridge_screen_core::store::{Store, read_all};
+    use serde_json::json;
+
+    fn setup() -> (Env, Mcp) {
+        let env = Env::new();
+        let out = env.run(&["plan", "edit"], super::SEED);
+        assert!(out.status.success());
+        env.hook("session-start", "s1");
+        let mcp = Mcp::start(&env, "/nonexistent");
+        (env, mcp)
+    }
+
+    #[test]
+    fn a_report_is_self_contained_and_described() {
+        let (env, mut mcp) = setup();
+        let (err, text) = call_as(&mut mcp, &env, "s1", "progress_report", &json!({}));
+        assert!(!err, "{text}");
+        let path = text
+            .strip_prefix("Wrote ")
+            .and_then(|t| t.split_once(". It is"))
+            .unwrap()
+            .0
+            .to_string();
+        let html = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(!html.contains("<script"), "no scripts");
+        assert!(
+            !html.contains("http://") && !html.contains("https://"),
+            "no outside URLs"
+        );
+        assert!(html.contains("0% done · +0% claimed"), "{html}");
+        assert!(html.contains("All clear"), "{html}");
+        assert!(
+            text.contains("projects:") && text.contains("0 needs-you item(s)"),
+            "{text}"
+        );
+        assert!(text.contains("only after the owner confirms"), "{text}");
+        // Nothing was written inside the repo.
+        assert!(
+            !std::fs::read_dir(env.repo.path()).unwrap().any(|e| e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("report"))
+        );
+    }
+
+    #[test]
+    fn never_refuses_and_ask_allows() {
+        let (env, mut mcp) = setup();
+        let out = env.run(&["config", "set", "publish-reports", "never"], "");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let shown = env.run(&["config"], "");
+        assert!(String::from_utf8_lossy(&shown.stdout).contains(": never"));
+        let (err, text) = call_as(&mut mcp, &env, "s1", "progress_report", &json!({}));
+        assert!(err && text.starts_with("refused"), "{text}");
+        let bad = env.run(&["config", "set", "publish-reports", "sometimes"], "");
+        assert!(!bad.status.success());
+        assert!(
+            env.run(&["config", "unset", "publish-reports"], "")
+                .status
+                .success()
+        );
+        let (err, text) = call_as(
+            &mut mcp,
+            &env,
+            "s1",
+            "progress_report",
+            &json!({"scope": "all"}),
+        );
+        assert!(!err, "{text}");
+        let path = text
+            .strip_prefix("Wrote ")
+            .unwrap()
+            .split_once(". It is")
+            .unwrap()
+            .0;
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn report_published_is_recorded() {
+        let (env, mut mcp) = setup();
+        let (err, text) = call_as(
+            &mut mcp,
+            &env,
+            "s1",
+            "report_published",
+            &json!({"url": "https://claude.ai/artifact/abc", "scope": "repo"}),
+        );
+        assert!(!err, "{text}");
+        let events = read_all(Store::open(&env.db_path()).unwrap().conn(), None).unwrap();
+        let e = events
+            .iter()
+            .find(|e| e.kind == "report_published")
+            .unwrap();
+        assert_eq!(
+            e.data,
+            json!({"url": "https://claude.ai/artifact/abc", "scope": "repo"})
+        );
+        let (err, _) = call_as(
+            &mut mcp,
+            &env,
+            "s1",
+            "report_published",
+            &json!({"url": "javascript:alert(1)", "scope": "repo"}),
+        );
+        assert!(err);
     }
 }

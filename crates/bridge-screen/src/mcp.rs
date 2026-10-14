@@ -322,6 +322,25 @@ pub struct ShowProgressInput {
     pub scope: Option<Scope>,
 }
 
+/// Make a progress report for publishing, on the owner's explicit request.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProgressReportInput {
+    /// "repo" (default: this session's project) or "all".
+    #[serde(default)]
+    pub scope: Option<Scope>,
+}
+
+/// Record that the owner published a report.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReportPublishedInput {
+    /// The published page's link.
+    pub url: String,
+    /// The scope the report was made with: "repo" or "all".
+    pub scope: Scope,
+}
+
 /// A click on the progress card.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -530,6 +549,26 @@ impl Bridge {
     ) -> CallToolResult {
         self.do_show_progress(&args)
             .unwrap_or_else(|e| CallToolResult::error(vec![ContentBlock::text(e)]))
+    }
+
+    #[tool(
+        description = "Only when the owner explicitly asks to publish a progress report: writes a self-contained HTML snapshot (no scripts, no outside links) to a temp file and returns its path and a summary of exactly what it contains. Show the owner that summary; publish with the Artifact tool only after the owner confirms; then call report_published. Never publish on your own initiative."
+    )]
+    async fn progress_report(
+        &self,
+        Parameters(args): Parameters<Args<ProgressReportInput>>,
+    ) -> CallToolResult {
+        text(self.do_progress_report(&args))
+    }
+
+    #[tool(
+        description = "After the owner confirmed and you published a progress report as an Artifact: record the link and scope."
+    )]
+    async fn report_published(
+        &self,
+        Parameters(args): Parameters<Args<ReportPublishedInput>>,
+    ) -> CallToolResult {
+        text(self.do_report_published(&args))
     }
 
     #[tool(
@@ -982,6 +1021,62 @@ impl Bridge {
         meta.insert(NONCE_KEY.into(), Value::from(self.mint_nonce()?));
         result.meta = Some(MetaObject::from(meta));
         Ok(result)
+    }
+
+    fn do_progress_report(&self, args: &Args<ProgressReportInput>) -> Result<String, String> {
+        let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        let store = self.open()?;
+        let cfg = Config::load(&self.home.config_path()).unwrap_or_default();
+        let glance = view::glance(store.conn(), &cfg, jiff::Timestamp::now()).map_err(msg)?;
+        let (glance, label) = match input.scope.unwrap_or(Scope::Repo) {
+            Scope::All => (glance, "all".to_string()),
+            Scope::Repo => {
+                let session = self.caller(&store, "progress_report", &args.raw)?;
+                let name = bridge_screen_core::store::repo_name(store.conn(), &session.repo_id)
+                    .map_err(msg)?
+                    .unwrap_or_else(|| session.repo_id.clone());
+                let safe: String = name
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || c == '-' {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect();
+                (glance.for_repo(&session.repo_id), safe)
+            }
+        };
+        crate::report::write(&store, &glance, &label)
+            .map(|r| r.summary)
+            .map_err(msg)
+    }
+
+    fn do_report_published(&self, args: &Args<ReportPublishedInput>) -> Result<String, String> {
+        let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        let url = input.url.trim();
+        if !(url.starts_with("https://") || url.starts_with("http://"))
+            || url.len() > 500
+            || url.contains(char::is_whitespace)
+        {
+            return Err("url must be the published page's http(s) link".into());
+        }
+        let mut store = self.open()?;
+        let session = self.caller(&store, "report_published", &args.raw)?;
+        let scope = match input.scope {
+            Scope::Repo => "repo",
+            Scope::All => "all",
+        };
+        store
+            .append(bridge_screen_core::store::EventDraft::new(
+                &session.repo_id,
+                &session.session_id,
+                "report_published",
+                serde_json::json!({ "url": url, "scope": scope }),
+            ))
+            .map_err(msg)?;
+        Ok(format!("Recorded the published report: {url}"))
     }
 
     fn do_owner_action(&self, args: &Args<OwnerActionInput>) -> Result<String, String> {

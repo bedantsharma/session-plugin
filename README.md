@@ -44,6 +44,36 @@ A task claimed done is checked, not taken on trust:
   (`log_decision`) when a task is done, before compaction and at the end of a session; a
   changed decision supersedes the old one. `bridge-screen decisions [--all]` lists them.
 
+## Three screens
+
+Every screen shows the same facts from one model, and every button records what the
+matching CLI command records.
+
+- **Terminal.** `bridge-screen status` prints the glance in about a dozen lines;
+  `bridge-screen watch` is the live full-terminal view (↑/↓ or j/k to move, Enter to
+  expand, `a` to act on a needs-you item, `?` for help, `q` to quit). Colours mark the
+  states only on a terminal, and never when `NO_COLOR` is set (non-empty) or
+  `TERM=dumb`; every state also has a word.
+- **Browser.** `bridge-screen ui` starts the dashboard on `127.0.0.1` (one instance;
+  running it again prints the same URL) and opens it. The URL carries a random token
+  after `#token=`; requests without it are refused. Drill into a project (plan tree,
+  scope line, re-plans), a session (timeline, time split, checkpoints, handoff), a task
+  (decisions, verification evidence), the raw history and the drift tuning.
+- **Claude desktop app.** `/bridge-screen` asks Claude to call `show_progress`, which
+  renders an inline card with the same needs-you buttons (MCP Apps). Hosts without MCP
+  Apps get the text view.
+
+**What counts toward "N need you".** Only items with an owner response: a session far
+off its task (Continue — optionally with a reason — / Make it a task / Stop), a session
+that asked you a question or waits on a permission prompt (answer it there), work
+nudged twice without being verified (✓ Works / ✗ Broken), and a dead session's leftovers
+(Adopt / Resume / Undo). Things the agent owes (a checkpoint, a read-back, a
+verification) and idle or finished sessions are shown on the session, not counted.
+
+**Progress reports.** Only when you ask: the agent writes a self-contained HTML snapshot,
+shows you exactly what it holds, and publishes it as an Artifact after you confirm.
+`bridge-screen config set publish-reports never` turns this off for a repo.
+
 ## Install
 
 *After the first release:*

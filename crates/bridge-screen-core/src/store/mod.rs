@@ -182,6 +182,9 @@ fn migrate(conn: &mut Connection) -> Result<()> {
     if current < 6 {
         tx.execute_batch(schema::V6)?;
     }
+    if current < 7 {
+        tx.execute_batch(schema::V7)?;
+    }
     tx.execute(
         "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
         [SCHEMA_VERSION.to_string()],

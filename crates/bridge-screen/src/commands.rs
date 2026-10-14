@@ -292,6 +292,9 @@ fn config(dir: &Path) -> Result<()> {
         if let Some(cmd) = set.test_command {
             println!("# test command for {}: {cmd}", repo.name);
         }
+        if let Some(v) = set.publish_reports {
+            println!("# publish reports for {}: {v}", repo.name);
+        }
         if let Some(secs) = set.test_timeout_s {
             println!("# test timeout for {}: {secs} s", repo.name);
         }
@@ -327,6 +330,14 @@ fn set_setting(dir: &Path, key: SettingArg, value: Option<&str>) -> Result<()> {
             let cmd = cmd.trim();
             anyhow::ensure!(!cmd.is_empty(), "the test command is empty");
             Some(serde_json::Value::from(cmd))
+        }
+        (SettingArg::PublishReports, Some(v)) => {
+            let v = v.trim();
+            anyhow::ensure!(
+                v == "never" || v == "ask",
+                "publish-reports takes never or ask, not {v}"
+            );
+            Some(serde_json::Value::from(v))
         }
         (SettingArg::TestTimeout, Some(secs)) => {
             let secs: u64 = secs

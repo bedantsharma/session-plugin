@@ -192,8 +192,8 @@ pub enum LabelArg {
 pub enum ConfigCommand {
     /// Put this repo's auto-tuned drift thresholds back to the config defaults.
     ResetDrift,
-    /// Set a per-repo setting: `test-command "<cmd>"` (re-run at verify level 2) or
-    /// `test-timeout <secs>`.
+    /// Set a per-repo setting: `test-command "<cmd>"` (re-run at verify level 2),
+    /// `test-timeout <secs>` or `publish-reports never|ask`.
     Set { key: SettingArg, value: String },
     /// Unset a per-repo setting.
     Unset { key: SettingArg },
@@ -206,6 +206,8 @@ pub enum SettingArg {
     TestCommand,
     /// Seconds the re-run may take (default: `verify_timeout_s` in config.toml).
     TestTimeout,
+    /// `never` (the agent refuses to make progress reports here) or `ask` (the default).
+    PublishReports,
 }
 
 impl SettingArg {
@@ -213,6 +215,7 @@ impl SettingArg {
         match self {
             Self::TestCommand => "test_command",
             Self::TestTimeout => "test_timeout_s",
+            Self::PublishReports => "publish_reports",
         }
     }
 }

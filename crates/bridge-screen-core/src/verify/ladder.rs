@@ -493,6 +493,7 @@ pub fn change_setting(
     let now = settings(store.conn(), repo_id)?;
     let old = match key {
         "test_command" => now.test_command.map(serde_json::Value::from),
+        "publish_reports" => now.publish_reports.map(serde_json::Value::from),
         _ => now.test_timeout_s.map(serde_json::Value::from),
     }
     .unwrap_or(serde_json::Value::Null);

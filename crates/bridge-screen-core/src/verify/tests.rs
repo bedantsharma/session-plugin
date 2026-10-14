@@ -344,7 +344,8 @@ fn test_settings_land_in_repo_settings_and_unset_clears() {
         settings(s.conn(), "r").unwrap(),
         RepoSettings {
             test_command: Some("cargo test".into()),
-            test_timeout_s: Some(300)
+            test_timeout_s: Some(300),
+            publish_reports: None,
         }
     );
     assert_eq!(
