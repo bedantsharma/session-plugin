@@ -951,6 +951,12 @@ mod reports {
             "{text}"
         );
         assert!(text.contains("only after the owner confirms"), "{text}");
+        // Every title the page shows is named in the summary: the goal and milestones too.
+        assert!(html.contains("Ship") && html.contains("Accounts"), "{html}");
+        assert!(
+            text.contains("goal Ship") && text.contains("milestones 1 Accounts"),
+            "{text}"
+        );
         // Nothing was written inside the repo.
         assert!(
             !std::fs::read_dir(env.repo.path()).unwrap().any(|e| e

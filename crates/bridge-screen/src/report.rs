@@ -100,7 +100,7 @@ pub fn write(store: &Store, glance: &Glance, label: &str) -> Result<Report> {
     std::fs::write(&path, &html)?;
     task_titles.sort();
     task_titles.dedup();
-    let names: Vec<&str> = projects.iter().map(|p| p.name.as_str()).collect();
+    let names: Vec<String> = projects.iter().map(|p| titles(p)).collect();
     let mut summary = format!(
         "Wrote {}. It is one self-contained page (inline styles, no scripts, no outside links) holding:\n- the time of the snapshot ({})\n- {} needs-you item(s){}\n- projects: {} (done% and claimed% bars, milestone hill states, live-session counts)\n- {decisions_shown} recent decision(s) (what and why){}",
         path.display(),
@@ -136,6 +136,24 @@ pub fn write(store: &Store, glance: &Glance, label: &str) -> Result<Report> {
         "\nShow this summary to the owner. Publish it with the Artifact tool only after the owner confirms, then call report_published with the link.",
     );
     Ok(Report { path, summary })
+}
+
+/// Every title the page shows for a project: its name, goal and milestones.
+fn titles(p: &ProjectRow) -> String {
+    let mut parts: Vec<String> = p.goal.iter().map(|g| format!("goal {}", g.title)).collect();
+    if !p.milestones.is_empty() {
+        let ms: Vec<String> = p
+            .milestones
+            .iter()
+            .map(|m| format!("{} {}", m.id, m.title))
+            .collect();
+        parts.push(format!("milestones {}", ms.join(", ")));
+    }
+    if parts.is_empty() {
+        p.name.clone()
+    } else {
+        format!("{} ({})", p.name, parts.join("; "))
+    }
 }
 
 /// One project's section; returns how many decisions it showed.
