@@ -135,3 +135,29 @@ describe('poller', () => {
     p.stop()
   })
 })
+
+describe('a server that stops answering', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('times out its polls and reads Disconnected, never stale green', async () => {
+    // Accepts the connection but never answers (a hung or suspended process).
+    const hung = ((_: string, init?: RequestInit) =>
+      new Promise((_resolve, reject) =>
+        init?.signal?.addEventListener('abort', () => reject(new Error('timed out'))),
+      )) as unknown as typeof fetch
+    const client = makeClient('tok', hung)
+    let conn: ConnState = { connected: true, unauthorized: false, lastOk: null }
+    const p = new Poller({
+      version: async () =>
+        (await client.get<{ last_event_pos: number }>('/api/version')).last_event_pos,
+      onChange: () => {},
+      onState: (s) => (conn = s),
+      hidden: () => false,
+    })
+    p.start()
+    await vi.advanceTimersByTimeAsync(20_000)
+    p.stop()
+    expect(conn.connected).toBe(false)
+  })
+})

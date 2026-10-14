@@ -21,6 +21,9 @@ describe('Header', () => {
     const pill = screen.getByTestId('pill')
     expect(pill).toHaveTextContent('5 need you · show all')
     expect(pill.className).toContain('pulse-3')
+    // Filled red with dark text; never red text on the red fill.
+    expect(pill.className).toContain('text-on-accent')
+    expect(pill.className).not.toContain('text-bad')
   })
 
   it('says Disconnected with the last update time, never All clear', () => {

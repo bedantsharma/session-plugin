@@ -51,8 +51,8 @@
         <button
           type="button"
           class={[
-            'rounded-full border-2 border-bad px-3 py-1 text-sm font-medium text-bad',
-            glance.escalated && 'pulse-3 bg-bad text-on-accent',
+            'rounded-full border-2 border-bad px-3 py-1 text-sm font-medium',
+            glance.escalated ? 'pulse-3 bg-bad text-on-accent' : 'text-bad',
           ]}
           data-testid="pill"
           onclick={() => onShowAll?.()}

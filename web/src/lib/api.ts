@@ -39,11 +39,22 @@ export interface Client {
   act(action: OwnerAction): Promise<ActResult>
 }
 
+/** A read that takes longer than this fails (and counts as a failed poll). */
+export const GET_TIMEOUT_MS = 4000
+
 export function makeClient(token: string | null, fetchFn: typeof fetch = fetch): Client {
   const headers = (): Record<string, string> => (token ? { Authorization: `Bearer ${token}` } : {})
   return {
     async get<T>(path: string): Promise<T> {
-      const res = await fetchFn(path, { headers: headers() })
+      // A server that accepts but never answers must not leave stale data looking live.
+      const abort = new AbortController()
+      const timer = setTimeout(() => abort.abort(), GET_TIMEOUT_MS)
+      let res: Response
+      try {
+        res = await fetchFn(path, { headers: headers(), signal: abort.signal })
+      } finally {
+        clearTimeout(timer)
+      }
       if (!res.ok) {
         let msg = res.statusText
         try {
