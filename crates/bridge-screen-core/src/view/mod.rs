@@ -1003,7 +1003,7 @@ const PROGRESS_KINDS: &[&str] = &[
 
 /// Stuck (spec §5.6): the last [`STUCK_SESSIONS`] sessions that worked on tasks under the
 /// milestone came and went without its hill state or done% changing. Returns how many
-/// sessions it has been stuck for (0 = not stuck).
+/// sessions started since the last change (0 = not stuck).
 fn stuck_for(
     conn: &Connection,
     repo_id: &str,
@@ -1037,9 +1037,6 @@ fn stuck_for(
     if sessions.len() < STUCK_SESSIONS {
         return Ok(0);
     }
-    let mut starts: Vec<Timestamp> = sessions.into_values().collect();
-    starts.sort_unstable_by(|a, b| b.cmp(a));
-    let since = starts[STUCK_SESSIONS - 1];
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT kind, ts, task_id, data FROM events WHERE repo_id = ?1 AND kind IN ({})",
         PROGRESS_KINDS
@@ -1056,9 +1053,14 @@ fn stuck_for(
             r.get::<_, String>(3)?,
         ))
     })?;
+    // The latest event that moved the milestone; the sessions since then count.
+    let mut latest: Option<Timestamp> = None;
     for row in rows {
         let (kind, ts, task, data) = row?;
-        if parse_ts(&ts).is_none_or(|t| t < since) {
+        let Some(at) = parse_ts(&ts) else {
+            continue;
+        };
+        if latest.is_some_and(|l| at <= l) {
             continue;
         }
         let data: serde_json::Value = serde_json::from_str(&data)?;
@@ -1078,10 +1080,18 @@ fn stuck_for(
             _ => under.contains(id),
         };
         if touches {
-            return Ok(0);
+            latest = Some(at);
         }
     }
-    Ok(starts.len())
+    let unchanged = sessions
+        .values()
+        .filter(|start| latest.is_none_or(|l| **start > l))
+        .count();
+    Ok(if unchanged >= STUCK_SESSIONS {
+        unchanged
+    } else {
+        0
+    })
 }
 
 fn milestones(conn: &Connection, repo_id: &str, tree: &[PlanNode]) -> Result<Vec<MilestoneRow>> {

@@ -567,6 +567,20 @@ fn milestones_show_hill_progress_and_stuck() {
         json!({"id": "1", "hill": "downhill"}),
     );
     assert!(!glance_at(&s, 1000).projects[0].milestones[0].stuck);
+    // Four sessions after that move: stuck for those 4, not for all 7 that ever worked
+    // under it.
+    for (i, sid) in ["m1s00004", "m1s00005", "m1s00006", "m1s00007"]
+        .iter()
+        .enumerate()
+    {
+        let t = 600 + i64::try_from(i).unwrap() * 100;
+        start(&mut s, sid, t);
+        claim(&mut s, sid, t + 1, "1.2");
+        unit(&mut s, sid, t + 2, 10);
+        ev(&mut s, sid, t + 20, "session_ended", json!({}));
+    }
+    let m = &glance_at(&s, 2000).projects[0].milestones[0];
+    assert_eq!((m.stuck, m.stuck_sessions), (true, 4));
 }
 
 #[test]
