@@ -35,7 +35,12 @@ pub fn ends_with_question(msg: Option<&str>) -> bool {
                 '*' | '_' | '`' | ')' | ']' | '"' | '\'' | '”' | '’' | '»'
             )
     });
-    line.ends_with('?') || line.ends_with('？')
+    let asks = |l: &str| l.ends_with('?') || l.ends_with('？');
+    // A trailing aside such as `(y/n)` after the question mark.
+    let before_aside = line.rsplit_once('(').map(|(head, _)| {
+        head.trim_end_matches(|c: char| c.is_whitespace() || matches!(c, '*' | '_'))
+    });
+    asks(line) || before_aside.is_some_and(asks)
 }
 
 #[cfg(test)]
@@ -53,6 +58,8 @@ mod tests {
             "> Is this right?",
             "- Keep the old API?",
             "続けますか？",
+            "Proceed with the migration? (y/n)",
+            "Should I push it? _(the branch is ahead by 3)_",
         ];
         for m in yes {
             assert!(ends_with_question(Some(m)), "{m}");
