@@ -36,6 +36,8 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
     `src/report.rs` — the opt-in HTML progress report
   - `src/hook/` — `bridge-screen hook <event>`: payload parsing, per-event handlers, injected context
   - `src/hook/nav.rs` — the navigator's part of a hook (label at Stop, tolerance band, notes)
+  - `src/hook/question.rs` — did the turn end with a question to the owner (pure string
+    checks; no text stored) and the `AskUserQuestion` tool name
   - `src/hook/handoff.rs` — checkpoint request/detection, SessionEnd classification,
     SessionStart recovery and briefing, read-back nudge, squash before a PR
   - `src/mcp.rs` — `bridge-screen mcp`: stdio MCP server (`claim_task`, `plan_edit`, `status`,
