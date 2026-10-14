@@ -179,7 +179,8 @@ pub struct SessionRow {
     /// The first 6 characters.
     pub short: String,
     pub repo_id: String,
-    /// The terminal's state column: `working`, `idle`, `done`, `needs you`.
+    /// The terminal's state column: `working`, `idle`, `done`, `needs you` — the last only
+    /// when the session raises a needs-you item (the light is red).
     pub state_label: String,
     pub light: Light,
     /// The word next to the light: `on task`, `detour`, `drift`, `idle`, `done`,
@@ -198,7 +199,8 @@ pub struct SessionRow {
     pub asked_question: bool,
     pub branch: Option<String>,
     pub worktree: Option<String>,
-    /// Sort key: 0 red, 1 handoff trouble, 2 waiting on the owner, 3 working, 4 resting.
+    /// Sort key: 0 red, 1 other needs-you (question, permission wait), 2 handoff trouble,
+    /// 3 working, 4 resting.
     pub rank: u8,
 }
 
@@ -618,7 +620,6 @@ fn session_items(
 
 /// The light and its word, the terminal's state column and the sort rank.
 fn looks(s: &Session, f: &Facts, rest: Option<&Rest>) -> (Light, &'static str, &'static str, u8) {
-    let asked = f.question.is_some();
     let done = matches!(rest, Some(Rest::Done { .. }));
     let (light, word) = if f.red_open || matches!(rest, Some(Rest::NeedsYou { .. })) {
         (Light::Red, "needs you")
@@ -635,24 +636,25 @@ fn looks(s: &Session, f: &Facts, rest: Option<&Rest>) -> (Light, &'static str, &
     } else {
         (Light::Amber, "idle")
     };
-    // The terminal's state column keeps its SP2–5 words (and order) so `status` reads as
-    // before; the light above carries the needs-you rules.
-    let label = if f.red || handoff_trouble(s) || asked {
+    // The terminal's state column says "needs you" only for real needs-you items (owner
+    // decision 2026-10-14); agent-owed trouble (a missed checkpoint, an unstable handoff)
+    // is a flag on the row, and a session merely at the prompt is `idle` or `done`.
+    let needs_you = light == Light::Red;
+    let label = if needs_you {
         "needs you"
     } else {
         match s.state {
-            SessionState::NeedsOwner => "needs you",
             SessionState::Working => "working",
-            SessionState::Idle if done => "done",
-            SessionState::Idle => "idle",
             SessionState::Ended => "ended",
+            SessionState::Idle | SessionState::NeedsOwner if done => "done",
+            SessionState::Idle | SessionState::NeedsOwner => "idle",
         }
     };
-    let rank = if f.red {
+    let rank = if f.red_open {
         0
-    } else if handoff_trouble(s) {
+    } else if needs_you {
         1
-    } else if asked || s.state == SessionState::NeedsOwner {
+    } else if handoff_trouble(s) {
         2
     } else if s.state == SessionState::Working {
         3

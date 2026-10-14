@@ -154,10 +154,10 @@ fn project(out: &mut String, g: &Glance, p: &ProjectRow, c: bool) {
             p.leftovers.open, p.leftovers.report_only
         );
     }
-    // Needs-you order: red, missed checkpoints and unstable sessions, waits and questions,
-    // then claimed work the owner is asked to verify (spec §8.5, §10.1), then the rest.
+    // Needs-you order: red, then questions and waits, then claimed work the owner is asked
+    // to verify (spec §8.5, §10.1), then the rest.
     let (urgent, rest): (Vec<&SessionRow>, Vec<&SessionRow>) =
-        p.sessions.iter().partition(|s| s.rank <= 2);
+        p.sessions.iter().partition(|s| s.rank <= 1);
     for s in urgent {
         out.push_str(&session_line(s, c));
     }
@@ -212,14 +212,13 @@ fn session_line(s: &SessionRow, c: bool) -> String {
             FlagKind::CheckpointMissed
             | FlagKind::CheckpointPending
             | FlagKind::ReadbackPending
-            | FlagKind::SquashFailed => {
+            | FlagKind::SquashFailed
+            | FlagKind::HandoffUnstable => {
                 let _ = write!(nav, " · {}", f.kind.text());
             }
             FlagKind::VerifyPending => {
                 let _ = write!(nav, " · verify pending: {}", f.tasks.join(", "));
             }
-            // Shown by the state word ("needs you"), as before.
-            FlagKind::HandoffUnstable => {}
         }
     }
     if s.asked_question {

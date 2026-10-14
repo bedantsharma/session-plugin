@@ -119,8 +119,8 @@ fn sessions_grouped_by_project_needs_you_first() {
     )
     .unwrap();
 
-    // shop: one working session on 2 Login form (3 units, 18 min), one waiting on the
-    // owner without a task (1 unit, 2 min), one idle.
+    // shop: one working session on 2 Login form (3 units, 18 min), one idle at the prompt
+    // without a task (1 unit, 2 min; Claude's idle prompt is no needs-you item), one idle.
     start(&mut s, "r1", "work00aaa", 0);
     claim(
         &mut s,
@@ -159,9 +159,9 @@ bridge-screen · 4 live sessions · 2 projects
 api  no plan yet
   S apis00  idle      (no task)             2 units · 2m · on task
 shop  goal: Online shop  · done 0% · claimed 0% · 2 unestimated
-  S wait00  needs you (no task)             1 unit  · 2m · on task
   S work00  working   2 Login form          3 units · 18m · on task
   S idle00  idle      (no task)             0 units · 0m · on task
+  S wait00  idle      (no task)             1 unit  · 2m · on task
 "
     );
 }
@@ -366,7 +366,7 @@ fn checkpoints_read_back_and_leftovers_show() {
 bridge-screen · 3 live sessions · 1 project
 shop  no plan yet
   leftovers: 3 open (1 report-only)
-  S miss0c  needs you (no task)             0 units · 0m · on task · checkpoint missed
+  S miss0c  idle      (no task)             0 units · 0m · on task · checkpoint missed
   S pend0b  idle      (no task)             0 units · 0m · on task · checkpoint pending · read-back pending
   S ok000a  idle      (no task)             0 units · 0m · on task
 "

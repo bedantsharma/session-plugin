@@ -287,10 +287,8 @@ fn a_drift_without_a_detour_offers_no_make_task_and_an_answer_clears_it() {
     let g = glance_at(&s, 400);
     assert_eq!(g.needs_you, vec![]);
     let r = row(&g, "drift0001");
-    assert_eq!(
-        (r.light, r.state_label.as_str()),
-        (Light::Amber, "needs you")
-    );
+    // The answered flag is no needs-you item on any screen, `status` included.
+    assert_eq!((r.light, r.state_label.as_str()), (Light::Amber, "idle"));
 }
 
 #[test]
@@ -361,13 +359,18 @@ fn info_states_are_session_flags_with_ages_never_queue_items() {
     let m = row(&g, "miss00002");
     assert_eq!(m.flags[0].kind, FlagKind::CheckpointMissed);
     assert_eq!(m.flags[0].age_s, Some(50));
-    // The terminal column still says "needs you" for a missed checkpoint (as before).
-    assert_eq!(m.state_label, "needs you");
+    // A missed checkpoint is owed by the agent: a flag, not "needs you" (owner decision).
+    assert_eq!(m.state_label, "idle");
     assert_ne!(m.light, Light::Red);
+    assert_eq!(row(&g, "flags0001").state_label, "idle");
     let idle = row(&g, "idle00003");
     assert_eq!(
-        (idle.light, idle.light_word.as_str()),
-        (Light::Amber, "idle")
+        (
+            idle.light,
+            idle.light_word.as_str(),
+            idle.state_label.as_str()
+        ),
+        (Light::Amber, "idle", "idle")
     );
     assert_eq!(idle.rest, Some(Rest::Idle));
 }
