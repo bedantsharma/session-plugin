@@ -39,6 +39,11 @@ impl Home {
         self.root.join("config.toml")
     }
 
+    /// The dashboard's single-instance lock: `{pid, port, token}` (spec §4.1, §6.1).
+    pub fn ui_lock_path(&self) -> PathBuf {
+        self.root.join("ui.lock")
+    }
+
     /// Where undo snapshot records for a repo's leftovers go (spec §8.3).
     pub fn snapshots_dir(&self, repo_id: &str) -> PathBuf {
         self.root.join("snapshots").join(repo_id)

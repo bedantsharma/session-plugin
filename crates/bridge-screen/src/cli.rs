@@ -112,6 +112,15 @@ pub enum Command {
         #[arg(short = 'C', long = "dir", default_value = ".", global = true)]
         dir: PathBuf,
     },
+    /// Open the local dashboard (127.0.0.1 only); prints its URL. One instance at a time.
+    Ui {
+        /// Port on 127.0.0.1 (default: `ui_port` in config.toml; 0 = any free port).
+        #[arg(long)]
+        port: Option<u16>,
+        /// Don't open the browser.
+        #[arg(long)]
+        no_open: bool,
+    },
     /// Serve the agent's tools over MCP (stdio). Claude Code starts this.
     Mcp,
     /// Handle a Claude Code hook event (reads the hook JSON on stdin). Always exits 0.

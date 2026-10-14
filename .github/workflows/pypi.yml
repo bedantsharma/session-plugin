@@ -21,6 +21,11 @@ jobs:
           - { os: windows-latest, target: x86_64-pc-windows-msvc }
     steps:
       - uses: actions/checkout@v4
+      # The dashboard is embedded into the binary: build it first.
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+      - run: npm --prefix web ci && npm --prefix web run build
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}

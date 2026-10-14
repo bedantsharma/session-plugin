@@ -18,3 +18,5 @@ tap = "bedantsharma/homebrew-tap"
 publish-jobs = ["homebrew", "npm"]
 install-path = "CARGO_HOME"
 install-updater = false
+# Build the dashboard before the Rust build so it is embedded (spec §16.3).
+github-build-setup = "../build-setup.yml"

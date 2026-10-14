@@ -20,3 +20,14 @@
 - `pipx install bridge-screen` or `uv tool install bridge-screen`
 - `npx bridge-screen`
 - `curl -LsSf https://github.com/bedantsharma/session-plugin/releases/latest/download/bridge-screen-installer.sh | sh`
+
+## The embedded web app
+
+The binary embeds the dashboard (`web/dist`) and the desktop card (`web/dist-card`) at
+build time. Every release build runs `npm --prefix web ci && npm --prefix web run build`
+first: the `Release` workflow through dist's `github-build-setup` hook
+(`.github/build-setup.yml`, set in `dist-workspace.toml`), the `PyPI` workflow and the CI
+Rust jobs as a step of their own. Without a web build (e.g. `cargo install` from
+crates.io) the binary still builds and `bridge-screen ui` serves a page saying how to
+build the dashboard; the JSON API works either way. After changing
+`.github/build-setup.yml`, run `dist generate --mode ci`.

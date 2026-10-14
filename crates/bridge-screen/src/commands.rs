@@ -70,6 +70,7 @@ pub fn run(cli: Cli) -> Result<()> {
             dir,
         } => set_setting(&dir, key, None),
         Command::Mcp => crate::mcp::run(),
+        Command::Ui { port, no_open } => crate::ui::run(port, no_open),
         Command::Status => {
             let home = Home::resolve()?;
             let mut store = open_store(&home)?;
@@ -93,7 +94,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 bridge_screen_core::view::glance(store.conn(), &cfg, jiff::Timestamp::now())?;
             let opts = crate::status::Options {
                 color: crate::status::stdout_color(),
-                dashboard: None,
+                dashboard: crate::ui::running(&home).map(|l| l.address()),
             };
             print!("{}", crate::status::render(&glance, &opts));
             Ok(())
