@@ -153,8 +153,11 @@ pub fn run(wt: &Path, command: &str, timeout: Duration) -> RerunOutcome {
     let took = start.elapsed();
     if status.is_none() {
         signal_group(&child, "TERM");
-        if wait_until(&mut child, Instant::now() + GRACE).is_none() {
-            signal_group(&child, "KILL");
+        let shell_gone = wait_until(&mut child, Instant::now() + GRACE).is_some();
+        // Whatever ignored TERM goes now, whether or not the shell is gone: a member
+        // that doesn't hold the output open would otherwise outlive the time limit.
+        signal_group(&child, "KILL");
+        if !shell_gone {
             let _ = child.kill();
             let _ = child.wait();
         }

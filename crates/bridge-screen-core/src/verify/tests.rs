@@ -631,6 +631,36 @@ mod rerun_tests {
         );
     }
 
+    /// A background child that ignores TERM and doesn't hold the output open is still
+    /// stopped at the time limit, though the shell itself exits on TERM.
+    #[cfg(unix)]
+    #[test]
+    fn rerun_timeout_kills_a_term_proof_child_without_the_pipe() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("bg.pid");
+        let cmd = format!(
+            "(trap '' TERM; exec sleep 60) >/dev/null 2>&1 & echo $! > '{}'; sleep 30",
+            pidfile.display()
+        );
+        let out = run(dir.path(), &cmd, Duration::from_secs(1));
+        assert!(matches!(out, RerunOutcome::TimedOut { .. }), "{out:?}");
+        let pid = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .to_string();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while alive(&pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let survived = alive(&pid);
+        if survived {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid])
+                .status();
+        }
+        assert!(!survived, "background child {pid} survived the time limit");
+    }
+
     /// A command that exits while a background child still holds its output open
     /// doesn't hang the re-run.
     #[cfg(unix)]
