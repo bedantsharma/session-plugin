@@ -10,6 +10,8 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+
+use crate::hook::handoff::worktree_of;
 use bridge_screen_core::binding;
 use bridge_screen_core::checkpoint::{self, ClaimDoneRequest};
 use bridge_screen_core::claim::{self, ClaimMode, ClaimRequest, ClaimTarget};
@@ -23,6 +25,7 @@ use bridge_screen_core::store::{Actor, Store};
 use bridge_screen_core::tangent::{
     self, CloseRequest, DetourOutcome, Label, LabelRequest, LabelSource, StartRequest,
 };
+use bridge_screen_core::verify::{self, L1Outcome};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
@@ -190,6 +193,13 @@ pub struct ClaimDoneInput {
     pub id: Option<String>,
     /// What shows it is done: the tests you ran and their result, the files changed.
     pub evidence: String,
+    /// The files (paths relative to the repo root) that show the work exists, at most 50.
+    /// bridge-screen checks them at HEAD for L1.
+    #[serde(default)]
+    pub files: Vec<String>,
+    /// Optionally the key functions or types in those files, at most 50.
+    #[serde(default)]
+    pub symbols: Vec<String>,
 }
 
 /// Resolve leftovers a dead session left in a worktree.
@@ -288,7 +298,7 @@ impl Bridge {
     }
 
     #[tool(
-        description = "Say a task is done when you finish it (verification level L0), with evidence: the tests you ran and their result. A checkpoint commit is then due before you stop."
+        description = "Say a task is done when you finish it (verification level L0), with evidence: the tests you ran and their result. List the files (and optionally the key functions/types) that show the work exists — bridge-screen checks them at HEAD for L1. A checkpoint commit is then due before you stop."
     )]
     async fn claim_done(
         &self,
@@ -389,6 +399,11 @@ impl Bridge {
     }
 }
 
+/// The first 7 characters of a SHA.
+fn short(sha: &str) -> String {
+    sha.chars().take(7).collect()
+}
+
 /// `text` as a sentence: a full stop added unless it already ends with one.
 fn sentence(text: &str) -> String {
     if text.ends_with(['.', '!', '?']) {
@@ -441,13 +456,53 @@ impl Bridge {
                 session_id: session.session_id.clone(),
                 task_id: input.id.clone(),
                 evidence: input.evidence.clone(),
+                files: input.files.clone(),
+                symbols: input.symbols.clone(),
                 actor: Actor::default(),
             },
         )
         .map_err(msg)?;
-        Ok(format!(
-            "Marked {task} claimed done. Commit a checkpoint before you stop, then leave a handoff_note if work remains in flight."
-        ))
+        let mut reply = format!("Marked {task} claimed done.");
+        // L1 right away when the files are committed (a git failure just skips it).
+        let wt = worktree_of(&session);
+        match verify::check_l1(store.conn(), &wt, &session.repo_id, &task) {
+            Ok(outcome @ L1Outcome::Passed { .. }) => {
+                if let Some(draft) =
+                    verify::l1_draft(&session.repo_id, &session.session_id, &task, &outcome)
+                        .map_err(msg)?
+                {
+                    store.append(draft).map_err(msg)?;
+                }
+                if let L1Outcome::Passed { sha, .. } = &outcome {
+                    let _ = write!(reply, " L1: the code exists at {}.", short(sha));
+                }
+            }
+            Ok(L1Outcome::NotCommitted { .. }) => {
+                reply.push_str(" L1 is checked when you commit the checkpoint.");
+            }
+            Ok(L1Outcome::Missing {
+                sha,
+                paths,
+                symbols,
+            }) => {
+                let _ = write!(
+                    reply,
+                    " L1 check: {} not found at {}. Fix the evidence with claim_done again.",
+                    verify::missing_text(&paths, &symbols),
+                    short(&sha)
+                );
+            }
+            Ok(L1Outcome::NoEvidence) => {
+                reply.push_str(
+                    " Name the files that show the work (files) so bridge-screen can check L1.",
+                );
+            }
+            Err(_) => {}
+        }
+        reply.push_str(
+            " Commit a checkpoint before you stop, then leave a handoff_note if work remains in flight.",
+        );
+        Ok(reply)
     }
 
     fn do_resolve_leftover(&self, args: &Args<ResolveLeftoverInput>) -> Result<String, String> {

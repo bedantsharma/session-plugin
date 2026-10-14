@@ -59,6 +59,8 @@ fn claim_done(env: &Env, session: &str) {
             session_id: session.into(),
             task_id: None,
             evidence: "tests pass".into(),
+            files: Vec::new(),
+            symbols: Vec::new(),
             actor: Actor::default(),
         },
     )

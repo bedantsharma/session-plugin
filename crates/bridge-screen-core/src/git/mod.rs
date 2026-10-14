@@ -463,18 +463,56 @@ pub fn rev_parse(wt: &Path, rev: &str) -> Result<Option<String>> {
 
 /// Is `ancestor` an ancestor of (or equal to) `rev`?
 pub fn is_ancestor(wt: &Path, ancestor: &str, rev: &str) -> Result<bool> {
+    yes_no(wt, &["merge-base", "--is-ancestor", ancestor, rev])
+}
+
+/// Run git where exit 0 means yes and 1 means no; anything else is an error.
+fn yes_no(wt: &Path, args: &[&str]) -> Result<bool> {
     let out = command(wt)
-        .args(["merge-base", "--is-ancestor", ancestor, rev])
+        .args(args)
         .output()
         .map_err(|e| Error::Git(format!("could not run git: {e}")))?;
     match out.status.code() {
         Some(0) => Ok(true),
         Some(1) => Ok(false),
-        _ => Err(Error::Git(format!(
-            "git merge-base --is-ancestor: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ))),
+        _ => {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            if err.contains("not a git repository") {
+                return Err(Error::NotARepo(wt.display().to_string()));
+            }
+            Err(Error::Git(format!("git {}: {err}", args.join(" "))))
+        }
     }
+}
+
+/// Does `path` (relative to the worktree root) exist in commit `rev`?
+pub fn exists_at(wt: &Path, rev: &str, path: &str) -> Result<bool> {
+    let out = command(wt)
+        .args(["cat-file", "-e", &format!("{rev}:{path}")])
+        .output()
+        .map_err(|e| Error::Git(format!("could not run git: {e}")))?;
+    if out.status.success() {
+        return Ok(true);
+    }
+    if String::from_utf8_lossy(&out.stderr).contains("not a git repository") {
+        return Err(Error::NotARepo(wt.display().to_string()));
+    }
+    Ok(false)
+}
+
+/// Does `word` appear as a whole word (fixed string) in any of `paths` in commit `rev`?
+pub fn grep_at(wt: &Path, rev: &str, word: &str, paths: &[String]) -> Result<bool> {
+    let mut args = vec!["grep", "-q", "-F", "-w", "-e", word, rev, "--"];
+    args.extend(paths.iter().map(String::as_str));
+    yes_no(wt, &args)
+}
+
+/// Paths that differ between commits `from` and `to`; a rename lists both names.
+pub fn changed_between(wt: &Path, from: &str, to: &str) -> Result<Vec<String>> {
+    Ok(nul_fields(&run(
+        wt,
+        &["diff", "--name-only", "-z", "--no-renames", from, to, "--"],
+    )?))
 }
 
 /// The current branch's upstream as (remote, remote ref), from its config.

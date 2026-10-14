@@ -755,6 +755,8 @@ fn hook_latency_commit_path() {
                     session_id: session.into(),
                     task_id: None,
                     evidence: "tests".into(),
+                    files: Vec::new(),
+                    symbols: Vec::new(),
                     actor: Actor::default(),
                 },
             )

@@ -122,7 +122,7 @@ pub fn handle(
     };
     // Checkpoint git work, before taking the write lock (only when one is pending or a
     // commit was just made).
-    let found = handoff::gather(event, ctx.known.as_ref(), input);
+    let found = handoff::gather(store.conn(), event, ctx.known.as_ref(), input)?;
     // Nothing of our own to record: look first (read-only) whether the navigator has
     // anything to do, so the common tool call doesn't take the write lock.
     let worth_writing = !all.is_empty()

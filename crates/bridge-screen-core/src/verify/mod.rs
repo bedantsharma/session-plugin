@@ -5,6 +5,7 @@
 //! commits touch those files it drops one level (`verification_stale`). The task's plan
 //! status is derived from its verifications by [`refresh_status`].
 
+pub mod l1;
 pub mod project;
 
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
@@ -13,10 +14,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 
+pub use l1::{
+    L1Outcome, check_l1, depended_files, l1_draft, missing_text, uncommitted, unverified_claims,
+    verified_draft,
+};
 pub use project::{
     SettingChanged, VERIFY_KINDS, VerificationFailed, VerificationStale, Verified, VerifyNudged,
     project,
 };
+
+/// Longest evidence kept, in characters.
+pub const MAX_EVIDENCE: usize = 500;
 
 /// Keys of `repo_settings` a `config_changed` may set. Only the owner sets them (CLI).
 pub const SETTING_KEYS: &[&str] = &["test_command", "test_timeout_s"];

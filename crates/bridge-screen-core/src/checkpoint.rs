@@ -6,6 +6,8 @@
 //! second Stop in the same unit without the commit is recorded as `checkpoint_missed`
 //! instead of asking again. Commits are detected after a Bash `git commit` and at Stop.
 
+use std::path::Path;
+
 use rusqlite::{Connection, OptionalExtension, Transaction};
 
 use crate::claim::task_title;
@@ -50,7 +52,28 @@ pub struct ClaimDoneRequest {
     pub task_id: Option<String>,
     /// What shows the task is done (tests run, files changed).
     pub evidence: String,
+    /// Files (relative to the worktree root) that show the work exists; L1 checks them
+    /// at HEAD. Empty: the files the task's units changed.
+    pub files: Vec<String>,
+    /// Key functions or types L1 looks for in `files`.
+    pub symbols: Vec<String>,
     pub actor: Actor,
+}
+
+/// Most files and symbols one claim names.
+pub const MAX_EVIDENCE_ITEMS: usize = 50;
+
+/// Trimmed, non-empty, unique, at most [`MAX_EVIDENCE_ITEMS`], each at most 300 chars.
+fn evidence_list(items: &[String], norm: impl Fn(&str) -> String) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for item in items {
+        let item: String = norm(item).chars().take(300).collect();
+        if !item.is_empty() && !out.contains(&item) {
+            out.push(item);
+        }
+    }
+    out.truncate(MAX_EVIDENCE_ITEMS);
+    out
 }
 
 /// The agent says a task is done (L0, spec §8.5): `claimed_done` plus `checkpoint_due`,
@@ -88,8 +111,10 @@ fn claim_done_in(tx: &Transaction, req: &ClaimDoneRequest) -> Result<String> {
     let data = ClaimedDone {
         task_id: task.clone(),
         evidence: evidence.chars().take(500).collect(),
-        files: Vec::new(),
-        symbols: Vec::new(),
+        files: evidence_list(&req.files, |f| {
+            crate::verify::l1::normalize(f, session.worktree.as_deref().map(Path::new))
+        }),
+        symbols: evidence_list(&req.symbols, |s| s.trim().to_string()),
     };
     append_in(
         tx,
@@ -317,6 +342,8 @@ mod tests {
             session_id: "s1".into(),
             task_id: task.map(str::to_string),
             evidence: "tests pass".into(),
+            files: Vec::new(),
+            symbols: Vec::new(),
             actor: Actor::default(),
         }
     }
