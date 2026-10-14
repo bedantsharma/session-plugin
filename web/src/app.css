@@ -1,29 +1,183 @@
 @import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn-svelte/tailwind.css';
+@import '@fontsource-variable/inter';
 
-/* Claude Code palette (spec §10.4). Dark is the default; light follows the system. */
-@theme {
-  --color-clay: #d97757;
-  --color-ok: #4eba65;
-  --color-warn: #e5a83b;
-  --color-bad: #e5534b;
-  --color-bg: #1f1e1d;
-  --color-surface: #2a2927;
-  --color-line: #3a3936;
-  --color-fg: #ece9e3;
-  --color-muted: #a39e94;
-  --font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
+/*
+ * Claude Code palette (spec §10.4), defined once. Dark is the default; light follows the
+ * system (or the desktop host's theme through data-theme).
+ * Clay only for progress, owner-check items and the ✱ mark; green on task, amber
+ * detour/waiting/uphill, red needs you; greys otherwise.
+ * Every status colour reaches 4.5:1 on --bg and --surface (so it also works as text);
+ * --edge (control borders) reaches 3:1. tests/contrast.test.ts guards every pair.
+ */
+:root {
+  /* theme:dark */
+  --clay: #d97757;
+  --ok: #4eba65;
+  --warn: #e5a83b;
+  --bad: #f07a72;
+  --bg: #1f1e1d;
+  --surface: #2a2927;
+  --line: #3a3936;
+  --edge: #8a857c;
+  --fg: #ece9e3;
+  --muted: #a39e94;
+  --on-accent: #1f1e1d;
+  /* end */
+  color-scheme: dark;
 }
 
 @media (prefers-color-scheme: light) {
-  :root {
-    --color-bg: #faf9f5;
-    --color-surface: #ffffff;
-    --color-line: #e5e2da;
-    --color-fg: #1f1e1d;
-    --color-muted: #6b675f;
+  :root:not([data-theme='dark']) {
+    /* theme:light */
+    --clay: #b4532f;
+    --ok: #1f7a34;
+    --warn: #8a5a00;
+    --bad: #c0392b;
+    --bg: #faf9f5;
+    --surface: #ffffff;
+    --line: #e5e2da;
+    --edge: #7c776e;
+    --fg: #1f1e1d;
+    --muted: #6b675f;
+    --on-accent: #ffffff;
+    /* end */
+    color-scheme: light;
   }
 }
 
-body {
-  @apply bg-bg text-fg antialiased;
+/* The desktop card follows its host's theme, not the media query. */
+:root[data-theme='light'] {
+  --clay: #b4532f;
+  --ok: #1f7a34;
+  --warn: #8a5a00;
+  --bad: #c0392b;
+  --bg: #faf9f5;
+  --surface: #ffffff;
+  --line: #e5e2da;
+  --edge: #7c776e;
+  --fg: #1f1e1d;
+  --muted: #6b675f;
+  --on-accent: #ffffff;
+  color-scheme: light;
+}
+
+/* shadcn-svelte's variables, mapped onto the palette (the one place they are set). */
+:root {
+  --background: var(--bg);
+  --foreground: var(--fg);
+  --card: var(--surface);
+  --card-foreground: var(--fg);
+  --popover: var(--surface);
+  --popover-foreground: var(--fg);
+  --primary: var(--fg);
+  --primary-foreground: var(--bg);
+  --secondary: var(--line);
+  --secondary-foreground: var(--fg);
+  --muted-foreground: var(--muted);
+  --accent: var(--line);
+  --accent-foreground: var(--fg);
+  --destructive: var(--bad);
+  --border: var(--line);
+  --input: var(--edge);
+  --ring: var(--clay);
+  --chart-1: var(--clay);
+  --chart-2: var(--muted);
+  --chart-3: var(--ok);
+  --chart-4: var(--warn);
+  --chart-5: var(--bad);
+  --radius: 0.5rem;
+}
+
+@theme inline {
+  --color-clay: var(--clay);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-bad: var(--bad);
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-line: var(--line);
+  --color-edge: var(--edge);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-on-accent: var(--on-accent);
+  --font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
+  --font-sans: 'Inter Variable', system-ui, sans-serif;
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans;
+  }
+  body {
+    @apply bg-bg text-fg antialiased;
+  }
+}
+
+/* Claimed work: a clay hatch, so the segment's stripes keep clay's contrast. */
+.hatch {
+  background-image: repeating-linear-gradient(135deg, var(--clay) 0 3px, transparent 3px 6px);
+}
+
+/*
+ * Motion (WCAG 2.2.2): everything that moves stops within 5 s; under reduced motion,
+ * a single fade at most.
+ */
+@keyframes pulse-ring {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+  50% {
+    box-shadow: 0 0 0 4px var(--bad);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0.3;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.pulse-3 {
+  animation: pulse-ring 1.2s ease-in-out 3;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse-3 {
+    animation: fade-in 0.4s ease-out 1;
+  }
 }
