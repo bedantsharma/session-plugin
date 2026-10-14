@@ -133,19 +133,27 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
         }
         "verification_stale" => {
             let d: VerificationStale = payload(event)?;
-            tx.execute(
+            let dropped = tx.execute(
                 "UPDATE verifications SET level = ?2, state = 'stale', stale_checked_sha = ?3
                  WHERE verif_id = ?1 AND state != 'failed'",
                 params![d.verif_id, d.to_level.max(0), d.head_sha],
             )?;
-            refresh_status(tx, repo, &d.task_id, false)?;
+            // A drop of a row that failed meanwhile changes nothing (the task stays failed).
+            if dropped > 0 {
+                refresh_status(tx, repo, &d.task_id, false)?;
+            }
         }
         "verify_nudged" => {
             let d: VerifyNudged = payload(event)?;
+            // Nudges count while the level stays put; a level reached since starts the
+            // count again there (that nudge wasn't ignored).
             tx.execute(
                 "INSERT INTO verify_nudges (repo_id, task_id, nudges, level_at_first)
                  VALUES (?1, ?2, 1, ?3)
-                 ON CONFLICT(repo_id, task_id) DO UPDATE SET nudges = nudges + 1",
+                 ON CONFLICT(repo_id, task_id) DO UPDATE SET
+                     nudges = CASE WHEN level_at_first = excluded.level_at_first
+                                   THEN nudges + 1 ELSE 1 END,
+                     level_at_first = excluded.level_at_first",
                 params![repo, d.task_id, d.level],
             )?;
         }

@@ -197,6 +197,50 @@ fn stale_drops_one_level_and_the_status_follows() {
 }
 
 #[test]
+fn a_late_stale_drop_never_undoes_a_failure() {
+    // A SessionStart scan read v1 as current, then the re-run failed before its drop
+    // was written: the drop changes nothing and the task stays failed.
+    let mut s = store();
+    script(
+        &mut s,
+        &[
+            (
+                "r",
+                "s1",
+                5,
+                "claimed_done",
+                json!({"task_id": "1.2", "evidence": "x", "files": ["a.rs"]}),
+            ),
+            (
+                "r",
+                "s1",
+                6,
+                "verified",
+                verified("v1", "1.2", 2, "a", &["a.rs"]),
+            ),
+            (
+                "r",
+                "s1",
+                7,
+                "verification_failed",
+                json!({"task_id": "1.2", "level": 2, "evidence": "boom", "by": "rerun"}),
+            ),
+            (
+                "r",
+                "s2",
+                8,
+                "verification_stale",
+                json!({"verif_id": "v1", "task_id": "1.2", "from_level": 2, "to_level": 1,
+                       "head_sha": "b", "changed": ["a.rs"]}),
+            ),
+        ],
+    );
+    assert_eq!(status(&s, "r", "1.2"), NodeStatus::Failed);
+    let v = &verifications(s.conn(), "r", "1.2").unwrap()[0];
+    assert_eq!((v.level, v.state), (2, VerifState::Failed));
+}
+
+#[test]
 fn dropped_nodes_are_never_touched() {
     let mut s = store();
     script(
@@ -435,7 +479,8 @@ fn nudges_count_and_clear_on_l2_or_failure() {
             ),
         ],
     );
-    assert_eq!(nudges(&s, "1.1"), Some((2, 0, 1)));
+    // The level moved between the nudges: the count starts again at the new level.
+    assert_eq!(nudges(&s, "1.1"), Some((1, 1, 1)));
     // Not a wait: the session's state is unchanged.
     let session = crate::session::get(s.conn(), "s1").unwrap().unwrap();
     assert_eq!(session.state, crate::session::SessionState::Idle);
@@ -443,7 +488,7 @@ fn nudges_count_and_clear_on_l2_or_failure() {
         &mut s,
         &[("r", "s1", 8, "verified", verified("v1", "1.1", 1, "a", &[]))],
     );
-    assert_eq!(nudges(&s, "1.1"), Some((2, 0, 1)), "L1 doesn't answer");
+    assert_eq!(nudges(&s, "1.1"), Some((1, 1, 1)), "L1 doesn't answer");
     script(
         &mut s,
         &[("r", "s1", 9, "verified", verified("v2", "1.1", 2, "a", &[]))],
@@ -469,6 +514,33 @@ fn nudges_count_and_clear_on_l2_or_failure() {
         ],
     );
     assert_eq!(nudges(&s, "1.2"), None);
+}
+
+#[test]
+fn ignored_nudges_escalate_once_the_level_stops_moving() {
+    let mut s = store();
+    let nudge = |s: &mut Store, secs: i64, level: i64| -> Vec<String> {
+        let drafts = nudge::nudge_drafts(s.conn(), "r", "s1", "1.1", level).unwrap();
+        let kinds = drafts.iter().map(|d| d.kind.clone()).collect();
+        s.write(|tx| {
+            for d in drafts {
+                append_in_at(tx, d, t0() + SignedDuration::from_secs(secs))?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        kinds
+    };
+    assert_eq!(nudge(&mut s, 5, 0), vec!["verify_nudged"]);
+    // It reached L1 after the first nudge: that one wasn't ignored.
+    assert_eq!(nudge(&mut s, 6, 1), vec!["verify_nudged"]);
+    // Two nudges at L1 without a move: the owner is asked.
+    assert_eq!(nudge(&mut s, 7, 1), vec!["verify_nudged", "needs_owner"]);
+    assert_eq!(nudge(&mut s, 8, 1), vec!["verify_nudged"], "asked once");
+    assert_eq!(
+        nudge::overdue(s.conn(), "r").unwrap(),
+        vec![("1.1".to_string(), "T1.1".to_string())]
+    );
 }
 
 mod rerun_tests {
