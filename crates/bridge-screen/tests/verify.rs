@@ -71,6 +71,15 @@ fn commit(env: &Env, msg: &str) {
 /// A repo with the plan, session s1 started and holding 1.1, and the MCP server.
 fn setup() -> (Env, Mcp) {
     let env = Env::new();
+    // bridge-screen's own commits (squash) take the identity from the repo's config, and
+    // CI machines have no global one.
+    for (k, v) in [
+        ("user.name", "Test"),
+        ("user.email", "t@example.com"),
+        ("commit.gpgsign", "false"),
+    ] {
+        git(env.repo.path(), &["config", k, v]);
+    }
     assert!(env.run(&["plan", "edit"], SEED).status.success());
     env.hook("session-start", "s1");
     let mut mcp = Mcp::start(&env, "/nonexistent");
