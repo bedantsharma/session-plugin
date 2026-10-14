@@ -203,6 +203,11 @@ fn squash_cmd(dir: &Path, onto: Option<String>, dry_run: bool) -> Result<()> {
     let mut store = open_store(&home)?;
     store.register_repo(&repo)?;
     let opts = squash::Options { onto, dry_run };
+    if !dry_run {
+        // Changes inside the range can't be told apart once it is one commit: drop what
+        // they made stale first (a failure here never stops the squash).
+        let _ = verify::scan_stale(&mut store, &repo.id, OWNER_SESSION, &wt);
+    }
     match squash::squash(&wt, &opts, store.conn(), &repo.id)? {
         squash::Outcome::Refused(r) => anyhow::bail!("not squashing: {r} (history unchanged)"),
         squash::Outcome::DryRun(plan) => {

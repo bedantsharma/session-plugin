@@ -350,6 +350,9 @@ pub fn before_pr(store: &mut Store, input: &HookInput) -> Result<Option<String>>
             "bridge-screen: WIP commits weren't squashed ({reason}); the PR will show them. Run bridge-screen squash later if you want them collapsed."
         )))
     };
+    // Changes inside the range can't be told apart once it is one commit: drop what they
+    // made stale first (a failure here never stops the squash).
+    let _ = verify::scan_stale(store, &s.repo_id, &s.session_id, &wt);
     match squash::squash(&wt, &opts, store.conn(), &s.repo_id) {
         Ok(Outcome::Refused(Refusal::NoWip) | Outcome::DryRun(_)) => Ok(None),
         Ok(Outcome::Refused(r)) => failed(store, r.to_string()),

@@ -749,6 +749,61 @@ fn squash_keeps_verifications() {
     assert_eq!(env.log(), "");
 }
 
+/// Verified at the first WIP commit, changed again by the second, then squashed by
+/// `squash` (CLI) or before `gh pr create` (hook): the change still drops it.
+fn change_inside_the_squashed_range(squash: impl FnOnce(&Env)) {
+    let (env, mut mcp) = setup();
+    git(env.repo.path(), &["checkout", "-q", "-b", "feat"]);
+    write(&env, "src/login.rs", "pub fn validate_login() {}\n");
+    edited(&env, "s1", "src/login.rs");
+    commit(&env, "wip(bridge): 1.1 Login form");
+    let (err, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "claim_done",
+        &json!({"evidence": "tests pass", "files": ["src/login.rs"]}),
+    );
+    assert!(!err, "{text}");
+    let (err, text) = verify_call(&env, &mut mcp, &l2());
+    assert!(!err, "{text}");
+    write(
+        &env,
+        "src/login.rs",
+        "pub fn validate_login() { /* v2 */ }\n",
+    );
+    commit(&env, "wip(bridge): 1.1 Login form, more");
+    squash(&env);
+    assert_eq!(of_kind(&env, "squashed").len(), 1);
+    start(&env, "s2");
+    assert_eq!(
+        status(&env, "1.1"),
+        NodeStatus::L1,
+        "{:?}",
+        rows(&env, "1.1")
+    );
+    assert_ne!(stale_events(&env), Vec::<Value>::new());
+    assert_eq!(env.log(), "");
+}
+
+#[test]
+fn a_change_inside_the_squashed_range_still_drops_the_verification() {
+    change_inside_the_squashed_range(|env| {
+        let out = env.run(&["squash", "--onto", "main"], "");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    });
+    change_inside_the_squashed_range(|env| {
+        hook_with(env, "pre-tool-use", "s1", |p| {
+            p["tool_name"] = json!("Bash");
+            p["tool_input"] = json!({"command": "gh pr create --fill --base main"});
+        });
+    });
+}
+
 #[test]
 fn an_l1_that_drops_to_nothing_is_rechecked_at_head() {
     let (env, _mcp) = at_l1();
