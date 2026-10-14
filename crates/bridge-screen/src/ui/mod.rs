@@ -48,7 +48,8 @@ pub fn read_lock(home: &Home) -> Option<Lock> {
     serde_json::from_str(&text).ok()
 }
 
-/// Does a bridge-screen dashboard answer on the lock's port with the lock's token?
+/// Does the lock's own dashboard answer on the lock's port, accepting the lock's token
+/// and naming the lock's pid?
 pub fn answers(lock: &Lock) -> bool {
     let addr = SocketAddr::from(([127, 0, 0, 1], lock.port));
     let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else {
@@ -64,7 +65,15 @@ pub fn answers(lock: &Lock) -> bool {
     }
     let mut response = String::new();
     let _ = stream.take(16 * 1024).read_to_string(&mut response);
-    response.starts_with("HTTP/1.1 200") && response.contains("\"ok\":true")
+    if !response.starts_with("HTTP/1.1 200") {
+        return false;
+    }
+    // Its own server names the lock's pid: a process that reused the port and answers
+    // anything with 200 isn't obeyed.
+    let body = response.split_once("\r\n\r\n").map_or("", |(_, b)| b);
+    serde_json::from_str::<serde_json::Value>(body).is_ok_and(|v| {
+        v["ok"] == serde_json::Value::Bool(true) && v["pid"].as_u64() == Some(u64::from(lock.pid))
+    })
 }
 
 /// The running dashboard, if there is one.
@@ -95,6 +104,12 @@ fn write_lock(path: &Path, lock: &Lock) -> Result<()> {
     let mut file = opts
         .open(&tmp)
         .with_context(|| format!("writing {}", tmp.display()))?;
+    // `mode` applies only to a new file; a leftover temp file keeps its own bits.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
     file.write_all(serde_json::to_string(lock)?.as_bytes())?;
     file.sync_all()?;
     drop(file);
@@ -210,6 +225,70 @@ mod tests {
             dist::choose(&built, "index.html", &fallback).unwrap(),
             built
         );
+    }
+
+    /// Serve one canned HTTP response on a free port; returns the port.
+    fn foreign_server(response: &'static str) -> u16 {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(1) {
+                let mut stream = stream.unwrap();
+                let mut buf = [0_u8; 4096];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        port
+    }
+
+    #[test]
+    fn a_lock_is_obeyed_only_when_its_own_server_answers() {
+        let lock = |port| super::Lock {
+            pid: 4_000_000,
+            port,
+            token: "t".into(),
+        };
+        // Port closed: stale.
+        let closed = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = closed.local_addr().unwrap().port();
+        drop(closed);
+        assert!(!super::answers(&lock(port)));
+        // The port reused by something else that answers anything with 200 `ok`: stale.
+        let port = foreign_server(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}",
+        );
+        assert!(!super::answers(&lock(port)));
+        // Something that refuses the token: stale.
+        let port = foreign_server(
+            "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        assert!(!super::answers(&lock(port)));
+        // Its own server (the lock's pid answers with the lock's token): obeyed.
+        let port = foreign_server(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 46\r\nConnection: close\r\n\r\n{\"ok\":true,\"version\":\"0.1.0\",\"pid\":4000000}",
+        );
+        assert!(super::answers(&lock(port)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_lock_is_owner_only_even_over_a_leftover_temp_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ui.lock");
+        let tmp = path.with_extension(format!("lock.{}.tmp", std::process::id()));
+        std::fs::write(&tmp, "old").unwrap();
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let lock = super::Lock {
+            pid: 1,
+            port: 2,
+            token: "t".into(),
+        };
+        super::write_lock(&path, &lock).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

@@ -181,7 +181,12 @@ fn error_response(e: &Error) -> Response {
 }
 
 async fn ping() -> Response {
-    axum::Json(json!({ "ok": true, "version": bridge_screen_core::VERSION })).into_response()
+    axum::Json(json!({
+        "ok": true,
+        "version": bridge_screen_core::VERSION,
+        "pid": std::process::id(),
+    }))
+    .into_response()
 }
 
 async fn version(State(st): State<AppState>) -> Response {
