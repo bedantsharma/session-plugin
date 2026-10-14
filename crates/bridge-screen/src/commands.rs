@@ -7,15 +7,16 @@ use bridge_screen_core::config::Config;
 use bridge_screen_core::handoff::LeftoverAction;
 use bridge_screen_core::navigator::{self, Channel};
 use bridge_screen_core::paths::Home;
-use bridge_screen_core::plan::{EditContext, PlanOp, load_tree, plan_edit, render_text};
+use bridge_screen_core::plan::{EditContext, PlanOp, load_tree, plan_edit, render_annotated};
 use bridge_screen_core::recovery::{self, Caller};
 use bridge_screen_core::repo;
 use bridge_screen_core::session::{self, Session};
 use bridge_screen_core::squash;
 use bridge_screen_core::store::{Actor, EventDraft, OWNER_SESSION, Store, append_in};
 use bridge_screen_core::tangent::{self, Label, LabelRequest, LabelSource, NavState, OwnerAction};
+use bridge_screen_core::verify;
 
-use crate::cli::{Cli, Command, ConfigCommand, DriftAnswer, LabelArg, PlanCommand};
+use crate::cli::{Cli, Command, ConfigCommand, DriftAnswer, LabelArg, PlanCommand, SettingArg};
 
 pub fn run(cli: Cli) -> Result<()> {
     match cli.command {
@@ -46,12 +47,27 @@ pub fn run(cli: Cli) -> Result<()> {
         } => label_cmd(&session, unit_no, label),
         Command::Resolve { args, dir } => resolve(&dir, &args),
         Command::Squash { dir, onto, dry_run } => squash_cmd(&dir, onto, dry_run),
+        Command::Verify {
+            task,
+            broken,
+            level,
+            dir,
+        } => verify_cmd(&dir, &task, broken.as_deref(), level),
+        Command::Decisions { dir, task, all } => decisions_cmd(&dir, task.as_deref(), all),
         Command::Rebuild => rebuild(),
         Command::Config { action: None, dir } => config(&dir),
         Command::Config {
             action: Some(ConfigCommand::ResetDrift),
             dir,
         } => reset_drift(&dir),
+        Command::Config {
+            action: Some(ConfigCommand::Set { key, value }),
+            dir,
+        } => set_setting(&dir, key, Some(&value)),
+        Command::Config {
+            action: Some(ConfigCommand::Unset { key }),
+            dir,
+        } => set_setting(&dir, key, None),
         Command::Mcp => crate::mcp::run(),
         Command::Status => {
             let home = Home::resolve()?;
@@ -113,7 +129,8 @@ fn plan_show(dir: &Path, all: bool) -> Result<()> {
             repo.name
         );
     } else {
-        print!("{}", render_text(&nodes));
+        let marks = verify::plan_marks(store.conn(), &repo.id)?;
+        print!("{}", render_annotated(&nodes, &marks));
     }
     Ok(())
 }
@@ -186,6 +203,11 @@ fn squash_cmd(dir: &Path, onto: Option<String>, dry_run: bool) -> Result<()> {
     let mut store = open_store(&home)?;
     store.register_repo(&repo)?;
     let opts = squash::Options { onto, dry_run };
+    if !dry_run {
+        // Changes inside the range can't be told apart once it is one commit: drop what
+        // they made stale first (a failure here never stops the squash).
+        let _ = verify::scan_stale(&mut store, &repo.id, OWNER_SESSION, &wt);
+    }
     match squash::squash(&wt, &opts, store.conn(), &repo.id)? {
         squash::Outcome::Refused(r) => anyhow::bail!("not squashing: {r} (history unchanged)"),
         squash::Outcome::DryRun(plan) => {
@@ -257,6 +279,13 @@ fn config(dir: &Path) -> Result<()> {
         if let Some(line) = tuned_line(&store, &repo.id, &repo.name, &cfg)? {
             println!("{line}");
         }
+        let set = verify::settings(store.conn(), &repo.id)?;
+        if let Some(cmd) = set.test_command {
+            println!("# test command for {}: {cmd}", repo.name);
+        }
+        if let Some(secs) = set.test_timeout_s {
+            println!("# test timeout for {}: {secs} s", repo.name);
+        }
     }
     Ok(())
 }
@@ -276,6 +305,69 @@ pub fn tuned_line(
         "# tuned for {name}: drift_lower = {}, drift_upper = {}, tolerance_pct = {}",
         th.lower, th.upper, th.tolerance_pct
     )))
+}
+
+fn set_setting(dir: &Path, key: SettingArg, value: Option<&str>) -> Result<()> {
+    let repo = repo::identify(dir)?;
+    let home = Home::resolve()?;
+    let mut store = open_store(&home)?;
+    store.register_repo(&repo)?;
+    let new = match (key, value) {
+        (_, None) => None,
+        (SettingArg::TestCommand, Some(cmd)) => {
+            let cmd = cmd.trim();
+            anyhow::ensure!(!cmd.is_empty(), "the test command is empty");
+            Some(serde_json::Value::from(cmd))
+        }
+        (SettingArg::TestTimeout, Some(secs)) => {
+            let secs: u64 = secs
+                .trim()
+                .parse()
+                .ok()
+                .filter(|s| (1..=86_400).contains(s))
+                .with_context(|| format!("test-timeout takes seconds (1–86400), not {secs}"))?;
+            Some(serde_json::Value::from(secs))
+        }
+    };
+    let what = key.key().replace('_', " ");
+    let shown = new.as_ref().map(|v| match v {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    });
+    if verify::change_setting(&mut store, &repo.id, key.key(), new)? {
+        match shown {
+            Some(v) => println!("Set {what} for {}: {v}", repo.name),
+            None => println!("Unset {what} for {}.", repo.name),
+        }
+    } else {
+        println!("The {what} for {} is unchanged.", repo.name);
+    }
+    Ok(())
+}
+
+fn decisions_cmd(dir: &Path, task: Option<&str>, all: bool) -> Result<()> {
+    let repo = repo::identify(dir)?;
+    let home = Home::resolve()?;
+    let store = open_store(&home)?;
+    let list = bridge_screen_core::decision::list(store.conn(), &repo.id, task, all)?;
+    if list.is_empty() {
+        println!("No decisions logged for {} yet.", repo.name);
+    }
+    for d in &list {
+        println!("{}", bridge_screen_core::decision::line(d));
+    }
+    Ok(())
+}
+
+fn verify_cmd(dir: &Path, task: &str, broken: Option<&str>, level: i64) -> Result<()> {
+    let repo = repo::identify(dir)?;
+    let wt = bridge_screen_core::git::toplevel(dir)?;
+    let home = Home::resolve()?;
+    let mut store = open_store(&home)?;
+    store.register_repo(&repo)?;
+    let line = verify::owner_verdict(&mut store, &repo.id, task, &wt, level, broken)?;
+    println!("{line}");
+    Ok(())
 }
 
 fn reset_drift(dir: &Path) -> Result<()> {

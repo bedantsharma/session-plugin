@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use bridge_screen_core::checkpoint::{self, StopGit};
 use bridge_screen_core::config::Config;
+use bridge_screen_core::decision;
 use bridge_screen_core::error::Result;
 use bridge_screen_core::git::{self, HeadCommit};
 use bridge_screen_core::handoff::{self, EndKind, ReadbackState};
@@ -16,6 +17,7 @@ use bridge_screen_core::session::{NeedsOwner, NeedsOwnerKind};
 use bridge_screen_core::squash::{self, Outcome, Refusal};
 use bridge_screen_core::store::Store;
 use bridge_screen_core::store::{Actor, EventDraft, append_in};
+use bridge_screen_core::verify::{self, L1Outcome};
 use rusqlite::Transaction;
 
 use super::{HookEvent, HookInput};
@@ -26,6 +28,9 @@ pub struct CheckpointGit {
     pub head: Option<HeadCommit>,
     /// Read at Stop only.
     pub dirty: Option<bool>,
+    /// L1 checks of the session's claimed tasks that have no L1 yet (spec §8.5), for
+    /// when a checkpoint gets recorded.
+    pub l1: Vec<(String, L1Outcome)>,
 }
 
 /// The session's worktree: recorded at start, else its working directory.
@@ -43,28 +48,40 @@ pub fn bash_command(input: &HookInput) -> Option<&str> {
 
 /// Read git if this hook needs it: after a Bash `git commit`, or at Stop with a
 /// checkpoint pending. A git failure (e.g. the worktree is gone) means "nothing known".
+/// Either way, the session's claimed tasks without L1 are checked too: a checkpoint
+/// commit is when their files become committed.
 pub fn gather(
+    conn: &rusqlite::Connection,
     event: HookEvent,
     known: Option<&Session>,
     input: &HookInput,
 ) -> Option<CheckpointGit> {
     let session = known?;
     let wt = worktree_of(session);
-    match event {
+    let mut found = match event {
         HookEvent::PostToolUse
             if bash_command(input).is_some_and(checkpoint::is_commit_command) =>
         {
-            Some(CheckpointGit {
+            CheckpointGit {
                 head: head(&wt),
-                dirty: None,
-            })
+                ..CheckpointGit::default()
+            }
         }
-        HookEvent::Stop if session.checkpoint_pending.is_some() => Some(CheckpointGit {
+        HookEvent::Stop if session.checkpoint_pending.is_some() => CheckpointGit {
             head: head(&wt),
             dirty: git::is_dirty(&wt).ok(),
-        }),
-        _ => None,
+            l1: Vec::new(),
+        },
+        _ => return None,
+    };
+    // Like the git reads, a failure here only means no L1 checks: the hook's own events
+    // must still be recorded.
+    for task in verify::unverified_claims(conn, &session.session_id).unwrap_or_default() {
+        if let Ok(outcome) = verify::check_l1(conn, &wt, &session.repo_id, &task) {
+            found.l1.push((task, outcome));
+        }
     }
+    Some(found)
 }
 
 fn head(wt: &Path) -> Option<HeadCommit> {
@@ -72,7 +89,9 @@ fn head(wt: &Path) -> Option<HeadCommit> {
 }
 
 /// Inside the hook's transaction, after its own events: record a new checkpoint commit,
-/// then at Stop ask for the checkpoint (or record the miss). Returns the Stop note.
+/// then at Stop ask for the checkpoint (or record the miss). When a checkpoint was
+/// recorded, claimed tasks whose files now exist at HEAD reach L1; after a commit, files
+/// that don't exist are named in the context. Returns the note for the agent.
 pub fn apply(
     tx: &Transaction,
     input: &HookInput,
@@ -83,27 +102,66 @@ pub fn apply(
     let Some(s) = session::get(tx, &input.session_id)? else {
         return Ok(None);
     };
+    let mut recorded = false;
     if let Some(head) = &found.head
         && let Some(draft) = checkpoint::detect(tx, &s, head)?
     {
         append_in(tx, draft.actor(actor.clone()))?;
+        recorded = true;
     }
-    let Some(dirty) = found.dirty else {
-        return Ok(None);
-    };
-    let unit_no = match stopped_unit {
-        Some(n) => n,
-        None => session::last_unit(tx, &s.session_id)?.map_or(0, |u| u.unit_no),
-    };
-    let git = StopGit {
-        dirty,
-        head: found.head.as_ref().map(|h| h.sha.clone()),
-    };
-    let step = checkpoint::stop_step(tx, &s.session_id, unit_no, input.stop_hook_active, &git)?;
-    for draft in step.events {
-        append_in(tx, draft.actor(actor.clone()))?;
+    let mut note = None;
+    if let Some(dirty) = found.dirty {
+        let unit_no = match stopped_unit {
+            Some(n) => n,
+            None => session::last_unit(tx, &s.session_id)?.map_or(0, |u| u.unit_no),
+        };
+        let git = StopGit {
+            dirty,
+            head: found.head.as_ref().map(|h| h.sha.clone()),
+        };
+        let step = checkpoint::stop_step(tx, &s.session_id, unit_no, input.stop_hook_active, &git)?;
+        for draft in step.events {
+            recorded |= draft.kind == "checkpoint";
+            append_in(tx, draft.actor(actor.clone()))?;
+        }
+        note = step.note;
     }
-    Ok(step.note)
+    if recorded {
+        let missing = l1_at_checkpoint(tx, &s, &found.l1, actor)?;
+        // Only the commit's PostToolUse says what's missing: a Stop note would force a turn.
+        if found.dirty.is_none() {
+            note = note.or(missing);
+        }
+    }
+    Ok(note)
+}
+
+/// L1 for claimed tasks at a checkpoint: `verified {level 1, by auto}` for each pass, and
+/// the context line for files or symbols not found.
+fn l1_at_checkpoint(
+    tx: &Transaction,
+    s: &Session,
+    checks: &[(String, L1Outcome)],
+    actor: &Actor,
+) -> Result<Option<String>> {
+    let mut missing = Vec::new();
+    for (task, outcome) in checks {
+        if let Some(draft) = verify::l1_draft(&s.repo_id, &s.session_id, task, outcome)? {
+            append_in(tx, draft.actor(actor.clone()))?;
+        } else if let L1Outcome::Missing {
+            sha,
+            paths,
+            symbols,
+        } = outcome
+        {
+            let short: String = sha.chars().take(7).collect();
+            missing.push(format!(
+                "bridge-screen: L1 check — {} not found at {short}. Fix the evidence with claim_done.",
+                verify::missing_text(paths, symbols)
+            ));
+        }
+    }
+    Ok((!missing.is_empty()).then(|| missing.join("\n")))
 }
 
 /// At SessionEnd: the end kind and uncommitted files, from `git status` in the session's
@@ -129,6 +187,29 @@ pub fn recover(store: &mut Store, config: &Config, repo_id: &str, session_id: &s
     Ok(())
 }
 
+/// Any other note goes out with the decision ask when the session's capture flag is set
+/// (after a compaction or a claim): one extra line, once per flag (spec §8.6).
+pub fn with_decision_ask(store: &mut Store, session_id: &str, note: String) -> Result<String> {
+    let Some(s) = session::get(store.conn(), session_id)? else {
+        return Ok(note);
+    };
+    if s.decision_capture.is_none() {
+        return Ok(note);
+    }
+    store.append(decision::asked_draft(&s.repo_id, &s.session_id, "note"))?;
+    Ok(format!("{note}\nbridge-screen: {}", decision::DECISION_ASK))
+}
+
+/// At SessionStart (after recovery, before the briefing): drop verifications whose files
+/// changed since their commit, in the starting session's worktree.
+pub fn staleness(store: &mut Store, repo_id: &str, session_id: &str) -> Result<()> {
+    let Some(me) = session::get(store.conn(), session_id)? else {
+        return Ok(());
+    };
+    verify::scan_stale(store, repo_id, session_id, &worktree_of(&me))?;
+    Ok(())
+}
+
 /// At SessionStart: the briefing (recorded as `briefed`), or the short re-briefing after
 /// a compaction.
 pub fn start_context(store: &mut Store, input: &HookInput) -> Result<Option<String>> {
@@ -136,19 +217,39 @@ pub fn start_context(store: &mut Store, input: &HookInput) -> Result<Option<Stri
         return Ok(None);
     };
     if input.source.as_deref() == Some("compact") {
-        return Ok(Some(handoff::compact_rebriefing(store.conn(), &me)?));
+        let text = handoff::compact_rebriefing(store.conn(), &me)?;
+        if me.decision_capture.is_some() {
+            store.append(decision::asked_draft(
+                &me.repo_id,
+                &me.session_id,
+                "compact",
+            ))?;
+        }
+        return Ok(Some(text));
     }
     let b = handoff::briefing(store.conn(), &me)?;
     let data = handoff::Briefed {
         status: b.status,
         readback_required: b.readback_required,
     };
-    store.append(EventDraft::new(
-        &me.repo_id,
-        &me.session_id,
-        "briefed",
-        serde_json::to_value(data)?,
-    ))?;
+    store.write(|tx| {
+        append_in(
+            tx,
+            EventDraft::new(
+                &me.repo_id,
+                &me.session_id,
+                "briefed",
+                serde_json::to_value(data)?,
+            ),
+        )?;
+        // Each unverified task the briefing shows is a nudge (spec §8.5).
+        for (task, level) in &b.nudges {
+            for draft in verify::nudge_drafts(tx, &me.repo_id, &me.session_id, task, *level)? {
+                append_in(tx, draft)?;
+            }
+        }
+        Ok(())
+    })?;
     Ok(Some(b.text))
 }
 
@@ -240,6 +341,7 @@ pub fn before_pr(store: &mut Store, input: &HookInput) -> Result<Option<String>>
             )?;
             let owner = NeedsOwner {
                 kind: NeedsOwnerKind::Squash,
+                task_id: None,
             };
             append_in(tx, draft("needs_owner", serde_json::to_value(owner)?))?;
             Ok(())
@@ -248,6 +350,9 @@ pub fn before_pr(store: &mut Store, input: &HookInput) -> Result<Option<String>>
             "bridge-screen: WIP commits weren't squashed ({reason}); the PR will show them. Run bridge-screen squash later if you want them collapsed."
         )))
     };
+    // Changes inside the range can't be told apart once it is one commit: drop what they
+    // made stale first (a failure here never stops the squash).
+    let _ = verify::scan_stale(store, &s.repo_id, &s.session_id, &wt);
     match squash::squash(&wt, &opts, store.conn(), &s.repo_id) {
         Ok(Outcome::Refused(Refusal::NoWip) | Outcome::DryRun(_)) => Ok(None),
         Ok(Outcome::Refused(r)) => failed(store, r.to_string()),

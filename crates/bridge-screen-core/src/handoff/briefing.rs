@@ -15,6 +15,7 @@ use crate::error::Result;
 use crate::plan::{NodeKind, NodeStatus, PlanNode, get_node, load_tree};
 use crate::session::{self, Session};
 use crate::tangent::{self, ItemKind};
+use crate::verify;
 
 /// The longest briefing, in lines.
 pub const MAX_LINES: usize = 40;
@@ -23,6 +24,7 @@ const VERIFY_SHOWN: usize = 3;
 const LEFTOVERS_SHOWN: usize = 5;
 const IF_THEN_SHOWN: usize = 5;
 const DEPS_SHOWN: usize = 5;
+const DECISIONS_SHOWN: usize = 5;
 
 /// Asking for the read-back at the end of a briefing.
 pub const READBACK_ASK: &str = "Read back before your first edit: call handoff_readback with the goal, what's in flight, and your next action.";
@@ -36,6 +38,9 @@ pub struct Briefing {
     pub status: BriefingStatus,
     pub text: String,
     pub readback_required: bool,
+    /// The unverified tasks the briefing shows, with their level: each counts as a
+    /// verification nudge (spec §8.5).
+    pub nudges: Vec<(String, i64)>,
 }
 
 /// First sentence of an intent.
@@ -83,6 +88,8 @@ struct Facts {
     cue: Option<String>,
     note: Option<super::HandoffNote>,
     unverified: Vec<String>,
+    /// The tasks behind `unverified`, with their level.
+    unverified_tasks: Vec<(String, i64)>,
     failed: Vec<String>,
     missed: Vec<Session>,
     leftovers: Vec<super::Leftover>,
@@ -169,16 +176,30 @@ fn gather(conn: &Connection, me: &Session) -> Result<Facts> {
     let tree = load_tree(conn, repo, false)?;
     let goal = tree.iter().find(|n| n.kind == NodeKind::Goal).cloned();
     let mut unverified = Vec::new();
+    let mut unverified_tasks = Vec::new();
     let mut failed = Vec::new();
     for n in &tree {
         if !matches!(n.kind, NodeKind::Task | NodeKind::Subtask) {
             continue;
         }
-        match n.status {
-            NodeStatus::Claimed => unverified.push(format!("{} {}", n.id, n.title)),
-            NodeStatus::Failed => failed.push(format!("{} {}", n.id, n.title)),
-            _ => {}
+        if n.status == NodeStatus::Failed {
+            failed.push(format!("{} {}", n.id, n.title));
+            continue;
         }
+        // Claimed or L1 from an earlier session (this one knows what it just claimed),
+        // and anything whose verification went stale (spec §8.5).
+        let stale = verify::stale_note(conn, repo, &n.id)?;
+        let older_claim = matches!(n.status, NodeStatus::Claimed | NodeStatus::L1)
+            && super::latest_claim(conn, repo, &n.id)?
+                .is_some_and(|c| c.session_id != me.session_id);
+        if stale.is_none() && !older_claim {
+            continue;
+        }
+        unverified.push(match stale {
+            Some(note) => format!("{} {} ({note})", n.id, n.title),
+            None => format!("{} {}", n.id, n.title),
+        });
+        unverified_tasks.push((n.id.clone(), verify::current_level(conn, repo, &n.id)?));
     }
     let missed = session::list_live(conn, Some(repo))?
         .into_iter()
@@ -235,6 +256,7 @@ fn gather(conn: &Connection, me: &Session) -> Result<Facts> {
         cue,
         note,
         unverified,
+        unverified_tasks,
         failed,
         missed,
         leftovers,
@@ -385,6 +407,7 @@ pub fn briefing(conn: &Connection, me: &Session) -> Result<Briefing> {
                 status,
                 text: lines.join("\n"),
                 readback_required: false,
+                nudges: Vec::new(),
             });
         }
         lines.push(match &me.active_task {
@@ -398,6 +421,7 @@ pub fn briefing(conn: &Connection, me: &Session) -> Result<Briefing> {
             status,
             text: lines.join("\n"),
             readback_required: false,
+            nudges: Vec::new(),
         });
     }
     if let Some(m) = &f.milestone {
@@ -445,15 +469,23 @@ pub fn briefing(conn: &Connection, me: &Session) -> Result<Briefing> {
     if readback_required {
         lines.push(READBACK_ASK.to_string());
     }
+    let nudges = f
+        .unverified_tasks
+        .iter()
+        .take(VERIFY_SHOWN)
+        .cloned()
+        .collect();
     Ok(Briefing {
         status,
         text: lines.join("\n"),
         readback_required,
+        nudges,
     })
 }
 
-/// After compaction (≤ 8 lines, no read-back): the active task, its cue or next action,
-/// and open detours.
+/// After compaction (no read-back): the active task, its cue or next action and open
+/// detours (≤ 8 lines), then this session's latest decisions (≤ 5) and, when the
+/// decision-capture flag is set, the ask.
 pub fn compact_rebriefing(conn: &Connection, me: &Session) -> Result<String> {
     let mut lines = vec!["bridge-screen: re-briefing after compaction.".to_string()];
     match &me.active_task {
@@ -486,6 +518,21 @@ pub fn compact_rebriefing(conn: &Connection, me: &Session) -> Result<String> {
         lines.push(format!("Open detours: {}", capped(&list, VERIFY_SHOWN)));
     }
     lines.truncate(8);
+    // This session's decisions survive the compaction (spec §8.4, §8.6).
+    let decisions = crate::decision::by_session(conn, &me.session_id)?;
+    let live: Vec<&crate::decision::Decision> = decisions
+        .iter()
+        .filter(|d| d.superseded_by.is_none())
+        .collect();
+    if !live.is_empty() {
+        lines.push("Decisions so far:".to_string());
+        for d in live.iter().rev().take(DECISIONS_SHOWN).rev() {
+            lines.push(format!("  {} {}", d.decision_id, d.what));
+        }
+    }
+    if me.decision_capture.is_some() {
+        lines.push(crate::decision::DECISION_ASK.to_string());
+    }
     Ok(lines.join("\n"))
 }
 

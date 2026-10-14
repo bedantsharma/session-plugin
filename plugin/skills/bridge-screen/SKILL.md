@@ -11,8 +11,8 @@ what happens; your part is to say **which task** you are on, **declare tangents*
 keep the plan true. It never blocks your work.
 
 Tools (MCP server `bridge-screen`): `claim_task`, `plan_edit`, `status`, `start_detour`,
-`close_detour`, `resume`, `promote_detour`, `label_unit`, `claim_done`, `handoff_readback`,
-`handoff_note`, `resolve_leftover`.
+`close_detour`, `resume`, `promote_detour`, `label_unit`, `claim_done`, `verify`,
+`log_decision`, `handoff_readback`, `handoff_note`, `resolve_leftover`.
 
 ## 0. Read the briefing; read it back
 
@@ -68,13 +68,19 @@ information for the owner, not blame. An **amber** note means you've been away f
 task longer than its tolerance: continue only if it still blocks the task. **Red** means
 the owner has been flagged; keep going only if essential, and follow any owner answer.
 
-## 5. Done, checkpoints and handoff notes
+## 5. Done, verified, checkpointed
 
-- Task done? `claim_done {"evidence": "cargo test: 41 passed"}` (your active task by
-  default). It is level L0 — say what you actually ran.
+- Task done? `claim_done {"evidence": "cargo test: 41 passed", "files": ["src/login.rs"],
+  "symbols": ["validate_login"]}` (your active task by default). That is L0; the files
+  you name are checked at HEAD for L1 once committed.
+- Climb the ladder honestly with `verify`. **L2**: your tests pass and the work is
+  committed — `{"level": 2, "evidence": "cargo test", "exit_code": 0, "summary": "41
+  passed"}`; report the real exit code (a failing one is refused; fix, commit, verify
+  again); bridge-screen may re-run the owner's test command. **L3**: say exactly what you
+  drove end to end and what you saw. **L4**: only with the owner's own words
+  (`owner_said`). A failed re-run sends the task back: fix it and claim it again.
 - At a boundary (claim_done, detour closed, task switched) commit a checkpoint before you
-  stop. If Stop asks, commit exactly like this (the repo's commit hooks run; fix and retry
-  if one fails):
+  stop. If Stop asks, commit exactly like this (fix and retry if a commit hook fails):
 
   ```sh
   git commit -m "wip(bridge): 1.2 Login form" -m "Bridge-Task: 1.2
@@ -82,9 +88,12 @@ the owner has been flagged; keep going only if essential, and follow any owner a
   Bridge-Session: <session id>"
   ```
 
-- Stopping with work in flight (mid-task, or a detour still open)? Leave
-  `handoff_note {"in_flight": "…", "if_then": ["if X, then Y"]}` for the next session.
-- WIP commits are squashed automatically before `gh pr create`; nothing to do.
+- Stopping with work in flight? Leave `handoff_note {"in_flight": "…", "if_then": ["if X,
+  then Y"]}`. WIP commits are squashed automatically before `gh pr create`.
+- **Decisions**: when a task is done, before compaction and before you stop, call
+  `log_decision {"what": "…", "why": "…", "alternatives": ["…"]}` for what the work
+  settled. Changing one? Supersede it (`"supersedes": "D4"`); don't contradict it.
+- "X is done on `branch` @sha": a task yours depends on is verified — merge or rebase.
 
 ## 6. Leftovers of dead sessions
 
@@ -97,9 +106,9 @@ only be waiting for its owner (for 24 h): leave them alone.
 
 ## 7. Check where things stand
 
-`status` shows your task, a pending checkpoint, the read-back state, open leftovers,
-detours, suspended items with their cues, units and active minutes, the goal and the next
-tasks. The owner can run `/bridge-screen` for all sessions.
+`status` shows your task with its ladder level and next step, unverified claims,
+decisions, a pending checkpoint, the read-back state, open leftovers, detours and
+suspended items, and the next tasks. The owner runs `/bridge-screen` for all sessions.
 
 ## Notes from bridge-screen
 

@@ -120,6 +120,10 @@ pub struct ClaimDone {
     pub task_id: String,
     pub session_id: String,
     pub evidence: String,
+    /// Paths (relative to the worktree root) that show the work exists (spec §8.5 L1).
+    pub files: Vec<String>,
+    /// Key functions or types the L1 check looks for in `files`.
+    pub symbols: Vec<String>,
     pub ts: String,
 }
 
@@ -243,20 +247,46 @@ pub fn latest_note(
 
 /// Every claimed-done record in a repo, oldest first.
 pub fn claims_done(conn: &Connection, repo_id: &str) -> Result<Vec<ClaimDone>> {
-    let mut stmt = conn.prepare(
-        "SELECT task_id, session_id, evidence, ts FROM claims_done WHERE repo_id = ?1
-         ORDER BY ts, rowid",
-    )?;
-    Ok(stmt
-        .query_map([repo_id], |r| {
-            Ok(ClaimDone {
-                task_id: r.get(0)?,
-                session_id: r.get(1)?,
-                evidence: r.get(2)?,
-                ts: r.get(3)?,
-            })
-        })?
-        .collect::<rusqlite::Result<_>>()?)
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {CLAIM_COLUMNS} FROM claims_done WHERE repo_id = ?1 ORDER BY rowid"
+    ))?;
+    let rows = stmt.query_map([repo_id], read_claim)?;
+    rows.map(|r| with_lists(r?)).collect()
+}
+
+/// The latest claimed-done record for a task, if any.
+pub fn latest_claim(conn: &Connection, repo_id: &str, task_id: &str) -> Result<Option<ClaimDone>> {
+    conn.prepare_cached(&format!(
+        "SELECT {CLAIM_COLUMNS} FROM claims_done WHERE repo_id = ?1 AND task_id = ?2
+         ORDER BY rowid DESC LIMIT 1"
+    ))?
+    .query_row(params![repo_id, task_id], read_claim)
+    .optional()?
+    .map(with_lists)
+    .transpose()
+}
+
+const CLAIM_COLUMNS: &str = "task_id, session_id, evidence, ts, files, symbols";
+
+fn read_claim(r: &Row) -> rusqlite::Result<(ClaimDone, String, String)> {
+    Ok((
+        ClaimDone {
+            task_id: r.get(0)?,
+            session_id: r.get(1)?,
+            evidence: r.get(2)?,
+            files: Vec::new(),
+            symbols: Vec::new(),
+            ts: r.get(3)?,
+        },
+        r.get(4)?,
+        r.get(5)?,
+    ))
+}
+
+fn with_lists((mut claim, files, symbols): (ClaimDone, String, String)) -> Result<ClaimDone> {
+    claim.files = serde_json::from_str(&files)?;
+    claim.symbols = serde_json::from_str(&symbols)?;
+    Ok(claim)
 }
 
 fn err(msg: impl Into<String>) -> crate::error::Error {

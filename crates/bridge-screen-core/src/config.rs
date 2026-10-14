@@ -25,6 +25,9 @@ pub struct Config {
     pub tolerance_min_minutes: u32,
     /// …or up to this percentage of the active task's estimate, if larger. Tuned per repo.
     pub tolerance_pct: u32,
+    /// Seconds the L2 re-run of the test command may take (spec §8.5); a repo's own
+    /// `test_timeout_s` (`bridge-screen config set test-timeout`) overrides it.
+    pub verify_timeout_s: u64,
 }
 
 impl Default for Config {
@@ -37,6 +40,7 @@ impl Default for Config {
             drift_upper: 0.7,
             tolerance_min_minutes: 15,
             tolerance_pct: 20,
+            verify_timeout_s: 120,
         }
     }
 }
@@ -87,6 +91,7 @@ mod tests {
                 drift_upper: 0.7,
                 tolerance_min_minutes: 15,
                 tolerance_pct: 20,
+                verify_timeout_s: 120,
             }
         );
     }
@@ -134,6 +139,7 @@ mod tests {
             drift_upper: 0.8,
             tolerance_min_minutes: 10,
             tolerance_pct: 30,
+            verify_timeout_s: 300,
         };
         let text = cfg.to_toml().unwrap();
         assert_eq!(toml::from_str::<Config>(&text).unwrap(), cfg);

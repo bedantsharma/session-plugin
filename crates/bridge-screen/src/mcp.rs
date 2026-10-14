@@ -10,10 +10,13 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+
+use crate::hook::handoff::worktree_of;
 use bridge_screen_core::binding;
 use bridge_screen_core::checkpoint::{self, ClaimDoneRequest};
 use bridge_screen_core::claim::{self, ClaimMode, ClaimRequest, ClaimTarget};
 use bridge_screen_core::config::Config;
+use bridge_screen_core::decision;
 use bridge_screen_core::handoff::{self, LeftoverAction};
 use bridge_screen_core::paths::Home;
 use bridge_screen_core::plan::{EditContext, NodeKind, NodeStatus, PlanOp, get_node, load_tree};
@@ -23,6 +26,7 @@ use bridge_screen_core::store::{Actor, Store};
 use bridge_screen_core::tangent::{
     self, CloseRequest, DetourOutcome, Label, LabelRequest, LabelSource, StartRequest,
 };
+use bridge_screen_core::verify::{self, L1Outcome};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
@@ -190,6 +194,68 @@ pub struct ClaimDoneInput {
     pub id: Option<String>,
     /// What shows it is done: the tests you ran and their result, the files changed.
     pub evidence: String,
+    /// The files (paths relative to the repo root) that show the work exists, at most 50.
+    /// bridge-screen checks them at HEAD for L1.
+    #[serde(default)]
+    pub files: Vec<String>,
+    /// Optionally the key functions or types in those files, at most 50.
+    #[serde(default)]
+    pub symbols: Vec<String>,
+}
+
+/// Climb the verification ladder for a task you claimed done.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VerifyInput {
+    /// The task; defaults to your active task.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// 2: the unit tests pass (committed; give exit_code and summary). 3: end-to-end — you
+    /// drove it (browser or CLI) and saw it work. 4: the owner said it works (owner_said).
+    pub level: i64,
+    /// What you ran or drove and what it showed.
+    pub evidence: String,
+    /// Level 2: the exit code of your test run. Report it as it was; a non-zero code is
+    /// refused.
+    #[serde(default)]
+    pub exit_code: Option<i64>,
+    /// Level 2: the test summary line, e.g. "42 passed, 0 failed".
+    #[serde(default)]
+    pub summary: Option<String>,
+    /// Level 4: the owner's own words, at most 200 characters.
+    #[serde(default)]
+    pub owner_said: Option<String>,
+}
+
+/// Record a decision.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LogDecisionInput {
+    /// What was decided, in one line (at most 200 characters).
+    pub what: String,
+    /// Why (at most 500 characters).
+    pub why: String,
+    /// The options considered and not taken (at most 5).
+    #[serde(default)]
+    pub alternatives: Vec<String>,
+    /// The id (e.g. "D4") of the decision this one replaces. Supersede rather than
+    /// contradict.
+    #[serde(default)]
+    pub supersedes: Option<String>,
+    /// The task it belongs to; defaults to your active task. null for a repo-wide decision.
+    #[serde(default, deserialize_with = "present")]
+    #[schemars(with = "Option<String>")]
+    pub task: Option<Nullable>,
+}
+
+/// A field that may be given as null, which differs from leaving it out.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(transparent)]
+pub struct Nullable(pub Option<String>);
+
+/// A field that was given (even as null) is `Some`; a missing one stays `None`.
+fn present<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Nullable>, D::Error> {
+    Ok(Some(Nullable::deserialize(d)?))
 }
 
 /// Resolve leftovers a dead session left in a worktree.
@@ -288,13 +354,36 @@ impl Bridge {
     }
 
     #[tool(
-        description = "Say a task is done when you finish it (verification level L0), with evidence: the tests you ran and their result. A checkpoint commit is then due before you stop."
+        description = "Say a task is done when you finish it (verification level L0), with evidence: the tests you ran and their result. List the files (and optionally the key functions/types) that show the work exists — bridge-screen checks them at HEAD for L1. A checkpoint commit is then due before you stop."
     )]
     async fn claim_done(
         &self,
         Parameters(args): Parameters<Args<ClaimDoneInput>>,
     ) -> CallToolResult {
         text(self.do_claim_done(&args))
+    }
+
+    #[tool(
+        description = "Climb the verification ladder for a task you claimed done, honestly: level 2 when its unit tests pass and the work is committed (give the exit code and summary; bridge-screen re-runs the owner's test command), level 3 when you drove it end to end (say what you drove), level 4 only with the owner's own words. Every level is tied to the current commit."
+    )]
+    async fn verify(&self, Parameters(args): Parameters<Args<VerifyInput>>) -> CallToolResult {
+        // The re-run can take minutes: keep the server responsive meanwhile.
+        let this = self.clone();
+        text(
+            tokio::task::spawn_blocking(move || this.do_verify(&args))
+                .await
+                .unwrap_or_else(|e| Err(format!("verify stopped: {e}"))),
+        )
+    }
+
+    #[tool(
+        description = "Record a decision: what was decided, why, and the alternatives. Log decisions when a task is done, before compaction and before you stop. To change one, supersede it (supersedes: \"D4\") rather than contradicting it; the same decision logged again on a task is merged."
+    )]
+    async fn log_decision(
+        &self,
+        Parameters(args): Parameters<Args<LogDecisionInput>>,
+    ) -> CallToolResult {
+        text(self.do_log_decision(&args))
     }
 
     #[tool(
@@ -389,6 +478,11 @@ impl Bridge {
     }
 }
 
+/// The first 7 characters of a SHA.
+fn short(sha: &str) -> String {
+    sha.chars().take(7).collect()
+}
+
 /// `text` as a sentence: a full stop added unless it already ends with one.
 fn sentence(text: &str) -> String {
     if text.ends_with(['.', '!', '?']) {
@@ -441,13 +535,106 @@ impl Bridge {
                 session_id: session.session_id.clone(),
                 task_id: input.id.clone(),
                 evidence: input.evidence.clone(),
+                files: input.files.clone(),
+                symbols: input.symbols.clone(),
                 actor: Actor::default(),
             },
         )
         .map_err(msg)?;
-        Ok(format!(
-            "Marked {task} claimed done. Commit a checkpoint before you stop, then leave a handoff_note if work remains in flight."
-        ))
+        let mut reply = format!("Marked {task} claimed done.");
+        // L1 right away when the files are committed (a git failure just skips it).
+        let wt = worktree_of(&session);
+        match verify::check_l1(store.conn(), &wt, &session.repo_id, &task) {
+            Ok(outcome @ L1Outcome::Passed { .. }) => {
+                if let Some(draft) =
+                    verify::l1_draft(&session.repo_id, &session.session_id, &task, &outcome)
+                        .map_err(msg)?
+                {
+                    store.append(draft).map_err(msg)?;
+                }
+                if let L1Outcome::Passed { sha, .. } = &outcome {
+                    let _ = write!(reply, " L1: the code exists at {}.", short(sha));
+                }
+            }
+            Ok(L1Outcome::NotCommitted { .. }) => {
+                reply.push_str(" L1 is checked when you commit the checkpoint.");
+            }
+            Ok(L1Outcome::Missing {
+                sha,
+                paths,
+                symbols,
+            }) => {
+                let _ = write!(
+                    reply,
+                    " L1 check: {} not found at {}. Fix the evidence with claim_done again.",
+                    verify::missing_text(&paths, &symbols),
+                    short(&sha)
+                );
+            }
+            Ok(L1Outcome::NoEvidence) => {
+                reply.push_str(
+                    " Name the files that show the work (files) so bridge-screen can check L1.",
+                );
+            }
+            Err(_) => {}
+        }
+        reply.push_str(
+            " Commit a checkpoint before you stop, then leave a handoff_note if work remains in flight.",
+        );
+        // Task completion: the moment to capture decisions (spec §8.6); `claim_done`
+        // recorded the ask.
+        if checkpoint::asks_for_decisions(store.conn(), &session.repo_id, &task).map_err(msg)? {
+            let _ = write!(reply, " {}", decision::DECISION_ASK);
+        }
+        Ok(reply)
+    }
+
+    fn do_log_decision(&self, args: &Args<LogDecisionInput>) -> Result<String, String> {
+        let mut store = self.open()?;
+        let session = self.caller(&store, "log_decision", &args.raw)?;
+        let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        let logged = decision::log_decision(
+            &mut store,
+            &decision::LogRequest {
+                session_id: session.session_id.clone(),
+                task: match &input.task {
+                    None => decision::DecisionTask::Active,
+                    Some(Nullable(None)) => decision::DecisionTask::RepoWide,
+                    Some(Nullable(Some(t))) => decision::DecisionTask::Task(t.clone()),
+                },
+                what: input.what.clone(),
+                why: input.why.clone(),
+                alternatives: input.alternatives.clone(),
+                supersedes: input.supersedes.clone(),
+                actor: Actor::default(),
+            },
+        )
+        .map_err(msg)?;
+        Ok(logged.reply())
+    }
+
+    fn do_verify(&self, args: &Args<VerifyInput>) -> Result<String, String> {
+        let mut store = self.open()?;
+        let session = self.caller(&store, "verify", &args.raw)?;
+        let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        let config = Config::load(&self.home.config_path()).unwrap_or_default();
+        let out = verify::verify(
+            &mut store,
+            &verify::VerifyRequest {
+                session_id: session.session_id.clone(),
+                task_id: input.id.clone(),
+                level: input.level,
+                evidence: input.evidence.clone(),
+                exit_code: input.exit_code,
+                summary: input.summary.clone(),
+                owner_said: input.owner_said.clone(),
+                actor: Actor::default(),
+            },
+            &worktree_of(&session),
+            std::time::Duration::from_secs(config.verify_timeout_s),
+        )
+        .map_err(msg)?;
+        Ok(out.reply)
     }
 
     fn do_resolve_leftover(&self, args: &Args<ResolveLeftoverInput>) -> Result<String, String> {
@@ -502,15 +689,32 @@ impl Bridge {
             &Actor::default(),
         )
         .map_err(msg)?;
-        Ok(match task {
+        let mut reply = match &task {
             Some(t) => {
-                let title = claim::task_title(store.conn(), &session.repo_id, &t)
+                let title = claim::task_title(store.conn(), &session.repo_id, t)
                     .map_err(msg)?
                     .unwrap_or_default();
                 format!("Handoff note saved for {t} {title}.")
             }
             None => "Handoff note saved (no active task).".to_string(),
-        })
+        };
+        // A clean session end goes through the handoff note: ask for decisions (§8.6).
+        let logged = match &task {
+            Some(t) => decision::list(store.conn(), &session.repo_id, Some(t), true),
+            None => decision::by_session(store.conn(), &session.session_id),
+        }
+        .map_err(msg)?;
+        if logged.is_empty() {
+            let _ = write!(reply, " {}", decision::DECISION_ASK);
+            store
+                .append(decision::asked_draft(
+                    &session.repo_id,
+                    &session.session_id,
+                    "handoff_note",
+                ))
+                .map_err(msg)?;
+        }
+        Ok(reply)
     }
 
     fn do_plan_edit(&self, args: &Args<PlanEditInput>) -> Result<String, String> {
@@ -806,6 +1010,21 @@ fn handoff_status(
     Ok(())
 }
 
+/// Where a task stands on the verification ladder and the next step (spec §8.5).
+fn ladder_step(status: NodeStatus) -> Option<&'static str> {
+    Some(match status {
+        NodeStatus::Claimed => {
+            "claimed (L0) — next: commit the files you named, then run tests and verify level 2"
+        }
+        NodeStatus::L1 => "L1 (code exists) — next: run tests, verify level 2",
+        NodeStatus::L2 => "L2 (tests pass) — next: drive it end to end, verify level 3",
+        NodeStatus::L3 => "L3 (end-to-end) — next: ask the owner, verify level 4 with their words",
+        NodeStatus::L4 => "L4 (the owner confirmed)",
+        NodeStatus::Failed => "failed — fix it, commit, claim_done again",
+        _ => return None,
+    })
+}
+
 /// Compact state for the agent.
 fn agent_status(store: &Store, s: &Session) -> bridge_screen_core::error::Result<String> {
     let conn = store.conn();
@@ -826,10 +1045,33 @@ fn agent_status(store: &Store, s: &Session) -> bridge_screen_core::error::Result
         Some(id) => {
             let title = claim::task_title(conn, &s.repo_id, id)?.unwrap_or_default();
             let _ = writeln!(out, "Active task: {id} {title}");
+            if let Some(node) = get_node(conn, &s.repo_id, id)?
+                && let Some(step) = ladder_step(node.status)
+            {
+                let _ = writeln!(out, "Verification: {step}");
+            }
+            let live = decision::list(conn, &s.repo_id, Some(id), false)?;
+            if let Some(last) = live.last() {
+                let _ = writeln!(
+                    out,
+                    "Decisions on {id}: {} (latest: {} {})",
+                    live.len(),
+                    last.decision_id,
+                    last.what
+                );
+            }
         }
         None => out.push_str("Active task: none — claim one with claim_task.\n"),
     }
     handoff_status(conn, s, &mut out)?;
+    let pending = verify::pending_claims(conn, &s.session_id, jiff::Timestamp::MAX)?;
+    if !pending.is_empty() {
+        let list: Vec<String> = pending
+            .iter()
+            .map(|(t, level)| format!("{t} (L{level})"))
+            .collect();
+        let _ = writeln!(out, "Unverified: {} — verify them", list.join(" · "));
+    }
     let open = tangent::open_detours(conn, &s.session_id)?;
     if !open.is_empty() {
         let list: Vec<String> = open

@@ -6,6 +6,8 @@
 //! second Stop in the same unit without the commit is recorded as `checkpoint_missed`
 //! instead of asking again. Commits are detected after a Bash `git commit` and at Stop.
 
+use std::path::Path;
+
 use rusqlite::{Connection, OptionalExtension, Transaction};
 
 use crate::claim::task_title;
@@ -50,7 +52,28 @@ pub struct ClaimDoneRequest {
     pub task_id: Option<String>,
     /// What shows the task is done (tests run, files changed).
     pub evidence: String,
+    /// Files (relative to the worktree root) that show the work exists; L1 checks them
+    /// at HEAD. Empty: the files the task's units changed.
+    pub files: Vec<String>,
+    /// Key functions or types L1 looks for in `files`.
+    pub symbols: Vec<String>,
     pub actor: Actor,
+}
+
+/// Most files and symbols one claim names.
+pub const MAX_EVIDENCE_ITEMS: usize = 50;
+
+/// Trimmed, non-empty, unique, at most [`MAX_EVIDENCE_ITEMS`], each at most 300 chars.
+fn evidence_list(items: &[String], norm: impl Fn(&str) -> String) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for item in items {
+        let item: String = norm(item).chars().take(300).collect();
+        if !item.is_empty() && !out.contains(&item) {
+            out.push(item);
+        }
+    }
+    out.truncate(MAX_EVIDENCE_ITEMS);
+    out
 }
 
 /// The agent says a task is done (L0, spec §8.5): `claimed_done` plus `checkpoint_due`,
@@ -88,6 +111,10 @@ fn claim_done_in(tx: &Transaction, req: &ClaimDoneRequest) -> Result<String> {
     let data = ClaimedDone {
         task_id: task.clone(),
         evidence: evidence.chars().take(500).collect(),
+        files: evidence_list(&req.files, |f| {
+            crate::verify::l1::normalize(f, session.worktree.as_deref().map(Path::new))
+        }),
+        symbols: evidence_list(&req.symbols, |s| s.trim().to_string()),
     };
     append_in(
         tx,
@@ -104,7 +131,23 @@ fn claim_done_in(tx: &Transaction, req: &ClaimDoneRequest) -> Result<String> {
         tx,
         due_draft(&session, CheckpointReason::ClaimedDone, &req.actor)?,
     )?;
+    // Task completion is when decisions are captured (spec §8.6): the claim's reply asks
+    // unless some are logged already ([`asks_for_decisions`]). Either way this claim's
+    // capture flag is answered here; a flag set earlier (a compaction) stays unless the
+    // reply asks.
+    if asks_for_decisions(tx, &session.repo_id, &task)? || session.decision_capture.is_none() {
+        append_in(
+            tx,
+            crate::decision::asked_draft(&session.repo_id, &session.session_id, "claim_done")
+                .actor(req.actor.clone()),
+        )?;
+    }
     Ok(task)
+}
+
+/// Does a claim of `task` ask for decisions? Only when none are logged on it.
+pub fn asks_for_decisions(conn: &Connection, repo_id: &str, task: &str) -> Result<bool> {
+    Ok(crate::decision::list(conn, repo_id, Some(task), true)?.is_empty())
 }
 
 /// Does this shell command look like it makes a commit?
@@ -315,6 +358,8 @@ mod tests {
             session_id: "s1".into(),
             task_id: task.map(str::to_string),
             evidence: "tests pass".into(),
+            files: Vec::new(),
+            symbols: Vec::new(),
             actor: Actor::default(),
         }
     }
@@ -345,7 +390,10 @@ mod tests {
             .map(|e| e.kind)
             .skip(4)
             .collect();
-        assert_eq!(kinds, vec!["claimed_done", "checkpoint_due"]);
+        assert_eq!(
+            kinds,
+            vec!["claimed_done", "checkpoint_due", "decision_asked"]
+        );
     }
 
     #[test]

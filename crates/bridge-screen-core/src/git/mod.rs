@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 /// Variables that would point git somewhere other than `-C <worktree>`.
-const SCRUBBED: &[&str] = &[
+pub(crate) const SCRUBBED: &[&str] = &[
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
@@ -463,18 +463,165 @@ pub fn rev_parse(wt: &Path, rev: &str) -> Result<Option<String>> {
 
 /// Is `ancestor` an ancestor of (or equal to) `rev`?
 pub fn is_ancestor(wt: &Path, ancestor: &str, rev: &str) -> Result<bool> {
+    yes_no(wt, &["merge-base", "--is-ancestor", ancestor, rev])
+}
+
+/// Run git where exit 0 means yes and 1 means no; anything else is an error.
+fn yes_no(wt: &Path, args: &[&str]) -> Result<bool> {
     let out = command(wt)
-        .args(["merge-base", "--is-ancestor", ancestor, rev])
+        .args(args)
         .output()
         .map_err(|e| Error::Git(format!("could not run git: {e}")))?;
     match out.status.code() {
         Some(0) => Ok(true),
         Some(1) => Ok(false),
-        _ => Err(Error::Git(format!(
-            "git merge-base --is-ancestor: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ))),
+        _ => {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            if err.contains("not a git repository") {
+                return Err(Error::NotARepo(wt.display().to_string()));
+            }
+            Err(Error::Git(format!("git {}: {err}", args.join(" "))))
+        }
     }
+}
+
+/// Of `paths` (relative to the worktree root), those not in commit `rev`'s tree (a
+/// directory counts as there). One git call.
+pub fn missing_at(wt: &Path, rev: &str, paths: &[String]) -> Result<Vec<String>> {
+    // A path outside the worktree can't be in its tree (and would fail the whole call).
+    let inside = |p: &str| {
+        let p = Path::new(p);
+        !p.is_absolute()
+            && !p
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+    };
+    let mut args = vec![
+        "ls-tree",
+        "-r",
+        "--full-tree",
+        "--name-only",
+        "-z",
+        rev,
+        "--",
+    ];
+    args.extend(paths.iter().map(String::as_str).filter(|p| inside(p)));
+    let listed: std::collections::HashSet<String> = if args.len() > 7 {
+        nul_fields(&run(wt, &args)?).into_iter().collect()
+    } else {
+        std::collections::HashSet::new()
+    };
+    Ok(paths
+        .iter()
+        .filter(|p| {
+            let dir = format!("{}/", p.trim_end_matches('/'));
+            !inside(p)
+                || (!listed.contains(p.as_str()) && !listed.iter().any(|l| l.starts_with(&dir)))
+        })
+        .cloned()
+        .collect())
+}
+
+/// Does `word` appear as a whole word (fixed string) in any of `paths` in commit `rev`?
+pub fn grep_at(wt: &Path, rev: &str, word: &str, paths: &[String]) -> Result<bool> {
+    let mut args = vec!["grep", "-q", "-F", "-w", "-e", word, rev, "--"];
+    args.extend(paths.iter().map(String::as_str));
+    yes_no(wt, &args)
+}
+
+/// Of `words`, those that don't appear as whole words in any of `paths` in commit `rev`.
+/// One git call for all of them; a word it didn't report (one match can hide another
+/// that starts at the same place) is looked up on its own.
+pub fn words_missing_at(
+    wt: &Path,
+    rev: &str,
+    words: &[String],
+    paths: &[String],
+) -> Result<Vec<String>> {
+    if words.is_empty() {
+        return Ok(Vec::new());
+    }
+    if paths.is_empty() {
+        return Ok(words.to_vec());
+    }
+    let mut args = vec!["grep", "-h", "-o", "-F", "-w", "--no-color"];
+    for w in words {
+        args.extend(["-e", w.as_str()]);
+    }
+    args.extend([rev, "--"]);
+    args.extend(paths.iter().map(String::as_str));
+    let out = command(wt)
+        .args(&args)
+        .output()
+        .map_err(|e| Error::Git(format!("could not run git: {e}")))?;
+    let found: std::collections::HashSet<String> = match out.status.code() {
+        Some(0) => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect(),
+        Some(1) => std::collections::HashSet::new(),
+        _ => {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            if err.contains("not a git repository") {
+                return Err(Error::NotARepo(wt.display().to_string()));
+            }
+            return Err(Error::Git(format!("git grep: {err}")));
+        }
+    };
+    let mut missing = Vec::new();
+    for w in words {
+        if !found.contains(w) && !grep_at(wt, rev, w, paths)? {
+            missing.push(w.clone());
+        }
+    }
+    Ok(missing)
+}
+
+/// One commit of [`history`]: its parents and the paths it touched (merges list none).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitTouch {
+    pub sha: String,
+    pub parents: Vec<String>,
+    pub files: Vec<String>,
+}
+
+/// The newest `limit` commits reachable from `rev`, newest first, with the paths each
+/// touched (renames as both names). One git call.
+pub fn history(wt: &Path, rev: &str, limit: usize) -> Result<Vec<CommitTouch>> {
+    let n = format!("-n{limit}");
+    let out = run(
+        wt,
+        &[
+            "log",
+            &n,
+            "--no-renames",
+            "--name-only",
+            "-z",
+            "--format=%x1e%H %P",
+            rev,
+            "--",
+        ],
+    )?;
+    let mut commits = Vec::new();
+    for record in out.split(|b| *b == 0x1e).filter(|r| !r.is_empty()) {
+        let mut fields = record.split(|b| *b == 0).map(String::from_utf8_lossy);
+        let Some(header) = fields.next() else {
+            continue;
+        };
+        let mut ids = header.split_whitespace().map(str::to_string);
+        let Some(sha) = ids.next() else {
+            continue;
+        };
+        commits.push(CommitTouch {
+            sha,
+            parents: ids.collect(),
+            files: fields
+                .map(|f| f.trim_start_matches('\n').to_string())
+                .filter(|f| !f.is_empty())
+                .collect(),
+        });
+    }
+    Ok(commits)
 }
 
 /// The current branch's upstream as (remote, remote ref), from its config.

@@ -13,6 +13,7 @@ use bridge_screen_core::recovery;
 use bridge_screen_core::session::{self, Session, SessionState};
 use bridge_screen_core::store::{Store, repo_name};
 use bridge_screen_core::tangent::{self, Label, NavState};
+use bridge_screen_core::verify;
 
 /// Width of the "state + task" column, and the most of it the text may use.
 const TASK_COLUMN: usize = 32;
@@ -74,6 +75,16 @@ fn tuned_suffix(store: &Store, repo_id: &str, cfg: &Config) -> Result<String> {
     ))
 }
 
+/// `  · done 41% · claimed 12% · 2 unestimated` (spec §5.6).
+fn progress_suffix(store: &Store, repo_id: &str) -> Result<String> {
+    let p = verify::progress(store.conn(), repo_id)?;
+    let mut text = format!("  · done {}% · claimed {}%", p.done_pct, p.claimed_pct);
+    if p.unestimated > 0 {
+        let _ = write!(text, " · {} unestimated", p.unestimated);
+    }
+    Ok(text)
+}
+
 /// The status text for every live session.
 pub fn render(store: &Store, cfg: &Config) -> Result<String> {
     let conn = store.conn();
@@ -97,8 +108,9 @@ pub fn render(store: &Store, cfg: &Config) -> Result<String> {
             Some(goal) => {
                 let _ = writeln!(
                     out,
-                    "{name}  goal: {}{}",
+                    "{name}  goal: {}{}{}",
                     goal.title,
+                    progress_suffix(store, &repo_id)?,
                     tuned_suffix(store, &repo_id, cfg)?
                 );
             }
@@ -112,7 +124,22 @@ pub fn render(store: &Store, cfg: &Config) -> Result<String> {
         }
         // `list_live` is newest first; a stable sort keeps that within each state.
         sessions.sort_by_key(state_rank);
-        for s in &sessions {
+        // Needs-you order: red, missed checkpoints and unstable sessions, waits, then
+        // claimed work nudged twice without being verified (spec §8.5, §10.1), then the
+        // rest.
+        let (urgent, rest): (Vec<&Session>, Vec<&Session>) =
+            sessions.iter().partition(|s| state_rank(s) <= 2);
+        for s in urgent {
+            out.push_str(&session_line(store, s)?);
+        }
+        for (task, title) in verify::overdue(conn, &repo_id)? {
+            let _ = writeln!(
+                out,
+                "  needs you: verify {} — bridge-screen verify {task} (or --broken \"…\")",
+                format!("{task} {title}").trim_end()
+            );
+        }
+        for s in rest {
             out.push_str(&session_line(store, s)?);
         }
     }
@@ -149,6 +176,11 @@ fn session_line(store: &Store, s: &Session) -> Result<String> {
     }
     if s.readback == ReadbackState::Pending {
         nav.push_str(" · read-back pending");
+    }
+    let pending = verify::pending_claims(store.conn(), &s.session_id, jiff::Timestamp::MAX)?;
+    if !pending.is_empty() {
+        let ids: Vec<&str> = pending.iter().map(|(t, _)| t.as_str()).collect();
+        let _ = write!(nav, " · verify pending: {}", ids.join(", "));
     }
     Ok(format!(
         "  S {short}  {left:<TASK_COLUMN$}{units:<7} · {minutes}m · {nav}\n"

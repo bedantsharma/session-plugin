@@ -150,7 +150,16 @@ fn payload<T: serde::de::DeserializeOwned>(event: &Event) -> Result<T> {
 pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
     match event.kind.as_str() {
         "owner_action" => owner_action(tx, event, &payload(event)?),
-        "config_changed" => config_changed(tx, event, &payload(event)?),
+        "config_changed" => {
+            // Per-repo test settings share the event; their values aren't numbers.
+            if event.data["key"]
+                .as_str()
+                .is_some_and(|k| crate::verify::SETTING_KEYS.contains(&k))
+            {
+                return crate::verify::project::setting_changed(tx, event);
+            }
+            config_changed(tx, event, &payload(event)?)
+        }
         "tuning_ran" => {
             let d: TuningRan = payload(event)?;
             tx.execute(

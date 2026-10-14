@@ -176,6 +176,9 @@ fn migrate(conn: &mut Connection) -> Result<()> {
     if current < 4 {
         tx.execute_batch(schema::V4)?;
     }
+    if current < 5 {
+        tx.execute_batch(schema::V5)?;
+    }
     tx.execute(
         "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
         [SCHEMA_VERSION.to_string()],
@@ -342,7 +345,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(version, "4");
+        assert_eq!(version, super::SCHEMA_VERSION.to_string());
         let s = crate::session::get(store.conn(), "s").unwrap().unwrap();
         assert_eq!(
             (s.active_secs, s.nav_state),
@@ -355,6 +358,70 @@ mod tests {
         assert_eq!(s.readback, crate::handoff::ReadbackState::NotNeeded);
         assert_eq!((s.checkpoint_missed, s.leftovers_analysed), (0, false));
         for table in ["checkpoints", "leftovers", "handoff_notes", "claims_done"] {
+            let n: i64 = store
+                .conn()
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0, "{table}");
+        }
+    }
+
+    #[test]
+    fn migrates_v4_database_to_v5_keeping_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            for v in [
+                super::schema::V1,
+                super::schema::V2,
+                super::schema::V3,
+                super::schema::V4,
+            ] {
+                conn.execute_batch(v).unwrap();
+            }
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('schema_version', '4')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO claims_done (repo_id, task_id, session_id, evidence, ts)
+                 VALUES ('r', '1.1', 's', 'tests pass', 't0')",
+                [],
+            )
+            .unwrap();
+            // A V4-era claimed_done event, without files or symbols.
+            conn.execute(
+                "INSERT INTO events (id, v, ts, repo_id, session_id, seq, kind, data)
+                 VALUES ('01J', 1, '2026-10-13T09:00:00Z', 'r', 's', 1, 'claimed_done',
+                         '{\"task_id\":\"1.1\",\"evidence\":\"tests pass\"}')",
+                [],
+            )
+            .unwrap();
+        }
+        let mut store = Store::open(&path).unwrap();
+        let version: String = store
+            .conn()
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, "5");
+        let claims = crate::handoff::claims_done(store.conn(), "r").unwrap();
+        assert_eq!(claims.len(), 1);
+        assert_eq!((claims[0].files.len(), claims[0].symbols.len()), (0, 0));
+        store.rebuild().unwrap();
+        let claims = crate::handoff::claims_done(store.conn(), "r").unwrap();
+        assert_eq!(claims[0].evidence, "tests pass");
+        for table in [
+            "verifications",
+            "decisions",
+            "verify_nudges",
+            "repo_settings",
+        ] {
             let n: i64 = store
                 .conn()
                 .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))

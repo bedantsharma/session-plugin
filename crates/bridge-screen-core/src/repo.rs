@@ -110,7 +110,11 @@ mod tests {
     use std::process::Command;
 
     fn git(dir: &Path, args: &[&str]) {
-        let status = Command::new("git")
+        let mut cmd = Command::new("git");
+        for var in crate::git::SCRUBBED {
+            cmd.env_remove(var);
+        }
+        let status = cmd
             .arg("-C")
             .arg(dir)
             .args([

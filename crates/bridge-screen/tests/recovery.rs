@@ -186,9 +186,7 @@ fn session_start_finds_leftovers_and_cli_resolves_them() {
     );
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(text.starts_with("Adopted 1 leftover: committed "), "{text}");
-    let show = std::process::Command::new("git")
-        .arg("-C")
-        .arg(env.repo.path())
+    let show = common::git_cmd(env.repo.path())
         .args(["show", "--name-only", "--format=%s", "HEAD"])
         .output()
         .unwrap();

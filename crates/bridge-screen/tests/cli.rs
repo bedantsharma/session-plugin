@@ -2,6 +2,26 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
+/// `git -C <dir>` without inherited variables (a git hook's `GIT_DIR` would otherwise point
+/// the temp repo's setup at the real repository).
+fn git_cmd(dir: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(dir);
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_NAMESPACE",
+        "GIT_PREFIX",
+    ] {
+        cmd.env_remove(var);
+    }
+    cmd
+}
+
 struct Env {
     home: tempfile::TempDir,
     repo: tempfile::TempDir,
@@ -10,12 +30,7 @@ struct Env {
 impl Env {
     fn new() -> Self {
         let repo = tempfile::tempdir().unwrap();
-        let ok = Command::new("git")
-            .arg("-C")
-            .arg(repo.path())
-            .args(["init", "-q"])
-            .status()
-            .unwrap();
+        let ok = git_cmd(repo.path()).args(["init", "-q"]).status().unwrap();
         assert!(ok.success());
         Self {
             home: tempfile::tempdir().unwrap(),
@@ -176,9 +191,7 @@ fn config_prints_effective_values() {
 fn linked_worktree_shows_the_same_plan() {
     let env = Env::new();
     let git = |args: &[&str]| {
-        let ok = Command::new("git")
-            .arg("-C")
-            .arg(env.repo.path())
+        let ok = git_cmd(env.repo.path())
             .args(["-c", "user.name=t", "-c", "user.email=t@t"])
             .args(args)
             .status()

@@ -33,6 +33,12 @@ pub const HANDOFF_KINDS: &[&str] = &[
 pub struct ClaimedDone {
     pub task_id: String,
     pub evidence: String,
+    /// Paths, relative to the worktree root, that show the work exists (L1 checks them).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
+    /// Key functions or types to find in `files`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub symbols: Vec<String>,
 }
 
 /// Why a checkpoint commit is due (spec §8.1).
@@ -152,15 +158,7 @@ fn payload<T: serde::de::DeserializeOwned>(event: &Event) -> Result<T> {
 pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
     let sid = event.session_id.as_str();
     match event.kind.as_str() {
-        "claimed_done" => {
-            let d: ClaimedDone = payload(event)?;
-            tx.execute(
-                "INSERT INTO claims_done (repo_id, task_id, session_id, evidence, ts)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![event.repo_id, d.task_id, sid, d.evidence, event.ts],
-            )?;
-            mark_claimed_done(tx, &event.repo_id, &d.task_id)?;
-        }
+        "claimed_done" => claimed_done(tx, event, &payload(event)?)?,
         "checkpoint_due" => {
             let d: CheckpointDue = payload(event)?;
             tx.execute(
@@ -241,9 +239,42 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
                 params![sid, d.status.as_str(), readback.as_str()],
             )?;
         }
-        // squashed and squash_failed are history only: no view yet.
+        // Verifications tied to the old WIP commits now point at the squashed one (§8.1).
+        "squashed" => {
+            let d: Squashed = payload(event)?;
+            crate::verify::project::repoint(tx, &event.repo_id, &d.old_shas, &d.new_sha)?;
+        }
+        // squash_failed is history only: no view.
         _ => {}
     }
+    Ok(())
+}
+
+/// The L0 record; the status follows the task's verifications (a verified task keeps its
+/// level), and task completion is a moment to capture decisions (spec §8.6).
+fn claimed_done(tx: &Transaction, event: &Event, d: &ClaimedDone) -> Result<()> {
+    let sid = event.session_id.as_str();
+    tx.execute(
+        "INSERT INTO claims_done (repo_id, task_id, session_id, evidence, ts, files,
+                                  symbols)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            event.repo_id,
+            d.task_id,
+            sid,
+            d.evidence,
+            event.ts,
+            serde_json::to_string(&d.files)?,
+            serde_json::to_string(&d.symbols)?
+        ],
+    )?;
+    mark_claimed_done(tx, &event.repo_id, &d.task_id)?;
+    crate::verify::refresh_status(tx, &event.repo_id, &d.task_id, false)?;
+    tx.execute(
+        "UPDATE sessions SET decision_capture = COALESCE(decision_capture, 'claimed_done')
+         WHERE session_id = ?1",
+        [sid],
+    )?;
     Ok(())
 }
 

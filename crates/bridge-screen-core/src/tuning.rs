@@ -110,7 +110,9 @@ fn samples(conn: &Connection, repo_id: &str) -> Result<Vec<(f64, Label)>> {
 fn owner_answers(conn: &Connection, repo_id: &str) -> Result<(usize, usize)> {
     let since: i64 = conn.query_row(
         "SELECT COALESCE(MAX(pos), 0) FROM events
-         WHERE repo_id = ?1 AND kind IN ('config_changed', 'tuning_ran')",
+         WHERE repo_id = ?1 AND (kind = 'tuning_ran' OR (kind = 'config_changed'
+               AND json_extract(data, '$.key') IN ('drift_lower', 'drift_upper',
+                                                   'tolerance_pct')))",
         [repo_id],
         |r| r.get(0),
     )?;

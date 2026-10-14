@@ -122,7 +122,7 @@ pub fn handle(
     };
     // Checkpoint git work, before taking the write lock (only when one is pending or a
     // commit was just made).
-    let found = handoff::gather(event, ctx.known.as_ref(), input);
+    let found = handoff::gather(store.conn(), event, ctx.known.as_ref(), input);
     // Nothing of our own to record: look first (read-only) whether the navigator has
     // anything to do, so the common tool call doesn't take the write lock.
     let worth_writing = !all.is_empty()
@@ -151,13 +151,8 @@ pub fn handle(
         HookEvent::PreToolUse => handoff::before_pr(store, input)?,
         _ => None,
     };
-    if event == HookEvent::SessionStart && input.source.as_deref() != Some("compact") {
-        // Recovery (spec §8.3): crashed sessions, then leftovers of dead ones.
-        handoff::recover(store, config, &ctx.repo_id, &input.session_id)?;
-    }
-    if event == HookEvent::SessionStart && tuning::due(store.conn(), &ctx.repo_id)? {
-        // Enough new drift samples: tune this repo's thresholds (spec §7.6).
-        store.write(|tx| tuning::run(tx, &ctx.repo_id, config))?;
+    if event == HookEvent::SessionStart {
+        start_steps(store, config, input, &ctx.repo_id)?;
     }
     let context = match event {
         HookEvent::SessionStart => handoff::start_context(store, input)?,
@@ -175,10 +170,33 @@ pub fn handle(
         HookEvent::PreToolUse => before_pr.or(nudge).or(note),
         _ => note,
     };
+    let context = match context {
+        // A known session's note carries the pending decision ask (spec §8.6).
+        Some(text) if event != HookEvent::SessionStart && ctx.known.is_some() => {
+            Some(handoff::with_decision_ask(store, &input.session_id, text)?)
+        }
+        other => other,
+    };
     Ok(context.map(|text| HookOutput {
         event,
         additional_context: Some(text),
     }))
+}
+
+/// SessionStart's work before the briefing: recovery and staleness (not after a
+/// compaction), then drift tuning when due.
+fn start_steps(store: &mut Store, config: &Config, input: &HookInput, repo_id: &str) -> Result<()> {
+    if input.source.as_deref() != Some("compact") {
+        // Recovery (spec §8.3): crashed sessions, then leftovers of dead ones.
+        handoff::recover(store, config, repo_id, &input.session_id)?;
+        // Verifications whose files changed since drop a level (spec §8.5).
+        handoff::staleness(store, repo_id, &input.session_id)?;
+    }
+    if tuning::due(store.conn(), repo_id)? {
+        // Enough new drift samples: tune this repo's thresholds (spec §7.6).
+        store.write(|tx| tuning::run(tx, repo_id, config))?;
+    }
+    Ok(())
 }
 
 /// Append the hook's events, then the checkpoint and navigator steps, in one transaction.
@@ -338,7 +356,13 @@ fn drafts_for(
                 // auth_success, agent_completed, elicitation_complete, …: nobody waits.
                 _ => return Ok(Vec::new()),
             };
-            ctx.draft("needs_owner", &NeedsOwner { kind })?
+            ctx.draft(
+                "needs_owner",
+                &NeedsOwner {
+                    kind,
+                    task_id: None,
+                },
+            )?
         }
         HookEvent::SessionEnd => {
             // How it ended (spec §8.2): git runs here, once per session.

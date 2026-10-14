@@ -100,6 +100,9 @@ pub struct Session {
     pub last_task: Option<String>,
     /// A later session has analysed this (dead) session's leftovers.
     pub leftovers_analysed: bool,
+    /// Decisions should be asked for with the next note: `precompact` or `claimed_done`
+    /// (spec §8.6); cleared by a `decision` or `decision_asked`.
+    pub decision_capture: Option<String>,
 }
 
 /// One row of the `units` view.
@@ -132,7 +135,7 @@ const SESSION_COLUMNS: &str = "session_id, repo_id, cwd, branch, source, model, 
      ended_at, end_reason, current_detour, away_secs, away_since, nav_state, ack_away_secs,
      ack_unit, pending_reply, worktree, end_kind, last_checkpoint, checkpoint_pending,
      checkpoint_asked_unit, checkpoint_missed, readback, briefing_status, last_task,
-     leftovers_analysed";
+     leftovers_analysed, decision_capture";
 
 const UNIT_COLUMNS: &str = "session_id, unit_no, prompt_id, task_id, started_at, stopped_at,
      waited_secs, wait_started_at, active_secs, files, label, label_source, drift_score,
@@ -181,6 +184,7 @@ fn read_session(r: &Row) -> rusqlite::Result<Session> {
             .and_then(BriefingStatus::parse),
         last_task: r.get(31)?,
         leftovers_analysed: r.get(32)?,
+        decision_capture: r.get(33)?,
     })
 }
 

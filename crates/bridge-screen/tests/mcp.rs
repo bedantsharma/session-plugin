@@ -2,18 +2,11 @@
 
 mod common;
 
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{Receiver, channel};
-use std::time::Duration;
-
 use bridge_screen_core::plan::{NodeStatus, get_node};
 use bridge_screen_core::session;
 use bridge_screen_core::store::Store;
-use common::{BIN, Env, fixture_json};
-use serde_json::{Value, json};
-
-const PREFIX: &str = "mcp__plugin_bridge-screen_bridge-screen__";
+use common::{Env, Mcp, bind, call_as, fixture_json};
+use serde_json::json;
 
 const SEED: &str = r#"[
   {"op":"add_node","kind":"goal","title":"Ship","intent":"Owner sees progress"},
@@ -22,101 +15,6 @@ const SEED: &str = r#"[
   {"op":"add_node","parent":"1","kind":"task","title":"Password reset"}
 ]"#;
 
-struct Mcp {
-    child: Child,
-    stdin: Option<ChildStdin>,
-    lines: Receiver<String>,
-    next_id: i64,
-}
-
-impl Mcp {
-    /// Start the server and complete the MCP handshake.
-    fn start(env: &Env, project_dir: &str) -> Self {
-        let mut child = Command::new(BIN)
-            .arg("mcp")
-            .current_dir(env.repo.path())
-            .env("BRIDGE_SCREEN_HOME", env.home.path())
-            .env("CLAUDE_PROJECT_DIR", project_dir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        let stdout = child.stdout.take().unwrap();
-        let (tx, rx) = channel();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                let Ok(line) = line else { break };
-                if tx.send(line).is_err() {
-                    break;
-                }
-            }
-        });
-        let mut mcp = Self {
-            stdin: child.stdin.take(),
-            child,
-            lines: rx,
-            next_id: 1,
-        };
-        let init = mcp.request(
-            "initialize",
-            &json!({
-                "protocolVersion": "2025-06-18",
-                "capabilities": {},
-                "clientInfo": {"name": "test", "version": "0"}
-            }),
-        );
-        assert!(
-            init["result"]["capabilities"]["tools"].is_object(),
-            "{init}"
-        );
-        mcp.send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
-        mcp
-    }
-
-    fn send(&mut self, msg: &Value) {
-        let stdin = self.stdin.as_mut().unwrap();
-        writeln!(stdin, "{msg}").unwrap();
-        stdin.flush().unwrap();
-    }
-
-    fn request(&mut self, method: &str, params: &Value) -> Value {
-        let id = self.next_id;
-        self.next_id += 1;
-        self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
-        loop {
-            let line = self
-                .lines
-                .recv_timeout(Duration::from_secs(10))
-                .expect("no response from bridge-screen mcp within 10 s");
-            let msg: Value = serde_json::from_str(&line).unwrap();
-            if msg["id"] == id {
-                return msg;
-            }
-        }
-    }
-
-    /// Call a tool; returns (is_error, text).
-    fn call(&mut self, tool: &str, args: &Value) -> (bool, String) {
-        let resp = self.request("tools/call", &json!({"name": tool, "arguments": args}));
-        let result = &resp["result"];
-        assert!(
-            result.is_object(),
-            "protocol error instead of a tool result: {resp}"
-        );
-        let text = result["content"][0]["text"].as_str().unwrap().to_string();
-        (result["isError"] == true, text)
-    }
-}
-
-impl Drop for Mcp {
-    fn drop(&mut self) {
-        drop(self.stdin.take());
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
 fn setup() -> Env {
     let env = Env::new();
     let out = env.run(&["plan", "edit"], SEED);
@@ -124,15 +22,6 @@ fn setup() -> Env {
     env.hook("session-start", "s1");
     env.hook("session-start", "s2");
     env
-}
-
-/// What the PreToolUse hook sees just before Claude Code calls our tool.
-fn bind(env: &Env, session: &str, tool: &str, args: &Value, tool_use_id: &str) {
-    let mut p = fixture_json("pre-tool-use", session, &env.repo_path());
-    p["tool_name"] = json!(format!("{PREFIX}{tool}"));
-    p["tool_input"] = args.clone();
-    p["tool_use_id"] = json!(tool_use_id);
-    assert_eq!(env.hook_raw("pre-tool-use", &p.to_string()), "");
 }
 
 fn active_task(env: &Env, session: &str) -> Option<String> {
@@ -160,12 +49,14 @@ fn lists_three_tools_with_schemas() {
             "handoff_note",
             "handoff_readback",
             "label_unit",
+            "log_decision",
             "plan_edit",
             "promote_detour",
             "resolve_leftover",
             "resume",
             "start_detour",
-            "status"
+            "status",
+            "verify"
         ]
     );
     for tool in tools {
@@ -307,24 +198,6 @@ fn plan_edit_adds_nodes_and_reports_op_errors() {
     );
     assert!(is_error);
     assert!(text.starts_with("op 1: unknown field `estimate`"), "{text}");
-}
-
-/// Bind `args` to `session` through the hook, then call the tool.
-fn call_as(mcp: &mut Mcp, env: &Env, session: &str, tool: &str, args: &Value) -> (bool, String) {
-    let id = format!("toolu_{}", ulid_like(tool, args));
-    bind(env, session, tool, args, &id);
-    mcp.call(tool, args)
-}
-
-/// A unique-enough tool_use_id per call.
-fn ulid_like(tool: &str, args: &Value) -> String {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static N: AtomicUsize = AtomicUsize::new(0);
-    format!(
-        "{tool}_{}_{}",
-        args.to_string().len(),
-        N.fetch_add(1, Ordering::Relaxed)
-    )
 }
 
 fn claimed_setup() -> Env {
@@ -732,7 +605,7 @@ fn claim_done_marks_the_task_and_asks_for_a_checkpoint() {
     assert!(!is_error, "{text}");
     assert_eq!(
         text,
-        "Marked 1.1 claimed done. Commit a checkpoint before you stop, then leave a handoff_note if work remains in flight."
+        "Marked 1.1 claimed done. Name the files that show the work (files) so bridge-screen can check L1. Commit a checkpoint before you stop, then leave a handoff_note if work remains in flight. Log any decisions this task settled (log_decision): what, why, alternatives."
     );
     let store = Store::open(&env.db_path()).unwrap();
     let node = get_node(
@@ -809,7 +682,10 @@ fn handoff_note_and_readback_round_trip() {
     bind(&env, "s1", "handoff_note", &args, "toolu_2");
     let (is_error, text) = mcp.call("handoff_note", &args);
     assert!(!is_error, "{text}");
-    assert_eq!(text, "Handoff note saved for 1.1 Login form.");
+    assert_eq!(
+        text,
+        "Handoff note saved for 1.1 Login form. Log any decisions this task settled (log_decision): what, why, alternatives."
+    );
     let args = json!({"in_flight": ""});
     bind(&env, "s1", "handoff_note", &args, "toolu_3");
     let (is_error, text) = mcp.call("handoff_note", &args);
