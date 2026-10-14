@@ -1,0 +1,125 @@
+import type { Glance, NeedsYou, ProjectRow } from '../src/lib/types'
+
+export function item(over: Partial<NeedsYou> = {}): NeedsYou {
+  return {
+    id: 'drift_red:s1aaaa',
+    kind: 'drift_red',
+    repo_id: 'r1',
+    repo_name: 'shop',
+    session_id: 's1aaaa',
+    task: { id: '1.1', title: 'Login form' },
+    title: 'S s1aaaa is far off its task',
+    detail: 'detour 40m · D1 "CI cache" · on 1.1 Login form',
+    actions: [
+      {
+        label: 'Continue',
+        action: { kind: 'drift', session: 's1aaaa', answer: 'continue' },
+        inputs: [{ name: 'reason', label: 'reason (optional)', required: false }],
+        tone: 'primary',
+      },
+      {
+        label: 'Make it a task',
+        action: { kind: 'drift', session: 's1aaaa', answer: 'make_task', parent: '1' },
+        inputs: [
+          { name: 'parent', label: 'parent (milestone or task id)', required: true },
+          { name: 'title', label: 'title', required: true },
+        ],
+        tone: 'neutral',
+      },
+      {
+        label: 'Stop',
+        action: { kind: 'drift', session: 's1aaaa', answer: 'stop' },
+        inputs: [],
+        tone: 'danger',
+      },
+    ],
+    respond_in: null,
+    rank: 0,
+    age_s: 600,
+    ...over,
+  }
+}
+
+export function leftover(): NeedsYou {
+  const act = (a: string) => ({
+    kind: 'resolve',
+    repo: 'r1',
+    leftover_ids: ['lab'],
+    action: a,
+  })
+  return item({
+    id: 'leftover:r1:dead',
+    kind: 'leftover',
+    title: 'S dead00 left 1 uncommitted file',
+    detail: 'suggested: undo · in /wt/dead',
+    files: ['src/a.rs'],
+    actions: ['Adopt', 'Resume', 'Undo'].map((l) => ({
+      label: l,
+      action: act(l.toLowerCase()),
+      inputs: [],
+      tone: l === 'Undo' ? 'primary' : 'neutral',
+    })),
+  })
+}
+
+export function question(id = 'q1'): NeedsYou {
+  return item({
+    id: `question:${id}`,
+    kind: 'question',
+    session_id: id,
+    title: `${id} asked you a question`,
+    detail: '5 min ago · answer in that session',
+    actions: [],
+    respond_in: { session_short: id, worktree: '/wt/feat-x' },
+    rank: 1,
+  })
+}
+
+export function project(over: Partial<ProjectRow> = {}): ProjectRow {
+  return {
+    repo_id: 'r1',
+    name: 'shop',
+    goal: { id: 'G', title: 'Online shop' },
+    done_pct: 62,
+    claimed_pct: 14,
+    unestimated: 0,
+    milestones: [
+      {
+        id: '1',
+        title: 'Accounts',
+        hill: 'uphill',
+        done_pct: 40,
+        claimed_pct: 0,
+        stuck: true,
+        stuck_sessions: 3,
+      },
+      {
+        id: '2',
+        title: 'Cart',
+        hill: 'downhill',
+        done_pct: 80,
+        claimed_pct: 0,
+        stuck: false,
+        stuck_sessions: 0,
+      },
+    ],
+    leftovers: { open: 1, report_only: 0 },
+    tuned: null,
+    forecast: null,
+    needs_you: 1,
+    sessions: [],
+    ...over,
+  }
+}
+
+export function glance(items: NeedsYou[] = [item()]): Glance {
+  return {
+    as_of: '2026-10-14T09:00:00Z',
+    last_event_pos: 7,
+    live_sessions: 1,
+    projects: [project()],
+    needs_you: items,
+    needs_you_count: items.length,
+    escalated: items.length > 4,
+  }
+}

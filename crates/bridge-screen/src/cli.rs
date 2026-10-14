@@ -30,6 +30,8 @@ pub enum Command {
     },
     /// Live sessions per project: state, active task, units and active minutes.
     Status,
+    /// The glance as a live full-terminal view (q quits; prints `status` when not a TTY).
+    Watch,
     /// Answer a drift question about a session (spec §7.3).
     Drift {
         /// A unique prefix of a live session id (as `status` shows it).
@@ -44,6 +46,9 @@ pub enum Command {
         /// make-task: estimate in agent-minutes.
         #[arg(long)]
         estimate: Option<u32>,
+        /// continue: why, in your words (at least 8 characters and 2 words).
+        #[arg(long)]
+        reason: Option<String>,
     },
     /// Set a unit's label: on-task, detour or drift (overrides the agent and heuristic).
     Label {
@@ -109,6 +114,15 @@ pub enum Command {
         #[arg(short = 'C', long = "dir", default_value = ".", global = true)]
         dir: PathBuf,
     },
+    /// Open the local dashboard (127.0.0.1 only); prints its URL. One instance at a time.
+    Ui {
+        /// Port on 127.0.0.1 (default: `ui_port` in config.toml; 0 = any free port).
+        #[arg(long)]
+        port: Option<u16>,
+        /// Don't open the browser.
+        #[arg(long)]
+        no_open: bool,
+    },
     /// Serve the agent's tools over MCP (stdio). Claude Code starts this.
     Mcp,
     /// Handle a Claude Code hook event (reads the hook JSON on stdin). Always exits 0.
@@ -157,12 +171,12 @@ pub enum DriftAnswer {
     Stop,
 }
 
-impl DriftAnswer {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Continue => "continue",
-            Self::MakeTask => "make_task",
-            Self::Stop => "stop",
+impl From<DriftAnswer> for bridge_screen_core::owner::DriftAnswer {
+    fn from(a: DriftAnswer) -> Self {
+        match a {
+            DriftAnswer::Continue => Self::Continue,
+            DriftAnswer::MakeTask => Self::MakeTask,
+            DriftAnswer::Stop => Self::Stop,
         }
     }
 }
@@ -178,8 +192,8 @@ pub enum LabelArg {
 pub enum ConfigCommand {
     /// Put this repo's auto-tuned drift thresholds back to the config defaults.
     ResetDrift,
-    /// Set a per-repo setting: `test-command "<cmd>"` (re-run at verify level 2) or
-    /// `test-timeout <secs>`.
+    /// Set a per-repo setting: `test-command "<cmd>"` (re-run at verify level 2),
+    /// `test-timeout <secs>` or `publish-reports never|ask`.
     Set { key: SettingArg, value: String },
     /// Unset a per-repo setting.
     Unset { key: SettingArg },
@@ -192,6 +206,8 @@ pub enum SettingArg {
     TestCommand,
     /// Seconds the re-run may take (default: `verify_timeout_s` in config.toml).
     TestTimeout,
+    /// `never` (the agent refuses to make progress reports here) or `ask` (the default).
+    PublishReports,
 }
 
 impl SettingArg {
@@ -199,6 +215,7 @@ impl SettingArg {
         match self {
             Self::TestCommand => "test_command",
             Self::TestTimeout => "test_timeout_s",
+            Self::PublishReports => "publish_reports",
         }
     }
 }

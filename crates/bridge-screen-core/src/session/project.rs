@@ -25,7 +25,36 @@ pub const SESSION_KINDS: &[&str] = &[
     "session_crashed",
     "task_claimed",
     "task_released",
+    "owner_question",
+    "question_answered",
 ];
+
+/// Where a question to the owner came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuestionSource {
+    /// The agent ended its turn with a question.
+    TurnEnd,
+    /// Claude Code's built-in ask tool (`AskUserQuestion`).
+    AskTool,
+}
+
+impl QuestionSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TurnEnd => "turn_end",
+            Self::AskTool => "ask_tool",
+        }
+    }
+}
+
+/// The agent asked the owner a question (no text is kept).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnerQuestion {
+    #[serde(default)]
+    pub unit_no: Option<i64>,
+    pub source: QuestionSource,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionStarted {
@@ -215,6 +244,7 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
         ts_text: &event.ts,
         session: &session,
     };
+    questions(tx, &session.session_id, event)?;
     match event.kind.as_str() {
         "prompt" => at.prompt(unit, &payload(event)?)?,
         "needs_owner" => {
@@ -259,6 +289,46 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
     Ok(())
 }
 
+/// Clear the session's open question; only one from `source` when given.
+fn clear_question(
+    tx: &Transaction,
+    session_id: &str,
+    source: Option<QuestionSource>,
+) -> Result<()> {
+    tx.execute(
+        "UPDATE sessions SET question_unit = NULL, question_source = NULL, question_since = NULL
+         WHERE session_id = ?1 AND (?2 IS NULL OR question_source = ?2)",
+        params![session_id, source.map(QuestionSource::as_str)],
+    )?;
+    Ok(())
+}
+
+/// The session's question to the owner: set by `owner_question`; closed when the owner
+/// answers (a new prompt, the ask tool returning) or the session ends. A turn that ends
+/// without a question closes one left by an earlier turn end.
+fn questions(tx: &Transaction, session_id: &str, event: &Event) -> Result<()> {
+    match event.kind.as_str() {
+        "prompt" | "session_ended" => clear_question(tx, session_id, None),
+        "unit_stopped" => clear_question(tx, session_id, Some(QuestionSource::TurnEnd)),
+        "question_answered" => clear_question(tx, session_id, Some(QuestionSource::AskTool)),
+        "owner_question" => {
+            let d: OwnerQuestion = payload(event)?;
+            tx.execute(
+                "UPDATE sessions SET question_unit = ?2, question_source = ?3, question_since = ?4
+                 WHERE session_id = ?1",
+                params![
+                    session_id,
+                    d.unit_no.unwrap_or(0),
+                    d.source.as_str(),
+                    event.ts
+                ],
+            )?;
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 /// A `needs_owner {kind: verify}`: the task goes on the owner's queue until it is
 /// verified or fails. It is not a wait, so the session is untouched. Returns whether the
 /// event was one.
@@ -292,6 +362,7 @@ fn crashed(
         close_crashed_unit(tx, session, open, last)?;
     }
     let at = last.to_string();
+    clear_question(tx, &session.session_id, None)?;
     tx.execute(
         "UPDATE sessions SET state = 'ended', ended_at = ?2, end_reason = 'crashed',
                              end_kind = 'crashed'

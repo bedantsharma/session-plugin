@@ -6,8 +6,11 @@
 //! `CLAUDE_PROJECT_DIR` is used.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
@@ -18,18 +21,26 @@ use bridge_screen_core::claim::{self, ClaimMode, ClaimRequest, ClaimTarget};
 use bridge_screen_core::config::Config;
 use bridge_screen_core::decision;
 use bridge_screen_core::handoff::{self, LeftoverAction};
+use bridge_screen_core::owner::{self, OwnerAction};
 use bridge_screen_core::paths::Home;
 use bridge_screen_core::plan::{EditContext, NodeKind, NodeStatus, PlanOp, get_node, load_tree};
-use bridge_screen_core::recovery::{self, Caller, Resolution};
+use bridge_screen_core::recovery::{self, Caller};
 use bridge_screen_core::session::{self, Session, SessionState};
 use bridge_screen_core::store::{Actor, Store};
 use bridge_screen_core::tangent::{
     self, CloseRequest, DetourOutcome, Label, LabelRequest, LabelSource, StartRequest,
 };
 use bridge_screen_core::verify::{self, L1Outcome};
+use bridge_screen_core::view;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
+use rmcp::model::{
+    CallToolResult, ContentBlock, Implementation, ListResourcesResult, MetaObject,
+    PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
+    ServerCapabilities, ServerConfig,
+};
+use rmcp::service::RequestContext;
+use rmcp::{ErrorData, RoleServer};
 use rmcp::{ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
@@ -292,11 +303,61 @@ pub struct HandoffNoteInput {
     pub if_then: Vec<String>,
 }
 
+/// Which projects the progress card shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Scope {
+    /// This session's repo.
+    Repo,
+    /// Every project.
+    All,
+}
+
+/// Show the owner where things stand.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ShowProgressInput {
+    /// "all" (default) or "repo" for this session's project only.
+    #[serde(default)]
+    pub scope: Option<Scope>,
+}
+
+/// Make a progress report for publishing, on the owner's explicit request.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProgressReportInput {
+    /// "repo" (default: this session's project) or "all".
+    #[serde(default)]
+    pub scope: Option<Scope>,
+}
+
+/// Record that the owner published a report.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReportPublishedInput {
+    /// The published page's link.
+    pub url: String,
+    /// The scope the report was made with: "repo" or "all".
+    pub scope: Scope,
+}
+
+/// A click on the progress card.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OwnerActionInput {
+    /// The action exactly as the card received it.
+    pub action: OwnerAction,
+    /// The nonce `show_progress` gave the card.
+    pub nonce: String,
+}
+
 #[derive(Clone)]
 pub struct Bridge {
     home: Home,
     project_dir: Option<PathBuf>,
     tool_router: ToolRouter<Self>,
+    /// Nonces `show_progress` handed to the progress card, by when they were minted.
+    nonces: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
 fn text(result: Result<String, String>) -> CallToolResult {
@@ -317,6 +378,7 @@ impl Bridge {
             home,
             project_dir,
             tool_router: Self::tool_router(),
+            nonces: Arc::default(),
         }
     }
 
@@ -475,6 +537,49 @@ impl Bridge {
         Parameters(args): Parameters<Args<PromoteDetourInput>>,
     ) -> CallToolResult {
         text(self.do_promote_detour(&args))
+    }
+
+    #[tool(
+        description = "Show the owner where things stand: needs-you items, project progress and live sessions. Call it when the owner asks for progress or runs /bridge-screen. In the Claude desktop app it renders as an interactive card; elsewhere it returns the text view.",
+        meta = ui_meta(serde_json::json!({ "resourceUri": PROGRESS_URI }))
+    )]
+    async fn show_progress(
+        &self,
+        Parameters(args): Parameters<Args<ShowProgressInput>>,
+    ) -> CallToolResult {
+        self.do_show_progress(&args)
+            .unwrap_or_else(|e| CallToolResult::error(vec![ContentBlock::text(e)]))
+    }
+
+    #[tool(
+        description = "Only when the owner explicitly asks to publish a progress report: writes a self-contained HTML snapshot (no scripts, no outside links) to a temp file and returns its path and a summary of exactly what it contains. Show the owner that summary; publish with the Artifact tool only after the owner confirms; then call report_published. Never publish on your own initiative."
+    )]
+    async fn progress_report(
+        &self,
+        Parameters(args): Parameters<Args<ProgressReportInput>>,
+    ) -> CallToolResult {
+        text(self.do_progress_report(&args))
+    }
+
+    #[tool(
+        description = "After the owner confirmed and you published a progress report as an Artifact: record the link and scope."
+    )]
+    async fn report_published(
+        &self,
+        Parameters(args): Parameters<Args<ReportPublishedInput>>,
+    ) -> CallToolResult {
+        text(self.do_report_published(&args))
+    }
+
+    #[tool(
+        description = "Used by the progress card for the owner's clicks. Not for the agent: it needs the card's nonce and refuses without it.",
+        meta = ui_meta(serde_json::json!({ "visibility": ["app"] }))
+    )]
+    async fn owner_action(
+        &self,
+        Parameters(args): Parameters<Args<OwnerActionInput>>,
+    ) -> CallToolResult {
+        text(self.do_owner_action(&args))
     }
 }
 
@@ -658,7 +763,8 @@ impl Bridge {
             ),
         )
         .map_err(msg)?;
-        resolution_text(&store, &session.repo_id, &res).map_err(msg)
+        bridge_screen_core::owner::resolution_text(store.conn(), &session.repo_id, &res)
+            .map_err(msg)
     }
 
     fn do_handoff_readback(&self, args: &Args<HandoffReadbackInput>) -> Result<String, String> {
@@ -873,6 +979,125 @@ impl Bridge {
         ))
     }
 
+    /// A fresh nonce for the card; expired ones are dropped.
+    fn mint_nonce(&self) -> Result<String, String> {
+        let mut bytes = [0_u8; 16];
+        getrandom::fill(&mut bytes).map_err(msg)?;
+        let nonce: String = bytes.iter().fold(String::new(), |mut h, b| {
+            let _ = write!(h, "{b:02x}");
+            h
+        });
+        let mut nonces = self.nonces.lock().map_err(msg)?;
+        nonces.retain(|_, at| at.elapsed() < NONCE_TTL);
+        nonces.insert(nonce.clone(), Instant::now());
+        Ok(nonce)
+    }
+
+    fn nonce_valid(&self, nonce: &str) -> bool {
+        self.nonces
+            .lock()
+            .is_ok_and(|n| n.get(nonce).is_some_and(|at| at.elapsed() < NONCE_TTL))
+    }
+
+    fn do_show_progress(&self, args: &Args<ShowProgressInput>) -> Result<CallToolResult, String> {
+        let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        let store = self.open()?;
+        let cfg = Config::load(&self.home.config_path()).unwrap_or_default();
+        let mut glance = view::glance(store.conn(), &cfg, jiff::Timestamp::now()).map_err(msg)?;
+        if input.scope == Some(Scope::Repo) {
+            let session = self.caller(&store, "show_progress", &args.raw)?;
+            glance = glance.for_repo(&session.repo_id);
+        }
+        // The text view for hosts without MCP Apps; the dashboard's address without its
+        // token (`bridge-screen ui` prints the link).
+        let opts = crate::status::Options {
+            color: false,
+            dashboard: crate::ui::running(&self.home).map(|l| l.address()),
+        };
+        let text = crate::status::render(&glance, &opts);
+        let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
+        result.structured_content = Some(serde_json::to_value(&glance).map_err(msg)?);
+        let mut meta = serde_json::Map::new();
+        meta.insert(NONCE_KEY.into(), Value::from(self.mint_nonce()?));
+        result.meta = Some(MetaObject::from(meta));
+        Ok(result)
+    }
+
+    fn do_progress_report(&self, args: &Args<ProgressReportInput>) -> Result<String, String> {
+        let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        let store = self.open()?;
+        let cfg = Config::load(&self.home.config_path()).unwrap_or_default();
+        let glance = view::glance(store.conn(), &cfg, jiff::Timestamp::now()).map_err(msg)?;
+        let (glance, label) = match input.scope.unwrap_or(Scope::Repo) {
+            Scope::All => (glance, "all".to_string()),
+            Scope::Repo => {
+                let session = self.caller(&store, "progress_report", &args.raw)?;
+                let name = bridge_screen_core::store::repo_name(store.conn(), &session.repo_id)
+                    .map_err(msg)?
+                    .unwrap_or_else(|| session.repo_id.clone());
+                let safe: String = name
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || c == '-' {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect();
+                (glance.for_repo(&session.repo_id), safe)
+            }
+        };
+        crate::report::write(&store, &glance, &label)
+            .map(|r| r.summary)
+            .map_err(msg)
+    }
+
+    fn do_report_published(&self, args: &Args<ReportPublishedInput>) -> Result<String, String> {
+        let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        let url = input.url.trim();
+        if !(url.starts_with("https://") || url.starts_with("http://"))
+            || url.len() > 500
+            || url.contains(char::is_whitespace)
+        {
+            return Err("url must be the published page's http(s) link".into());
+        }
+        let mut store = self.open()?;
+        let session = self.caller(&store, "report_published", &args.raw)?;
+        let scope = match input.scope {
+            Scope::Repo => "repo",
+            Scope::All => "all",
+        };
+        store
+            .append(bridge_screen_core::store::EventDraft::new(
+                &session.repo_id,
+                &session.session_id,
+                "report_published",
+                serde_json::json!({ "url": url, "scope": scope }),
+            ))
+            .map_err(msg)?;
+        Ok(format!("Recorded the published report: {url}"))
+    }
+
+    fn do_owner_action(&self, args: &Args<OwnerActionInput>) -> Result<String, String> {
+        let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        if !self.nonce_valid(&input.nonce) {
+            return Err(
+                "refused: owner_action answers clicks on the progress card only (its nonce is missing, wrong or expired); nothing was recorded"
+                    .into(),
+            );
+        }
+        let mut store = self.open()?;
+        let cfg = Config::load(&self.home.config_path()).unwrap_or_default();
+        let ctx = owner::ActCtx {
+            home: &self.home,
+            cfg: &cfg,
+            now: jiff::Timestamp::now(),
+            dir: None,
+        };
+        owner::act(&mut store, &ctx, &input.action).map_err(msg)
+    }
+
     fn do_status(&self, args: &Args<StatusInput>) -> Result<String, String> {
         let store = self.open()?;
         let session = self.caller(&store, "status", &args.raw)?;
@@ -886,51 +1111,83 @@ impl Bridge {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for Bridge {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        )
             .with_server_info(Implementation::new("bridge-screen", bridge_screen_core::VERSION))
             .with_instructions(
                 "bridge-screen tracks this session's task and time. Claim your task with claim_task before working; use plan_edit for plan changes; status shows where things stand.",
             )
     }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        serde_json::from_value(serde_json::json!({
+            "resources": [{
+                "uri": PROGRESS_URI,
+                "name": "progress",
+                "title": "bridge-screen progress",
+                "description": "Needs-you items, project progress and live sessions, with the owner's buttons.",
+                "mimeType": APP_MIME,
+            }]
+        }))
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, ErrorData> {
+        if request.uri != PROGRESS_URI {
+            return Err(ErrorData::resource_not_found(
+                format!("no resource {}", request.uri),
+                None,
+            ));
+        }
+        let html = CardDist::get("card.html")
+            .map(|f| String::from_utf8_lossy(&f.data).into_owned())
+            .unwrap_or_default();
+        let result: ReadResourceResult = serde_json::from_value(serde_json::json!({
+            "contents": [{
+                "uri": PROGRESS_URI,
+                "mimeType": APP_MIME,
+                "text": html,
+                // No outside origins at all: the card is self-contained.
+                "_meta": { "ui": { "prefersBorder": true, "csp": {
+                    "connectDomains": [], "resourceDomains": [] } } }
+            }]
+        }))
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(result.into())
+    }
 }
 
-/// What a leftover resolution did, in one line.
-pub fn resolution_text(
-    store: &Store,
-    repo_id: &str,
-    res: &Resolution,
-) -> bridge_screen_core::error::Result<String> {
-    let n = res.ids.len();
-    let what = format!("{n} leftover{}", if n == 1 { "" } else { "s" });
-    let short = |sha: &str| sha.chars().take(8).collect::<String>();
-    Ok(match res.action {
-        LeftoverAction::Adopt => match &res.commit {
-            Some(sha) => format!("Adopted {what}: committed {}.", short(sha)),
-            None => format!("Adopted {what}: nothing was left uncommitted."),
-        },
-        LeftoverAction::Undo => match &res.stash {
-            Some(st) => format!(
-                "Undid {what}: stashed as {} (`git stash apply {}` in {} brings them back).",
-                short(&st.sha),
-                st.sha,
-                res.worktree
-            ),
-            None => format!("Undid {what}: nothing was left uncommitted."),
-        },
-        LeftoverAction::Resume => match &res.claimed {
-            Some(task) => {
-                let title = claim::task_title(store.conn(), repo_id, task)?.unwrap_or_default();
-                format!(
-                    "Resumed {task} {title}: {what} in {} are yours to finish.",
-                    res.worktree
-                )
-            }
-            None => format!(
-                "Marked {what} to resume: the next session in {} continues them.",
-                res.worktree
-            ),
-        },
-    })
+/// The progress card's resource (MCP Apps, spec §10.5).
+pub const PROGRESS_URI: &str = "ui://bridge-screen/progress";
+/// MCP Apps' HTML resource type.
+pub const APP_MIME: &str = "text/html;profile=mcp-app";
+/// Where `show_progress` puts the card's nonce in the result's `_meta`.
+pub const NONCE_KEY: &str = "bridge-screen/nonce";
+/// How long a card's nonce is good for (many uses).
+const NONCE_TTL: Duration = Duration::from_mins(30);
+
+/// The single-file card build (or a placeholder page), embedded like the dashboard.
+#[derive(rust_embed::RustEmbed)]
+#[folder = "$BRIDGE_CARD_DIST"]
+struct CardDist;
+
+/// A tool's `_meta.ui`.
+fn ui_meta(ui: Value) -> MetaObject {
+    let mut m = serde_json::Map::new();
+    m.insert("ui".into(), ui);
+    MetaObject::from(m)
 }
 
 /// The newest live session whose working directory is inside `dir`.
@@ -1131,4 +1388,32 @@ pub fn run() -> Result<()> {
         service.waiting().await?;
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Args, Bridge, NONCE_TTL, OwnerActionInput};
+    use bridge_screen_core::paths::Home;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn an_expired_card_nonce_is_refused() {
+        let home = tempfile::tempdir().unwrap();
+        let bridge = Bridge::new(Home::at(home.path()), None);
+        let fresh = bridge.mint_nonce().unwrap();
+        assert!(bridge.nonce_valid(&fresh));
+        let old = Instant::now()
+            .checked_sub(NONCE_TTL + Duration::from_secs(1))
+            .unwrap();
+        bridge.nonces.lock().unwrap().insert("old".into(), old);
+        let raw = serde_json::json!({
+            "action": {"kind": "reset_drift", "repo": "r"},
+            "nonce": "old"
+        });
+        let args: Args<OwnerActionInput> = serde_json::from_value(raw).unwrap();
+        let refused = bridge.do_owner_action(&args).unwrap_err();
+        assert!(refused.starts_with("refused"), "{refused}");
+        // Nothing was even opened.
+        assert!(!home.path().join("bridge-screen.db").exists());
+    }
 }

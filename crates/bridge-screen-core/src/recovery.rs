@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use jiff::{SignedDuration, Timestamp};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, Transaction, params};
 use serde::Serialize;
 
 use crate::claim::{self, ClaimMode, ClaimRequest, ClaimTarget};
@@ -519,6 +519,33 @@ pub fn resolve(
     caller: &Caller,
     takeover: &Takeover,
 ) -> Result<Resolution> {
+    resolve_then(
+        store,
+        repo_id,
+        snapshots,
+        which,
+        action,
+        caller,
+        takeover,
+        |_, _| Ok(()),
+    )
+}
+
+/// [`resolve`], with `then` run in the same write transaction as the resolution (the
+/// owner's `owner_action`). The write checks again that every leftover is still open —
+/// the git step runs before it, so a racing resolution may have landed meanwhile — and
+/// refuses with [`Error::Stale`], recording nothing, when one isn't.
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_then(
+    store: &mut Store,
+    repo_id: &str,
+    snapshots: &Path,
+    which: &[String],
+    action: LeftoverAction,
+    caller: &Caller,
+    takeover: &Takeover,
+    then: impl FnOnce(&Transaction, &Resolution) -> Result<()>,
+) -> Result<Resolution> {
     let items = find(store.conn(), repo_id, which)?;
     let caller_session = match caller {
         Caller::Agent { session_id } => Some(
@@ -562,6 +589,14 @@ pub fn resolve(
         .as_ref()
         .map_or(OWNER_SESSION.to_string(), |s| s.session_id.clone());
     store.write(|tx| {
+        for l in find(tx, repo_id, &out.ids)? {
+            if l.state == LeftoverState::Resolved {
+                return Err(Error::Stale(format!(
+                    "already resolved: leftover {} was resolved meanwhile",
+                    l.leftover_id
+                )));
+            }
+        }
         if action == LeftoverAction::Resume
             && let (Some(s), Some(t)) = (&caller_session, &task)
             && s.active_task.as_deref() != Some(t.as_str())
@@ -601,7 +636,7 @@ pub fn resolve(
             }
             append_in(tx, draft)?;
         }
-        Ok(())
+        then(tx, &out)
     })?;
     Ok(out)
 }

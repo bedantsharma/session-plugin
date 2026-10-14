@@ -9,14 +9,14 @@ use bridge_screen_core::error::Error;
 use bridge_screen_core::handoff::EndKind;
 use bridge_screen_core::repo;
 use bridge_screen_core::session::{
-    self, FileEvent, NeedsOwner, NeedsOwnerKind, Prompt, Session, SessionEnded, SessionStarted,
-    SessionState, SubagentStopped, UnitStopped,
+    self, FileEvent, NeedsOwner, NeedsOwnerKind, OwnerQuestion, Prompt, QuestionSource, Session,
+    SessionEnded, SessionStarted, SessionState, SubagentStopped, UnitStopped,
 };
 use bridge_screen_core::store::{Actor, EventDraft, Store, append_in};
 use bridge_screen_core::tuning;
 use serde::Serialize;
 
-use super::{HookEvent, HookInput, HookOutput, context, handoff, nav};
+use super::{HookEvent, HookInput, HookOutput, context, handoff, nav, question};
 
 /// Tools whose `tool_input` names files the agent is about to change.
 const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
@@ -288,6 +288,9 @@ fn drafts_for(
     scored: Option<(i64, Option<f64>)>,
 ) -> Result<Vec<EventDraft>> {
     let input = ctx.input;
+    if asks_owner(input) && matches!(event, HookEvent::PreToolUse | HookEvent::PostToolUse) {
+        return ask_tool_drafts(event, ctx, store);
+    }
     let draft = match event {
         HookEvent::SessionStart => {
             let source = input.source.as_deref().unwrap_or("startup");
@@ -323,21 +326,7 @@ fn drafts_for(
             };
             ctx.draft("file_changed", &FileEvent { tool, files })?
         }
-        HookEvent::Stop => {
-            let unit_no = if ctx.known.is_some() {
-                session::current_unit(store.conn(), &input.session_id)?.map(|u| u.unit_no)
-            } else {
-                None
-            };
-            ctx.draft(
-                "unit_stopped",
-                &UnitStopped {
-                    unit_no,
-                    summary: summary(input),
-                    score: scored.and_then(|(_, score)| score),
-                },
-            )?
-        }
+        HookEvent::Stop => return stop_drafts(ctx, store, scored),
         HookEvent::SubagentStop => ctx.draft(
             "subagent_stopped",
             &SubagentStopped {
@@ -381,6 +370,71 @@ fn drafts_for(
         }
     };
     Ok(vec![draft])
+}
+
+/// Stop: the unit stops, and a turn that ends with a question to the owner is one (the
+/// message isn't stored).
+fn stop_drafts(
+    ctx: &Ctx,
+    store: &Store,
+    scored: Option<(i64, Option<f64>)>,
+) -> Result<Vec<EventDraft>> {
+    let input = ctx.input;
+    let unit_no = if ctx.known.is_some() {
+        session::current_unit(store.conn(), &input.session_id)?.map(|u| u.unit_no)
+    } else {
+        None
+    };
+    let mut drafts = vec![ctx.draft(
+        "unit_stopped",
+        &UnitStopped {
+            unit_no,
+            summary: summary(input),
+            score: scored.and_then(|(_, score)| score),
+        },
+    )?];
+    if question::ends_with_question(input.last_assistant_message.as_deref()) {
+        drafts.push(ctx.draft(
+            "owner_question",
+            &OwnerQuestion {
+                unit_no,
+                source: QuestionSource::TurnEnd,
+            },
+        )?);
+    }
+    Ok(drafts)
+}
+
+/// The ask tool waits on the owner: a needs-you item from its PreToolUse until its
+/// PostToolUse (the answer). No question text is kept.
+fn ask_tool_drafts(event: HookEvent, ctx: &Ctx, store: &Store) -> Result<Vec<EventDraft>> {
+    if event == HookEvent::PostToolUse {
+        let mut drafts = wait_over(ctx, store, "file_changed")?;
+        drafts.push(ctx.draft(
+            "question_answered",
+            &serde_json::json!({"source": QuestionSource::AskTool.as_str()}),
+        )?);
+        return Ok(drafts);
+    }
+    let unit_no = if ctx.known.is_some() {
+        session::current_unit(store.conn(), &ctx.input.session_id)?.map(|u| u.unit_no)
+    } else {
+        None
+    };
+    let mut drafts = wait_over(ctx, store, "tool_intent")?;
+    drafts.push(ctx.draft(
+        "owner_question",
+        &OwnerQuestion {
+            unit_no,
+            source: QuestionSource::AskTool,
+        },
+    )?);
+    Ok(drafts)
+}
+
+/// A call to Claude Code's ask tool.
+fn asks_owner(input: &HookInput) -> bool {
+    input.tool_name.as_deref() == Some(question::ASK_TOOL)
 }
 
 /// A tool running while the session waits on the owner (e.g. a Bash call just approved)

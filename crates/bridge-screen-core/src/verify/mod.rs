@@ -34,7 +34,7 @@ pub use stale::{StaleChange, scan_stale, stale_note};
 pub const MAX_EVIDENCE: usize = 500;
 
 /// Keys of `repo_settings` a `config_changed` may set. Only the owner sets them (CLI).
-pub const SETTING_KEYS: &[&str] = &["test_command", "test_timeout_s"];
+pub const SETTING_KEYS: &[&str] = &["test_command", "test_timeout_s", "publish_reports"];
 
 /// Who (or what) reached a level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -306,17 +306,20 @@ pub fn plan_marks(
     Ok(marks)
 }
 
-/// Per-repo test settings.
+/// Per-repo settings.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepoSettings {
     pub test_command: Option<String>,
     pub test_timeout_s: Option<u64>,
+    /// `never` makes `progress_report` refuse; unset means `ask` (spec §10.6).
+    pub publish_reports: Option<String>,
 }
 
 pub fn settings(conn: &Connection, repo_id: &str) -> Result<RepoSettings> {
     Ok(conn
         .prepare_cached(
-            "SELECT test_command, test_timeout_s FROM repo_settings WHERE repo_id = ?1",
+            "SELECT test_command, test_timeout_s, publish_reports FROM repo_settings
+             WHERE repo_id = ?1",
         )?
         .query_row([repo_id], |r| {
             Ok(RepoSettings {
@@ -324,6 +327,7 @@ pub fn settings(conn: &Connection, repo_id: &str) -> Result<RepoSettings> {
                 test_timeout_s: r
                     .get::<_, Option<i64>>(1)?
                     .and_then(|s| u64::try_from(s).ok()),
+                publish_reports: r.get(2)?,
             })
         })
         .optional()?

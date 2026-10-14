@@ -1,6 +1,6 @@
 //! SQL schema. Version 1 is the first released schema; later versions append migrations.
 
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 7;
 
 pub const V1: &str = r"
 CREATE TABLE meta (
@@ -336,4 +336,17 @@ CREATE TABLE repo_settings (
     test_command   TEXT,
     test_timeout_s INTEGER
 );
+";
+
+/// Version 6: the question a session asked the owner (spec §10.1): set by
+/// `owner_question`, cleared when the owner answers (or the session ends).
+pub const V6: &str = r"
+ALTER TABLE sessions ADD COLUMN question_unit INTEGER;
+ALTER TABLE sessions ADD COLUMN question_source TEXT;
+ALTER TABLE sessions ADD COLUMN question_since TEXT;
+";
+
+/// Version 7: the per-repo `publish_reports` switch (`never` or `ask`, spec §10.6).
+pub const V7: &str = r"
+ALTER TABLE repo_settings ADD COLUMN publish_reports TEXT;
 ";

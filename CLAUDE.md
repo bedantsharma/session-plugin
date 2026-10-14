@@ -16,6 +16,11 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
     leftover analysis and adopt/resume/undo (§8.2–8.3); `handoff/` — the handoff model
     (schema v4 views) plus the I-PASS briefing and read-back (§8.4); `squash/` — WIP
     squash, by hand and before a PR (§8.1)
+  - `view/` — the read models every screen renders: `glance` (projects, the needs-you
+    queue, live sessions; ordering, lights and escalation live here) and `drill` (project,
+    session, task, history, tuning) (§10.1–10.2); `owner.rs` — every owner action
+    (drift answer with optional reason, label, leftovers, verify ✓/✗, reset tuning) with
+    the stale-click check; the CLI, dashboard, `watch` and the card all call `owner::act`
   - `verify/` — the verification ladder (§8.5): L1 at HEAD (`l1.rs`), the `verify` tool's
     L2–L4 and the owner's verdict (`ladder.rs`), the bounded L2 test re-run with
     process-group kill (`rerun.rs`, never from a hook), staleness at SessionStart and its
@@ -23,38 +28,53 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
     derivation and done%/claimed% (`mod.rs`), schema v5 views (`project.rs`)
   - `decision/` — decisions with supersede chains, duplicate merging and the capture ask
     (§8.6)
-- `crates/bridge-screen/` — the single binary: CLI, `hook`, `mcp`, `status`, `ui`
+- `crates/bridge-screen/` — the single binary: CLI, `hook`, `mcp`, `status`, `ui`, `watch`
+  - `src/ui/` — `bridge-screen ui`: lock/token/single instance (`mod.rs`), axum router with
+    the JSON API and embedded SPA (`api.rs`); `build.rs` embeds `web/dist` and
+    `web/dist-card` or a placeholder page when they aren't built
+  - `src/watch.rs` — the ratatui live view; `src/status.rs` — the text glance;
+    `src/report.rs` — the opt-in HTML progress report
   - `src/hook/` — `bridge-screen hook <event>`: payload parsing, per-event handlers, injected context
   - `src/hook/nav.rs` — the navigator's part of a hook (label at Stop, tolerance band, notes)
+  - `src/hook/question.rs` — did the turn end with a question to the owner (pure string
+    checks; no text stored) and the `AskUserQuestion` tool name
   - `src/hook/handoff.rs` — checkpoint request/detection, SessionEnd classification,
     SessionStart recovery and briefing, read-back nudge, squash before a PR
   - `src/mcp.rs` — `bridge-screen mcp`: stdio MCP server (`claim_task`, `plan_edit`, `status`,
     `start_detour`, `close_detour`, `resume`, `promote_detour`, `label_unit`, `claim_done`,
-    `handoff_readback`, `handoff_note`, `resolve_leftover`, `verify`, `log_decision`)
+    `handoff_readback`, `handoff_note`, `resolve_leftover`, `verify`, `log_decision`,
+    `show_progress` + the `ui://bridge-screen/progress` card resource, `owner_action`
+    (card-only: needs the card's nonce), `progress_report`, `report_published`)
   - `tests/fixtures/hooks/` — one recorded-style hook payload per event
 - `plugin/` — the Claude Code plugin: `.claude-plugin/plugin.json`, `hooks/hooks.json`,
   `.mcp.json`, `skills/bridge-screen/SKILL.md`, `commands/bridge-screen.md`, and the
   `scripts/bridge-screen` launcher (POSIX sh; uses a matching PATH binary or downloads one)
 - `.claude-plugin/marketplace.json` — marketplace `bridge-screen` listing `./plugin`
-- `web/` — Svelte 5 + Vite + Tailwind dashboard, embedded into the binary at build time
+- `web/` — Svelte 5 + Vite + Tailwind + shadcn-svelte + LayerChart, embedded into the binary
+  at build time: the dashboard (`src/App.svelte`, `src/lib/glance`, `src/lib/drill`,
+  `src/lib/api.ts`) and the single-file desktop card (`src/card`, `vite.card.config.ts`);
+  palette tokens once in `src/app.css`; `tests/` (vitest), `e2e/` (Playwright)
 - `docs/superpowers/` — specs and implementation plans
 
 ## Commands
 
 - First-time setup: `scripts/setup.sh` (enables `.githooks`, installs web deps)
 - Rust: `cargo build`, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all`
-- Web (in `web/`): `npm run dev`, `npm run build`, `npm run lint`, `npm run check`, `npm run format`
+- Web (in `web/`): `npm run dev`, `npm run build` (dashboard + card), `npm run lint`,
+  `npm run check`, `npm run format`, `npm run test` (vitest), `npm run e2e` (Playwright,
+  chromium; needs `cargo build --release` first)
+- Screens: `bridge-screen ui [--port N] [--no-open]`, `bridge-screen watch`
 - Hooks: `bridge-screen hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|stop|subagent-stop|pre-compact|notification|session-end>` (hook JSON on stdin; always exits 0, errors go to `~/.bridge-screen/hook-errors.log`)
 - MCP server: `bridge-screen mcp` (stdio; Claude Code starts it through the plugin)
 - Status: `bridge-screen status`; plugin registration: `bridge-screen install [--dev | --no-plugin]`
-- Owner answers: `bridge-screen drift <session-prefix> continue|make-task|stop [--parent P --title T]`,
+- Owner answers: `bridge-screen drift <session-prefix> continue|make-task|stop [--reason R] [--parent P --title T]`,
   `bridge-screen label <session-prefix> <unit_no> on-task|detour|drift`
 - Recovery: `bridge-screen resolve <leftover-id|prefix>… adopt|resume|undo [-C DIR]`;
   `bridge-screen squash [-C DIR] [--onto BASE] [--dry-run]`
 - Config: `bridge-screen config [-C DIR]` (shows the repo's tuned drift thresholds and test
   settings), `bridge-screen config reset-drift [-C DIR]`,
-  `bridge-screen config set test-command "<cmd>" | test-timeout <secs> [-C DIR]`,
-  `bridge-screen config unset test-command|test-timeout [-C DIR]` (owner only; the L2 re-run)
+  `bridge-screen config set test-command "<cmd>" | test-timeout <secs> | publish-reports never|ask [-C DIR]`,
+  `bridge-screen config unset test-command|test-timeout|publish-reports [-C DIR]` (owner only)
 - Verification and decisions: `bridge-screen verify <task> [--broken "<note>"] [--level N] [-C DIR]`
   (the owner's verdict), `bridge-screen decisions [-C DIR] [--task ID] [--all]`
 - Plugin check: `claude plugin validate ./plugin` (read-only)

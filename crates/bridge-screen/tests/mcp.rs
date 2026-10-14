@@ -50,10 +50,14 @@ fn lists_three_tools_with_schemas() {
             "handoff_readback",
             "label_unit",
             "log_decision",
+            "owner_action",
             "plan_edit",
+            "progress_report",
             "promote_detour",
+            "report_published",
             "resolve_leftover",
             "resume",
+            "show_progress",
             "start_detour",
             "status",
             "verify"
@@ -742,4 +746,291 @@ fn status_shows_checkpoint_read_back_and_leftovers() {
     );
     assert!(text.contains("Leftovers (1): "), "{text}");
     assert!(text.contains(" left.txt (no task) → adopt"), "{text}");
+}
+
+mod progress_card {
+    //! `show_progress` and the MCP Apps card (spec §10.5).
+
+    use super::common::{Env, Mcp};
+    use bridge_screen_core::store::{EventDraft, Store, append_in_at, read_all};
+    use jiff::{SignedDuration, Timestamp};
+    use serde_json::{Value, json};
+
+    /// Session `red1` far off its task (red, unanswered).
+    fn red(env: &Env) {
+        env.hook("session-start", "red1");
+        let repo = bridge_screen_core::repo::identify(env.repo.path())
+            .unwrap()
+            .id;
+        let mut s = Store::open(&env.db_path()).unwrap();
+        let now = Timestamp::now();
+        let ago = |m: i64| now - SignedDuration::from_mins(m);
+        s.write(|tx| {
+            for (kind, data, ts) in [
+                ("prompt", json!({}), ago(45)),
+                ("unit_stopped", json!({}), ago(5)),
+                (
+                    "unit_labeled",
+                    json!({"unit_no": 1, "label": "drift", "source": "agent"}),
+                    ago(5),
+                ),
+                (
+                    "nav_state_changed",
+                    json!({"from": "green", "to": "red", "away_secs": 2400}),
+                    ago(5),
+                ),
+            ] {
+                append_in_at(tx, EventDraft::new(&repo, "red1", kind, data), ts)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    fn events(env: &Env) -> usize {
+        read_all(Store::open(&env.db_path()).unwrap().conn(), None)
+            .unwrap()
+            .len()
+    }
+
+    fn show(mcp: &mut Mcp) -> Value {
+        let resp = mcp.request(
+            "tools/call",
+            &json!({"name": "show_progress", "arguments": {}}),
+        );
+        resp["result"].clone()
+    }
+
+    #[test]
+    fn tools_list_links_the_card_and_hides_only_owner_action() {
+        let env = Env::new();
+        let mut mcp = Mcp::start(&env, "/nonexistent");
+        let tools = mcp.request("tools/list", &json!({}))["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let by = |n: &str| tools.iter().find(|t| t["name"] == n).unwrap().clone();
+        assert_eq!(
+            by("show_progress")["_meta"]["ui"]["resourceUri"],
+            "ui://bridge-screen/progress"
+        );
+        assert_eq!(
+            by("owner_action")["_meta"]["ui"]["visibility"],
+            json!(["app"])
+        );
+        let hidden: Vec<&str> = tools
+            .iter()
+            .filter(|t| !t["_meta"]["ui"]["visibility"].is_null())
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(hidden, vec!["owner_action"]);
+    }
+
+    #[test]
+    fn resources_serve_the_card_as_an_mcp_app() {
+        let env = Env::new();
+        let mut mcp = Mcp::start(&env, "/nonexistent");
+        let list = mcp.request("resources/list", &json!({}));
+        let r = &list["result"]["resources"][0];
+        assert_eq!(r["uri"], "ui://bridge-screen/progress");
+        assert_eq!(r["mimeType"], "text/html;profile=mcp-app");
+        let read = mcp.request(
+            "resources/read",
+            &json!({"uri": "ui://bridge-screen/progress"}),
+        );
+        let c = &read["result"]["contents"][0];
+        assert_eq!(c["mimeType"], "text/html;profile=mcp-app");
+        assert!(c["text"].as_str().unwrap().contains("<html"), "{c}");
+        let missing = mcp.request("resources/read", &json!({"uri": "ui://nope"}));
+        assert!(missing["error"].is_object(), "{missing}");
+    }
+
+    #[test]
+    fn show_progress_returns_text_the_glance_and_a_nonce() {
+        let env = Env::new();
+        red(&env);
+        let mut mcp = Mcp::start(&env, "/nonexistent");
+        let result = show(&mut mcp);
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.starts_with("bridge-screen · 1 live session · 1 project"),
+            "{text}"
+        );
+        assert!(text.contains("needs you"), "{text}");
+        let g = &result["structuredContent"];
+        assert_eq!(g["needs_you_count"], 1);
+        assert_eq!(g["needs_you"][0]["kind"], "drift_red");
+        assert_eq!(
+            result["_meta"]["bridge-screen/nonce"]
+                .as_str()
+                .unwrap()
+                .len(),
+            32
+        );
+    }
+
+    #[test]
+    fn owner_action_records_and_refuses_stale_clicks() {
+        let env = Env::new();
+        red(&env);
+        let mut mcp = Mcp::start(&env, "/nonexistent");
+        let result = show(&mut mcp);
+        let nonce = result["_meta"]["bridge-screen/nonce"].clone();
+        let action = result["structuredContent"]["needs_you"][0]["actions"][0]["action"].clone();
+        assert_eq!(action["answer"], "continue");
+        let before = events(&env);
+        let (err, text) = mcp.call("owner_action", &json!({"action": action, "nonce": nonce}));
+        assert!(!err, "{text}");
+        assert_eq!(text, "Told red1: continue.");
+        assert!(events(&env) > before);
+        let after = events(&env);
+        let (err, text) = mcp.call("owner_action", &json!({"action": action, "nonce": nonce}));
+        assert!(err && text.starts_with("already resolved"), "{text}");
+        assert_eq!(events(&env), after);
+    }
+
+    #[test]
+    fn owner_action_needs_card_nonce() {
+        let env = Env::new();
+        red(&env);
+        let mut mcp = Mcp::start(&env, "/nonexistent");
+        let action = json!({"kind": "drift", "session": "red1", "answer": "stop"});
+        let before = events(&env);
+        // Missing: an invalid call.
+        let (err, _) = mcp.call("owner_action", &json!({"action": action}));
+        assert!(err);
+        // Wrong (made up by the model, or from another server process).
+        let (err, text) = mcp.call(
+            "owner_action",
+            &json!({"action": action, "nonce": "00000000000000000000000000000000"}),
+        );
+        assert!(err && text.starts_with("refused"), "{text}");
+        assert_eq!(events(&env), before, "nothing recorded");
+        // (Expiry is a unit test in src/mcp.rs: it needs a clock 30 minutes on.)
+    }
+}
+
+mod reports {
+    //! Opt-in progress reports (spec §10.6).
+
+    use super::common::{Env, Mcp, call_as};
+    use bridge_screen_core::store::{Store, read_all};
+    use serde_json::json;
+
+    fn setup() -> (Env, Mcp) {
+        let env = Env::new();
+        let out = env.run(&["plan", "edit"], super::SEED);
+        assert!(out.status.success());
+        env.hook("session-start", "s1");
+        let mcp = Mcp::start(&env, "/nonexistent");
+        (env, mcp)
+    }
+
+    #[test]
+    fn a_report_is_self_contained_and_described() {
+        let (env, mut mcp) = setup();
+        let (err, text) = call_as(&mut mcp, &env, "s1", "progress_report", &json!({}));
+        assert!(!err, "{text}");
+        let path = text
+            .strip_prefix("Wrote ")
+            .and_then(|t| t.split_once(". It is"))
+            .unwrap()
+            .0
+            .to_string();
+        let html = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(!html.contains("<script"), "no scripts");
+        assert!(
+            !html.contains("http://") && !html.contains("https://"),
+            "no outside URLs"
+        );
+        assert!(html.contains("0% done · +0% claimed"), "{html}");
+        assert!(html.contains("All clear"), "{html}");
+        assert!(
+            text.contains("projects:") && text.contains("0 needs-you item(s)"),
+            "{text}"
+        );
+        assert!(text.contains("only after the owner confirms"), "{text}");
+        // Every title the page shows is named in the summary: the goal and milestones too.
+        assert!(html.contains("Ship") && html.contains("Accounts"), "{html}");
+        assert!(
+            text.contains("goal Ship") && text.contains("milestones 1 Accounts"),
+            "{text}"
+        );
+        // Nothing was written inside the repo.
+        assert!(
+            !std::fs::read_dir(env.repo.path()).unwrap().any(|e| e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("report"))
+        );
+    }
+
+    #[test]
+    fn never_refuses_and_ask_allows() {
+        let (env, mut mcp) = setup();
+        let out = env.run(&["config", "set", "publish-reports", "never"], "");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let shown = env.run(&["config"], "");
+        assert!(String::from_utf8_lossy(&shown.stdout).contains(": never"));
+        let (err, text) = call_as(&mut mcp, &env, "s1", "progress_report", &json!({}));
+        assert!(err && text.starts_with("refused"), "{text}");
+        let bad = env.run(&["config", "set", "publish-reports", "sometimes"], "");
+        assert!(!bad.status.success());
+        assert!(
+            env.run(&["config", "unset", "publish-reports"], "")
+                .status
+                .success()
+        );
+        let (err, text) = call_as(
+            &mut mcp,
+            &env,
+            "s1",
+            "progress_report",
+            &json!({"scope": "all"}),
+        );
+        assert!(!err, "{text}");
+        let path = text
+            .strip_prefix("Wrote ")
+            .unwrap()
+            .split_once(". It is")
+            .unwrap()
+            .0;
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn report_published_is_recorded() {
+        let (env, mut mcp) = setup();
+        let (err, text) = call_as(
+            &mut mcp,
+            &env,
+            "s1",
+            "report_published",
+            &json!({"url": "https://claude.ai/artifact/abc", "scope": "repo"}),
+        );
+        assert!(!err, "{text}");
+        let events = read_all(Store::open(&env.db_path()).unwrap().conn(), None).unwrap();
+        let e = events
+            .iter()
+            .find(|e| e.kind == "report_published")
+            .unwrap();
+        assert_eq!(
+            e.data,
+            json!({"url": "https://claude.ai/artifact/abc", "scope": "repo"})
+        );
+        let (err, _) = call_as(
+            &mut mcp,
+            &env,
+            "s1",
+            "report_published",
+            &json!({"url": "javascript:alert(1)", "scope": "repo"}),
+        );
+        assert!(err);
+    }
 }

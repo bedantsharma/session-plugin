@@ -29,6 +29,16 @@ pub enum Error {
     /// A verification or decision the agent or owner can fix (spec §8.5–8.6).
     #[error("{0}")]
     Verify(String),
+    /// An owner action on something that is no longer open (already answered, resolved
+    /// or verified): nothing was recorded.
+    #[error("{0}")]
+    Stale(String),
+    /// An owner action the owner can fix and resend (e.g. a reason that says nothing).
+    #[error("{0}")]
+    Invalid(String),
+    /// A screen asked for something that doesn't exist.
+    #[error("{0}")]
+    NotFound(String),
     #[error("invalid event: {0}")]
     BadEvent(String),
     #[error(transparent)]

@@ -28,6 +28,8 @@ pub struct Config {
     /// Seconds the L2 re-run of the test command may take (spec §8.5); a repo's own
     /// `test_timeout_s` (`bridge-screen config set test-timeout`) overrides it.
     pub verify_timeout_s: u64,
+    /// The dashboard's port on 127.0.0.1 (`bridge-screen ui`); 0 = any free port.
+    pub ui_port: u16,
 }
 
 impl Default for Config {
@@ -41,6 +43,7 @@ impl Default for Config {
             tolerance_min_minutes: 15,
             tolerance_pct: 20,
             verify_timeout_s: 120,
+            ui_port: 0,
         }
     }
 }
@@ -92,6 +95,7 @@ mod tests {
                 tolerance_min_minutes: 15,
                 tolerance_pct: 20,
                 verify_timeout_s: 120,
+                ui_port: 0,
             }
         );
     }
@@ -140,6 +144,7 @@ mod tests {
             tolerance_min_minutes: 10,
             tolerance_pct: 30,
             verify_timeout_s: 300,
+            ui_port: 8787,
         };
         let text = cfg.to_toml().unwrap();
         assert_eq!(toml::from_str::<Config>(&text).unwrap(), cfg);

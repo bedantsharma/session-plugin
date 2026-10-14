@@ -5,15 +5,15 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use bridge_screen_core::config::Config;
 use bridge_screen_core::handoff::LeftoverAction;
-use bridge_screen_core::navigator::{self, Channel};
+use bridge_screen_core::owner::{self, OwnerAction};
 use bridge_screen_core::paths::Home;
 use bridge_screen_core::plan::{EditContext, PlanOp, load_tree, plan_edit, render_annotated};
-use bridge_screen_core::recovery::{self, Caller};
+use bridge_screen_core::recovery;
 use bridge_screen_core::repo;
-use bridge_screen_core::session::{self, Session};
+use bridge_screen_core::session;
 use bridge_screen_core::squash;
-use bridge_screen_core::store::{Actor, EventDraft, OWNER_SESSION, Store, append_in};
-use bridge_screen_core::tangent::{self, Label, LabelRequest, LabelSource, NavState, OwnerAction};
+use bridge_screen_core::store::{Actor, EventDraft, OWNER_SESSION, Store};
+use bridge_screen_core::tangent::{self, Label};
 use bridge_screen_core::verify;
 
 use crate::cli::{Cli, Command, ConfigCommand, DriftAnswer, LabelArg, PlanCommand, SettingArg};
@@ -39,7 +39,8 @@ pub fn run(cli: Cli) -> Result<()> {
             parent,
             title,
             estimate,
-        } => drift(&session, answer, parent.zip(title), estimate),
+            reason,
+        } => drift(&session, answer, parent.zip(title), estimate, reason),
         Command::Label {
             session,
             unit_no,
@@ -69,30 +70,40 @@ pub fn run(cli: Cli) -> Result<()> {
             dir,
         } => set_setting(&dir, key, None),
         Command::Mcp => crate::mcp::run(),
-        Command::Status => {
-            let home = Home::resolve()?;
-            let mut store = open_store(&home)?;
-            let cfg = Config::load(&home.config_path())?;
-            // Sessions silent past the crash timeout are shown as crashed, not live.
-            let mut repos: Vec<String> = session::list_live(store.conn(), None)?
-                .into_iter()
-                .map(|s| s.repo_id)
-                .collect();
-            repos.sort();
-            repos.dedup();
-            for repo_id in repos {
-                recovery::scan_crashed(
-                    &mut store,
-                    &repo_id,
-                    jiff::Timestamp::now(),
-                    cfg.crash_timeout_min,
-                )?;
-            }
-            print!("{}", crate::status::render(&store, &cfg)?);
-            Ok(())
-        }
+        Command::Ui { port, no_open } => crate::ui::run(port, no_open),
+        Command::Status => print_status(),
+        Command::Watch => crate::watch::run(),
         Command::Hook { .. } => unreachable!("main handles hooks before dispatching commands"),
     }
+}
+
+/// `bridge-screen status` (also what `watch` prints when stdout isn't a terminal).
+pub fn print_status() -> Result<()> {
+    let home = Home::resolve()?;
+    let mut store = open_store(&home)?;
+    let cfg = Config::load(&home.config_path())?;
+    // Sessions silent past the crash timeout are shown as crashed, not live.
+    let mut repos: Vec<String> = session::list_live(store.conn(), None)?
+        .into_iter()
+        .map(|s| s.repo_id)
+        .collect();
+    repos.sort();
+    repos.dedup();
+    for repo_id in repos {
+        recovery::scan_crashed(
+            &mut store,
+            &repo_id,
+            jiff::Timestamp::now(),
+            cfg.crash_timeout_min,
+        )?;
+    }
+    let glance = bridge_screen_core::view::glance(store.conn(), &cfg, jiff::Timestamp::now())?;
+    let opts = crate::status::Options {
+        color: crate::status::stdout_color(),
+        dashboard: crate::ui::running(&home).map(|l| l.address()),
+    };
+    print!("{}", crate::status::render(&glance, &opts));
+    Ok(())
 }
 
 fn open_store(home: &Home) -> Result<Store> {
@@ -182,18 +193,16 @@ fn resolve(dir: &Path, args: &[String]) -> Result<()> {
     let home = Home::resolve()?;
     let mut store = open_store(&home)?;
     store.register_repo(&repo)?;
-    let res = recovery::resolve(
+    owner_cmd(
+        &home,
         &mut store,
-        &repo.id,
-        &home.snapshots_dir(&repo.id),
-        ids,
-        action,
-        &Caller::Owner,
-        // The owner's choice needs no waiting.
-        &recovery::Takeover::new(jiff::Timestamp::now(), 0),
-    )?;
-    println!("{}", crate::mcp::resolution_text(&store, &repo.id, &res)?);
-    Ok(())
+        None,
+        &OwnerAction::Resolve {
+            repo: Some(repo.id),
+            leftover_ids: ids.to_vec(),
+            action,
+        },
+    )
 }
 
 fn squash_cmd(dir: &Path, onto: Option<String>, dry_run: bool) -> Result<()> {
@@ -283,6 +292,9 @@ fn config(dir: &Path) -> Result<()> {
         if let Some(cmd) = set.test_command {
             println!("# test command for {}: {cmd}", repo.name);
         }
+        if let Some(v) = set.publish_reports {
+            println!("# publish reports for {}: {v}", repo.name);
+        }
         if let Some(secs) = set.test_timeout_s {
             println!("# test timeout for {}: {secs} s", repo.name);
         }
@@ -318,6 +330,14 @@ fn set_setting(dir: &Path, key: SettingArg, value: Option<&str>) -> Result<()> {
             let cmd = cmd.trim();
             anyhow::ensure!(!cmd.is_empty(), "the test command is empty");
             Some(serde_json::Value::from(cmd))
+        }
+        (SettingArg::PublishReports, Some(v)) => {
+            let v = v.trim();
+            anyhow::ensure!(
+                v == "never" || v == "ask",
+                "publish-reports takes never or ask, not {v}"
+            );
+            Some(serde_json::Value::from(v))
         }
         (SettingArg::TestTimeout, Some(secs)) => {
             let secs: u64 = secs
@@ -361,13 +381,22 @@ fn decisions_cmd(dir: &Path, task: Option<&str>, all: bool) -> Result<()> {
 
 fn verify_cmd(dir: &Path, task: &str, broken: Option<&str>, level: i64) -> Result<()> {
     let repo = repo::identify(dir)?;
-    let wt = bridge_screen_core::git::toplevel(dir)?;
     let home = Home::resolve()?;
     let mut store = open_store(&home)?;
     store.register_repo(&repo)?;
-    let line = verify::owner_verdict(&mut store, &repo.id, task, &wt, level, broken)?;
-    println!("{line}");
-    Ok(())
+    let action = match broken {
+        Some(note) => OwnerAction::Broken {
+            repo: repo.id,
+            task: task.to_string(),
+            note: note.to_string(),
+        },
+        None => OwnerAction::Verify {
+            repo: repo.id,
+            task: task.to_string(),
+            level,
+        },
+    };
+    owner_cmd(&home, &mut store, Some(dir), &action)
 }
 
 fn reset_drift(dir: &Path) -> Result<()> {
@@ -375,59 +404,37 @@ fn reset_drift(dir: &Path) -> Result<()> {
     let home = Home::resolve()?;
     let mut store = open_store(&home)?;
     store.register_repo(&repo)?;
+    let action = OwnerAction::ResetDrift { repo: repo.id };
+    match owner_cmd(&home, &mut store, None, &action) {
+        // Already at the defaults: nothing to do, which is fine here.
+        Err(e) => match e.downcast_ref::<bridge_screen_core::error::Error>() {
+            Some(bridge_screen_core::error::Error::Stale(msg)) => {
+                println!("{msg}");
+                Ok(())
+            }
+            _ => Err(e),
+        },
+        ok => ok,
+    }
+}
+
+/// Run one owner action (the same path the dashboard, `watch` and the card take) and
+/// print its reply.
+fn owner_cmd(
+    home: &Home,
+    store: &mut Store,
+    dir: Option<&Path>,
+    action: &OwnerAction,
+) -> Result<()> {
     let cfg = Config::load(&home.config_path())?;
-    let changes = store.write(|tx| bridge_screen_core::tuning::reset(tx, &repo.id, &cfg))?;
-    if changes.is_empty() {
-        println!("Drift tuning for {} is already at the defaults.", repo.name);
-    } else {
-        let parts: Vec<String> = changes
-            .iter()
-            .map(|c| format!("{} {} → {}", c.key, c.old, c.new))
-            .collect();
-        println!(
-            "Reset drift tuning for {}: {}.",
-            repo.name,
-            parts.join(", ")
-        );
-    }
-    Ok(())
-}
-
-/// The live session whose id starts with `prefix`.
-fn find_session(store: &Store, prefix: &str) -> Result<Session> {
-    let found: Vec<Session> = session::list_live(store.conn(), None)?
-        .into_iter()
-        .filter(|s| s.session_id.starts_with(prefix))
-        .collect();
-    match found.len() {
-        0 => anyhow::bail!("no live session starts with {prefix}"),
-        1 => Ok(found.into_iter().next().expect("one session")),
-        _ => {
-            let ids: Vec<&str> = found.iter().map(|s| s.session_id.as_str()).collect();
-            anyhow::bail!("session prefix {prefix} is ambiguous: {}", ids.join(", "))
-        }
-    }
-}
-
-/// Re-check the session's tolerance band after an owner action (state events only).
-fn recheck(store: &mut Store, config: &Config, session_id: &str) -> Result<()> {
-    store.write(|tx| {
-        let Some(s) = session::get(tx, session_id)? else {
-            return Ok(());
-        };
-        let th = tangent::thresholds(tx, &s.repo_id, config)?;
-        let step = navigator::nav_step(
-            tx,
-            session_id,
-            Channel::ToolResult,
-            &th,
-            jiff::Timestamp::now(),
-        )?;
-        for draft in step.events {
-            append_in(tx, draft)?;
-        }
-        Ok(())
-    })?;
+    let ctx = owner::ActCtx {
+        home,
+        cfg: &cfg,
+        now: jiff::Timestamp::now(),
+        dir,
+    };
+    let reply = owner::act(store, &ctx, action)?;
+    println!("{reply}");
     Ok(())
 }
 
@@ -436,82 +443,34 @@ fn drift(
     answer: DriftAnswer,
     task: Option<(String, String)>,
     estimate: Option<u32>,
+    reason: Option<String>,
 ) -> Result<()> {
     let home = Home::resolve()?;
     let mut store = open_store(&home)?;
-    let config = Config::load(&home.config_path())?;
-    let s = find_session(&store, prefix)?;
-    // An answer needs a question: the session is (or was last seen) outside tolerance.
-    let th = tangent::thresholds(store.conn(), &s.repo_id, &config)?;
-    let live = tangent::evaluate(store.conn(), &s, &th, jiff::Timestamp::now())?.state;
-    if live == NavState::Green && s.nav_state == NavState::Green {
-        anyhow::bail!(
-            "{} is inside its tolerance band; there is no drift to answer",
-            s.session_id
-        );
-    }
-    let mut reply = format!(
-        "Told {}: {}.",
-        s.session_id,
-        answer.as_str().replace('_', " ")
-    );
-    if answer == DriftAnswer::MakeTask {
-        let (parent, title) = task.context("make-task needs --parent and --title")?;
-        let out = tangent::promote_detour(
-            &mut store,
-            &s.session_id,
-            &parent,
-            &title,
-            estimate,
-            &Actor::default(),
-        )?;
-        reply = format!(
-            "Detour {} is now task {}, claimed by {}.",
-            out.detour.label(),
-            out.task_id,
-            s.session_id
-        );
-    }
-    let data = OwnerAction {
-        action: "drift".into(),
-        answer: Some(answer.as_str().into()),
-        target: Some(s.session_id.clone()),
+    let (parent, title) = task.unzip();
+    let action = OwnerAction::Drift {
+        session: prefix.to_string(),
+        answer: answer.into(),
+        parent,
+        title,
+        estimate,
+        reason,
     };
-    store.append(EventDraft::new(
-        &s.repo_id,
-        OWNER_SESSION,
-        "owner_action",
-        serde_json::to_value(data)?,
-    ))?;
-    recheck(&mut store, &config, &s.session_id)?;
-    println!("{reply}");
-    Ok(())
+    owner_cmd(&home, &mut store, None, &action)
 }
 
 fn label_cmd(prefix: &str, unit_no: i64, label: LabelArg) -> Result<()> {
     let home = Home::resolve()?;
     let mut store = open_store(&home)?;
-    let config = Config::load(&home.config_path())?;
-    let s = find_session(&store, prefix)?;
     let label = match label {
         LabelArg::OnTask => Label::OnTask,
         LabelArg::Detour => Label::Detour,
         LabelArg::Drift => Label::Drift,
     };
-    let th = tangent::thresholds(store.conn(), &s.repo_id, &config)?;
-    let req = LabelRequest {
-        session_id: s.session_id.clone(),
-        unit_no: Some(unit_no),
+    let action = OwnerAction::Label {
+        session: prefix.to_string(),
+        unit_no,
         label,
-        source: LabelSource::Owner,
-        why: None,
     };
-    tangent::label_unit(&mut store, &req, &th, &Actor::default())?;
-    recheck(&mut store, &config, &s.session_id)?;
-    println!(
-        "Labelled unit {unit_no} of {} as {}.",
-        s.session_id,
-        label.display()
-    );
-    Ok(())
+    owner_cmd(&home, &mut store, None, &action)
 }

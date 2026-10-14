@@ -1,0 +1,8 @@
+# Inserted by dist into the release build jobs (dist-workspace.toml: github-build-setup).
+# The dashboard and desktop card are embedded into the binary, so build them first.
+- name: Set up Node
+  uses: actions/setup-node@v4
+  with:
+    node-version-file: web/.nvmrc
+- name: Build the web app (embedded into the binary)
+  run: npm --prefix web ci && npm --prefix web run build

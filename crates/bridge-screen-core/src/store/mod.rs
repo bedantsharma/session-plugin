@@ -179,6 +179,12 @@ fn migrate(conn: &mut Connection) -> Result<()> {
     if current < 5 {
         tx.execute_batch(schema::V5)?;
     }
+    if current < 6 {
+        tx.execute_batch(schema::V6)?;
+    }
+    if current < 7 {
+        tx.execute_batch(schema::V7)?;
+    }
     tx.execute(
         "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
         [SCHEMA_VERSION.to_string()],
@@ -409,7 +415,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(version, "5");
+        assert_eq!(version, super::SCHEMA_VERSION.to_string());
         let claims = crate::handoff::claims_done(store.conn(), "r").unwrap();
         assert_eq!(claims.len(), 1);
         assert_eq!((claims[0].files.len(), claims[0].symbols.len()), (0, 0));

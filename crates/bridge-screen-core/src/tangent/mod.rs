@@ -19,7 +19,8 @@ use crate::error::Result;
 
 pub use ops::{
     CloseRequest, Closed, DetourOutcome, LabelRequest, MAX_CUE_CHARS, Promoted, StartRequest,
-    Started, close_detour, item_display, label_unit, promote_detour, resume, start_detour,
+    Started, close_detour, item_display, label_unit, label_unit_in, promote_detour,
+    promote_detour_in, resume, start_detour,
 };
 pub use project::{
     ConfigChanged, DetourClosed, DetourOpened, DetourPromoted, DriftFlagged, ItemResumed,

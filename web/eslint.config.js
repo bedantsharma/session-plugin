@@ -6,7 +6,7 @@ import ts from 'typescript-eslint'
 import svelteConfig from './svelte.config.js'
 
 export default ts.config(
-  { ignores: ['dist/', 'node_modules/'] },
+  { ignores: ['dist/', 'dist-card/', 'node_modules/', 'playwright-report/', 'test-results/'] },
   js.configs.recommended,
   ...ts.configs.recommended,
   ...svelte.configs.recommended,

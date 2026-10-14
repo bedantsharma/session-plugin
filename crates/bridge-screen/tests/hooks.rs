@@ -1022,3 +1022,107 @@ fn hook_latency_session_start_staleness() {
         1000,
     );
 }
+
+mod questions {
+    //! "The agent asked you a question" (spec §10.1): a needs-you item from the Stop
+    //! message or the ask tool, closed by the owner's answer.
+
+    use super::common::{Env, fixture_json};
+    use bridge_screen_core::config::Config;
+    use bridge_screen_core::store::{Store, read_all};
+    use bridge_screen_core::view::{self, NeedsKind};
+    use serde_json::json;
+
+    fn queue(env: &Env) -> Vec<(NeedsKind, String)> {
+        let store = Store::open(&env.db_path()).unwrap();
+        view::glance(store.conn(), &Config::default(), jiff::Timestamp::now())
+            .unwrap()
+            .needs_you
+            .into_iter()
+            .map(|i| (i.kind, i.title))
+            .collect()
+    }
+
+    fn stop_saying(env: &Env, session: &str, message: &str) {
+        let mut p = fixture_json("stop", session, &env.repo_path());
+        p["last_assistant_message"] = json!(message);
+        assert_eq!(env.hook_raw("stop", &p.to_string()), "");
+    }
+
+    fn ask_tool(env: &Env, session: &str, event: &str) {
+        let mut p = fixture_json(event, session, &env.repo_path());
+        p["tool_name"] = json!("AskUserQuestion");
+        p["tool_input"] = json!({"questions": [{"question": "Which database should I use?"}]});
+        env.hook_raw(event, &p.to_string());
+    }
+
+    #[test]
+    fn a_turn_ending_with_a_question_needs_the_owner_until_the_next_prompt() {
+        let env = Env::new();
+        env.hook("session-start", "qa0001");
+        env.hook("user-prompt-submit", "qa0001");
+        stop_saying(
+            &env,
+            "qa0001",
+            "Tests pass.\n\nShould I also migrate the old rows?",
+        );
+        assert_eq!(
+            queue(&env),
+            vec![(
+                NeedsKind::Question,
+                "qa0001 asked you a question".to_string()
+            )]
+        );
+        let store = Store::open(&env.db_path()).unwrap();
+        let asked: Vec<_> = read_all(store.conn(), None)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "owner_question")
+            .collect();
+        drop(store);
+        assert_eq!(asked.len(), 1);
+        // The event carries no message text.
+        assert_eq!(asked[0].data, json!({"unit_no": 1, "source": "turn_end"}));
+        let status = String::from_utf8(env.run(&["status"], "").stdout).unwrap();
+        assert!(
+            status.contains("needs you") && status.contains("asked you a question"),
+            "{status}"
+        );
+        // The owner answers: the next prompt closes it.
+        env.hook("user-prompt-submit", "qa0001");
+        assert_eq!(queue(&env), vec![]);
+        // A turn ending with a statement closes an earlier turn-end question too.
+        stop_saying(&env, "qa0001", "Shall I go on?");
+        assert_eq!(queue(&env).len(), 1);
+        stop_saying(&env, "qa0001", "Went ahead with the migration.");
+        assert_eq!(queue(&env), vec![]);
+        assert_eq!(env.log(), "");
+    }
+
+    #[test]
+    fn the_ask_tool_needs_the_owner_until_it_returns() {
+        let env = Env::new();
+        env.hook("session-start", "qb0001");
+        env.hook("user-prompt-submit", "qb0001");
+        ask_tool(&env, "qb0001", "pre-tool-use");
+        assert_eq!(queue(&env)[0].0, NeedsKind::Question);
+        // A Stop without a question doesn't close the ask tool's question.
+        stop_saying(&env, "qb0001", "Waiting for the answer.");
+        assert_eq!(queue(&env)[0].0, NeedsKind::Question);
+        ask_tool(&env, "qb0001", "post-tool-use");
+        assert_eq!(queue(&env), vec![]);
+        let store = Store::open(&env.db_path()).unwrap();
+        let text = serde_json::to_string(&read_all(store.conn(), None).unwrap()).unwrap();
+        assert!(!text.contains("Which database"), "question text stored");
+        assert_eq!(env.log(), "");
+    }
+
+    #[test]
+    fn a_question_inside_code_is_no_question() {
+        let env = Env::new();
+        env.hook("session-start", "qc0001");
+        env.hook("user-prompt-submit", "qc0001");
+        stop_saying(&env, "qc0001", "Here:\n```\nwhy?\n```");
+        assert_eq!(queue(&env), vec![]);
+    }
+}

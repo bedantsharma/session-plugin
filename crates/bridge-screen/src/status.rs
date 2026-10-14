@@ -1,53 +1,82 @@
-//! `bridge-screen status`: live sessions per project, in about a dozen lines (spec §10.3).
-//! Plain text for now; colours arrive with the screens.
+//! `bridge-screen status`: the glance (spec §10.1) in about a dozen lines of text (§10.3).
+//!
+//! A text renderer of [`view::Glance`] only: ordering, state words and lights come from
+//! the model. ANSI colours mark the §10.4 roles when stdout is a terminal, `NO_COLOR` is
+//! unset or empty and `TERM` isn't `dumb`; otherwise the output is plain text.
 
-use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::io::IsTerminal as _;
 
-use anyhow::Result;
-use bridge_screen_core::claim::task_title;
-use bridge_screen_core::config::Config;
-use bridge_screen_core::handoff::{BriefingStatus, ReadbackState};
-use bridge_screen_core::plan::{NodeStatus, get_node};
-use bridge_screen_core::recovery;
-use bridge_screen_core::session::{self, Session, SessionState};
-use bridge_screen_core::store::{Store, repo_name};
-use bridge_screen_core::tangent::{self, Label, NavState};
-use bridge_screen_core::verify;
+use bridge_screen_core::view::{FlagKind, Glance, NeedsKind, ProjectRow, SessionRow};
 
 /// Width of the "state + task" column, and the most of it the text may use.
 const TASK_COLUMN: usize = 32;
 const TASK_TEXT_MAX: usize = 30;
 
+/// How to render.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Options {
+    /// ANSI colours for the §10.4 roles.
+    pub color: bool,
+    /// The running dashboard's address (without its token), if any.
+    pub dashboard: Option<String>,
+}
+
+/// Colour is allowed on this stream: a terminal, `NO_COLOR` unset or empty, `TERM` not
+/// `dumb` (no-color.org).
+pub fn color_allowed(is_tty: bool) -> bool {
+    color_with(
+        is_tty,
+        std::env::var_os("NO_COLOR").as_deref(),
+        std::env::var_os("TERM").as_deref(),
+    )
+}
+
+/// [`color_allowed`] with the environment passed in.
+pub fn color_with(
+    is_tty: bool,
+    no_color: Option<&std::ffi::OsStr>,
+    term: Option<&std::ffi::OsStr>,
+) -> bool {
+    let no_color = no_color.is_some_and(|v| !v.is_empty());
+    let dumb = term.is_some_and(|t| t == "dumb");
+    is_tty && !no_color && !dumb
+}
+
+/// Colour for `status` on stdout.
+pub fn stdout_color() -> bool {
+    color_allowed(std::io::stdout().is_terminal())
+}
+
+/// §10.4 roles as ANSI: clay (256-colour 173), green, amber, red.
+#[derive(Debug, Clone, Copy)]
+enum Role {
+    Clay,
+    Green,
+    Amber,
+    Red,
+    Bold,
+}
+
+fn paint(on: bool, role: Role, text: &str) -> String {
+    if !on || text.is_empty() {
+        return text.to_string();
+    }
+    let code = match role {
+        Role::Clay => "38;5;173",
+        Role::Green => "32",
+        Role::Amber => "33",
+        Role::Red => "31",
+        Role::Bold => "1",
+    };
+    format!("\x1b[{code}m{text}\x1b[0m")
+}
+
 fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
-/// A checkpoint was asked for and missed, or the briefing found the session unstable:
-/// the owner should look.
-fn handoff_trouble(s: &Session) -> bool {
-    (s.checkpoint_missed != 0 && s.checkpoint_pending.is_some())
-        || s.briefing_status == Some(BriefingStatus::Unstable)
-}
-
-/// Red drift first, then a missed checkpoint or unstable handoff, then other needs-you,
-/// then working, then idle.
-fn state_rank(s: &Session) -> u8 {
-    if s.nav_state == NavState::Red {
-        return 0;
-    }
-    if handoff_trouble(s) {
-        return 1;
-    }
-    match s.state {
-        SessionState::NeedsOwner => 2,
-        SessionState::Working => 3,
-        SessionState::Idle => 4,
-        SessionState::Ended => 5,
-    }
-}
-
-fn cut(text: &str, max: usize) -> String {
+pub fn cut(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_string();
     }
@@ -57,171 +86,220 @@ fn cut(text: &str, max: usize) -> String {
     short
 }
 
-/// ` · tuned drift .35–.65, tolerance 25%` when the repo's thresholds were auto-tuned.
-fn tuned_suffix(store: &Store, repo_id: &str, cfg: &Config) -> Result<String> {
-    let th = tangent::thresholds(store.conn(), repo_id, cfg)?;
-    if th == tangent::Thresholds::from_config(cfg) {
-        return Ok(String::new());
+/// The status text for the glance.
+pub fn render(g: &Glance, opts: &Options) -> String {
+    let c = opts.color;
+    let mut out = String::new();
+    if g.escalated {
+        let _ = writeln!(
+            out,
+            "{}",
+            paint(
+                c,
+                Role::Red,
+                &paint(c, Role::Bold, &format!("{} need you", g.needs_you_count))
+            )
+        );
     }
-    let short = |v: f64| {
-        let t = format!("{v:.2}");
-        t.strip_prefix('0').map_or(t.clone(), str::to_string)
-    };
-    Ok(format!(
-        "  · tuned drift {}–{}, tolerance {}%",
-        short(th.lower),
-        short(th.upper),
-        th.tolerance_pct
-    ))
+    let shown: Vec<&ProjectRow> = g
+        .projects
+        .iter()
+        .filter(|p| !p.sessions.is_empty())
+        .collect();
+    if g.live_sessions == 0 || shown.is_empty() {
+        out.push_str("bridge-screen · no live sessions\n");
+    } else {
+        let _ = writeln!(
+            out,
+            "bridge-screen · {} · {}",
+            plural(g.live_sessions, "live session", "live sessions"),
+            plural(shown.len(), "project", "projects")
+        );
+        for p in shown {
+            project(&mut out, g, p, c);
+        }
+    }
+    if let Some(url) = &opts.dashboard {
+        let _ = writeln!(out, "dashboard: {url} (`bridge-screen ui` prints the link)");
+    }
+    out
 }
 
-/// `  · done 41% · claimed 12% · 2 unestimated` (spec §5.6).
-fn progress_suffix(store: &Store, repo_id: &str) -> Result<String> {
-    let p = verify::progress(store.conn(), repo_id)?;
-    let mut text = format!("  · done {}% · claimed {}%", p.done_pct, p.claimed_pct);
-    if p.unestimated > 0 {
-        let _ = write!(text, " · {} unestimated", p.unestimated);
-    }
-    Ok(text)
-}
-
-/// The status text for every live session.
-pub fn render(store: &Store, cfg: &Config) -> Result<String> {
-    let conn = store.conn();
-    let live = session::list_live(conn, None)?;
-    if live.is_empty() {
-        return Ok("bridge-screen · no live sessions\n".to_string());
-    }
-    // Group by repo display name (then id, in case two repos share a folder name).
-    let mut repos: BTreeMap<(String, String), Vec<Session>> = BTreeMap::new();
-    for s in live.iter().cloned() {
-        let name = repo_name(conn, &s.repo_id)?.unwrap_or_else(|| s.repo_id.clone());
-        repos.entry((name, s.repo_id.clone())).or_default().push(s);
-    }
-    let mut out = format!(
-        "bridge-screen · {} · {}\n",
-        plural(live.len(), "live session", "live sessions"),
-        plural(repos.len(), "project", "projects")
-    );
-    for ((name, repo_id), mut sessions) in repos {
-        match get_node(conn, &repo_id, "G")?.filter(|g| g.status != NodeStatus::Dropped) {
-            Some(goal) => {
-                let _ = writeln!(
-                    out,
-                    "{name}  goal: {}{}{}",
-                    goal.title,
-                    progress_suffix(store, &repo_id)?,
-                    tuned_suffix(store, &repo_id, cfg)?
-                );
-            }
-            None => {
-                let _ = writeln!(out, "{name}  no plan yet");
-            }
-        }
-        let (open, report_only) = recovery::open_counts(conn, &repo_id)?;
-        if open > 0 {
-            let _ = writeln!(out, "  leftovers: {open} open ({report_only} report-only)");
-        }
-        // `list_live` is newest first; a stable sort keeps that within each state.
-        sessions.sort_by_key(state_rank);
-        // Needs-you order: red, missed checkpoints and unstable sessions, waits, then
-        // claimed work nudged twice without being verified (spec §8.5, §10.1), then the
-        // rest.
-        let (urgent, rest): (Vec<&Session>, Vec<&Session>) =
-            sessions.iter().partition(|s| state_rank(s) <= 2);
-        for s in urgent {
-            out.push_str(&session_line(store, s)?);
-        }
-        for (task, title) in verify::overdue(conn, &repo_id)? {
-            let _ = writeln!(
-                out,
-                "  needs you: verify {} — bridge-screen verify {task} (or --broken \"…\")",
-                format!("{task} {title}").trim_end()
+fn project(out: &mut String, g: &Glance, p: &ProjectRow, c: bool) {
+    match &p.goal {
+        Some(goal) => {
+            let mut progress = format!(
+                "  · {} · claimed {}%",
+                paint(c, Role::Clay, &format!("done {}%", p.done_pct)),
+                p.claimed_pct
             );
+            if p.unestimated > 0 {
+                let _ = write!(progress, " · {} unestimated", p.unestimated);
+            }
+            let tuned = p
+                .tuned
+                .as_ref()
+                .map(|t| format!("  · {t}"))
+                .unwrap_or_default();
+            let _ = writeln!(out, "{}  goal: {}{progress}{tuned}", p.name, goal.title);
         }
-        for s in rest {
-            out.push_str(&session_line(store, s)?);
+        None => {
+            let _ = writeln!(out, "{}  no plan yet", p.name);
         }
     }
-    Ok(out)
+    if p.leftovers.open > 0 {
+        let _ = writeln!(
+            out,
+            "  leftovers: {} open ({} report-only)",
+            p.leftovers.open, p.leftovers.report_only
+        );
+    }
+    // Needs-you order: red, then questions and waits, then claimed work the owner is asked
+    // to verify (spec §8.5, §10.1), then the rest.
+    let (urgent, rest): (Vec<&SessionRow>, Vec<&SessionRow>) =
+        p.sessions.iter().partition(|s| s.rank <= 1);
+    for s in urgent {
+        out.push_str(&session_line(s, c));
+    }
+    let mut verify: Vec<_> = g
+        .needs_you
+        .iter()
+        .filter(|i| i.kind == NeedsKind::VerifyOverdue && i.repo_id == p.repo_id)
+        .filter_map(|i| i.task.as_ref())
+        .collect();
+    verify.sort_by(|a, b| a.id.cmp(&b.id));
+    for task in verify {
+        let what = format!("{} {}", task.id, task.title);
+        let _ = writeln!(
+            out,
+            "  {}: verify {} — bridge-screen verify {} (or --broken \"…\")",
+            paint(c, Role::Red, "needs you"),
+            what.trim_end(),
+            task.id
+        );
+    }
+    for s in rest {
+        out.push_str(&session_line(s, c));
+    }
 }
 
-fn session_line(store: &Store, s: &Session) -> Result<String> {
-    let short: String = s.session_id.chars().take(6).collect();
-    let label = match s.state {
-        _ if s.nav_state == NavState::Red || handoff_trouble(s) => "needs you",
-        SessionState::NeedsOwner => "needs you",
-        SessionState::Working => "working",
-        SessionState::Idle => "idle",
-        SessionState::Ended => "ended",
-    };
-    let task = match &s.active_task {
-        Some(id) => {
-            let title = task_title(store.conn(), &s.repo_id, id)?.unwrap_or_default();
-            format!("{id} {title}")
-        }
+fn session_line(s: &SessionRow, c: bool) -> String {
+    let task = match &s.task {
+        Some(t) => format!("{} {}", t.id, t.title),
         None => "(no task)".to_string(),
     };
-    let left = cut(&format!("{label:<10}{task}"), TASK_TEXT_MAX);
-    let count = usize::try_from(s.unit_count).unwrap_or(0);
-    let units = plural(count, "unit", "units");
-    let minutes = s.active_secs / 60;
-    let mut nav = nav_text(store, s)?;
-    if s.checkpoint_pending.is_some() {
-        nav.push_str(if s.checkpoint_missed != 0 {
-            " · checkpoint missed"
-        } else {
-            " · checkpoint pending"
-        });
-    }
-    if s.readback == ReadbackState::Pending {
-        nav.push_str(" · read-back pending");
-    }
-    let pending = verify::pending_claims(store.conn(), &s.session_id, jiff::Timestamp::MAX)?;
-    if !pending.is_empty() {
-        let ids: Vec<&str> = pending.iter().map(|(t, _)| t.as_str()).collect();
-        let _ = write!(nav, " · verify pending: {}", ids.join(", "));
-    }
-    Ok(format!(
-        "  S {short}  {left:<TASK_COLUMN$}{units:<7} · {minutes}m · {nav}\n"
-    ))
-}
-
-/// The navigator light in words — `on task`, `detour 25m`, `drift ⚠ 40m` — plus the
-/// current detour and a `⚠` when the agent disagreed with the heuristic.
-fn nav_text(store: &Store, s: &Session) -> Result<String> {
-    let last = session::units(store.conn(), &s.session_id)?
-        .into_iter()
-        .rev()
-        .find(|u| u.stopped_at.is_some());
-    let away = s.away_secs / 60;
-    let drifting = last.as_ref().is_some_and(|u| u.label == Some(Label::Drift));
-    let mut text = if s.current_detour.is_none() && drifting {
-        format!("drift ⚠ {away}m")
-    } else if s.current_detour.is_some() || s.away_secs > 0 {
-        format!("detour {away}m")
-    } else {
-        "on task".to_string()
+    let left = cut(&format!("{:<10}{task}", s.state_label), TASK_TEXT_MAX);
+    let left = format!("{left:<TASK_COLUMN$}");
+    // Colour the state word only, after padding, so the columns line up.
+    let role = match s.state_label.as_str() {
+        "needs you" => Some(Role::Red),
+        "working" | "done" => Some(Role::Green),
+        _ => None,
     };
-    if let Some(id) = &s.current_detour
-        && let Some(d) = tangent::get_detour(store.conn(), id)?
-    {
-        let _ = write!(text, " · {} \"{}\"", d.label(), cut(&d.reason, 30));
+    let left = match role {
+        Some(r) if c => left.replacen(&s.state_label, &paint(c, r, &s.state_label), 1),
+        _ => left,
+    };
+    let count = usize::try_from(s.units).unwrap_or(0);
+    let units = plural(count, "unit", "units");
+    let mut nav = if s.nav_text == "on task" {
+        s.nav_text.clone()
+    } else {
+        paint(c, Role::Amber, &s.nav_text)
+    };
+    for f in &s.flags {
+        match f.kind {
+            FlagKind::CheckpointMissed
+            | FlagKind::CheckpointPending
+            | FlagKind::ReadbackPending
+            | FlagKind::SquashFailed
+            | FlagKind::HandoffUnstable => {
+                let _ = write!(nav, " · {}", f.kind.text());
+            }
+            FlagKind::VerifyPending => {
+                let _ = write!(nav, " · verify pending: {}", f.tasks.join(", "));
+            }
+        }
     }
-    if !drifting && last.is_some_and(|u| u.disagreement) {
-        text.push_str(" ⚠");
+    if s.asked_question {
+        let _ = write!(nav, " · {}", paint(c, Role::Red, "asked you a question"));
     }
-    Ok(text)
+    format!(
+        "  S {}  {left}{units:<7} · {}m · {nav}\n",
+        s.short, s.active_min
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::cut;
+    use super::{color_allowed, color_with, cut};
 
     #[test]
     fn cut_keeps_short_text_and_marks_long_text() {
         assert_eq!(cut("short", 30), "short");
         assert_eq!(cut("abcdef", 4), "abc…");
         assert_eq!(cut("ab def", 4), "ab…");
+    }
+
+    #[test]
+    fn no_colour_off_a_terminal_with_no_color_or_a_dumb_terminal() {
+        use std::ffi::OsStr;
+        assert!(!color_allowed(false));
+        let xterm = Some(OsStr::new("xterm-256color"));
+        assert!(color_with(true, None, xterm));
+        assert!(
+            color_with(true, Some(OsStr::new("")), xterm),
+            "empty NO_COLOR is unset"
+        );
+        assert!(!color_with(true, Some(OsStr::new("1")), xterm));
+        assert!(!color_with(true, None, Some(OsStr::new("dumb"))));
+        assert!(!color_with(false, None, xterm));
+    }
+
+    #[test]
+    fn colour_marks_the_roles_and_plain_text_stays_plain() {
+        use bridge_screen_core::config::Config;
+        use bridge_screen_core::store::{EventDraft, Store};
+        let mut s = Store::open_in_memory().unwrap();
+        s.append(EventDraft::new(
+            "r",
+            "s1",
+            "session_started",
+            serde_json::json!({"cwd": "/w", "source": "startup"}),
+        ))
+        .unwrap();
+        s.append(EventDraft::new(
+            "r",
+            "s1",
+            "nav_state_changed",
+            serde_json::json!({"from": "green", "to": "red", "away_secs": 1}),
+        ))
+        .unwrap();
+        let g =
+            bridge_screen_core::view::glance(s.conn(), &Config::default(), jiff::Timestamp::now())
+                .unwrap();
+        let plain = super::render(&g, &super::Options::default());
+        assert!(!plain.contains('\x1b'));
+        let colour = super::render(
+            &g,
+            &super::Options {
+                color: true,
+                dashboard: None,
+            },
+        );
+        assert!(colour.contains("\x1b[31mneeds you\x1b[0m"), "{colour}");
+        // Same text once the escapes are removed.
+        let stripped = colour
+            .split('\x1b')
+            .enumerate()
+            .map(|(i, part)| {
+                if i == 0 {
+                    part
+                } else {
+                    part.split_once('m').map_or(part, |(_, r)| r)
+                }
+            })
+            .collect::<String>();
+        assert_eq!(stripped, plain);
     }
 }
