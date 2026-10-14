@@ -1,6 +1,7 @@
 //! Staleness (spec §8.5): a verification depends on files at a commit. When later commits
 //! touch one of them, it drops one level (`verification_stale`) and is re-checked at the
-//! next session start. Run at SessionStart, where git already runs.
+//! next session start. Run at SessionStart, where git already runs, and before a squash
+//! (changes inside the squashed range can't be told apart afterwards).
 //!
 //! Idempotent: a drop moves the row's `stale_checked_sha` to the HEAD it was found at, so
 //! a second start at the same HEAD skips it. A row whose files weren't touched keeps its
@@ -69,10 +70,14 @@ pub fn scan_stale(
     session_id: &str,
     wt: &Path,
 ) -> Result<Vec<StaleChange>> {
+    let rows = live_verifications(store.conn(), repo_id, SCAN_LIMIT)?;
+    if rows.iter().all(|r| r.level < 1) {
+        // Nothing to drop: no git.
+        return Ok(Vec::new());
+    }
     let Ok(Some(head)) = git::head(wt) else {
         return Ok(Vec::new());
     };
-    let rows = live_verifications(store.conn(), repo_id, SCAN_LIMIT)?;
     let mut groups: BTreeMap<&str, Vec<&super::Verification>> = BTreeMap::new();
     for row in rows.iter().filter(|r| r.level >= 1) {
         groups
