@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{Session, SessionState, Unit, current_unit, get};
 use crate::error::{Error, Result};
+use crate::handoff::EndKind;
 use crate::plan::project::{mark_claimed, mark_released};
 use crate::store::Event;
 
@@ -21,6 +22,7 @@ pub const SESSION_KINDS: &[&str] = &[
     "subagent_stopped",
     "precompact",
     "session_ended",
+    "session_crashed",
     "task_claimed",
     "task_released",
 ];
@@ -38,6 +40,9 @@ pub struct SessionStarted {
     pub model: Option<String>,
     #[serde(default)]
     pub transcript_path: Option<String>,
+    /// The worktree's root directory, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<String>,
 }
 
 fn unknown() -> String {
@@ -69,6 +74,8 @@ pub enum NeedsOwnerKind {
     /// Far outside the tolerance band (spec §7.3). The owner should look, but the agent
     /// keeps working: this is not a wait.
     Drift,
+    /// WIP commits weren't squashed before a PR (spec §8.1). Not a wait either.
+    Squash,
     #[serde(other)]
     Other,
 }
@@ -102,6 +109,18 @@ pub struct SubagentStopped {
 pub struct SessionEnded {
     #[serde(default)]
     pub reason: Option<String>,
+    /// clean or dirty (spec §8.2), from `git status` at SessionEnd.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_kind: Option<EndKind>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dirty_files: Vec<String>,
+}
+
+/// A session silent for longer than the crash timeout (spec §8.2). Its open unit ends at
+/// `last_event_at`, so the silence isn't active time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionCrashed {
+    pub last_event_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -143,24 +162,33 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
         let d: SessionStarted = payload(event)?;
         if d.source != COMPACT
             && let Some(before) = get(tx, &event.session_id)?
-            && let Some(open) = current_unit(tx, &event.session_id)?
         {
-            close_crashed_unit(tx, &before, open, ts)?;
+            if let Some(open) = current_unit(tx, &event.session_id)? {
+                close_crashed_unit(tx, &before, open, ts)?;
+            }
+            if before.state == SessionState::Ended {
+                withdraw_leftovers(tx, &before.session_id)?;
+            }
         }
         upsert_session(tx, event, &d)?;
     }
     // Events for a session bridge-screen never saw start change nothing.
-    let Some(session) = get(tx, &event.session_id)? else {
+    let Some(mut session) = get(tx, &event.session_id)? else {
         return Ok(());
     };
-    // Late hooks after SessionEnd don't bring an ended session back; a new start or a new
-    // prompt does.
-    if session.state == SessionState::Ended
-        && !matches!(event.kind.as_str(), "session_started" | "prompt")
-    {
-        return Ok(());
+    if session.state == SessionState::Ended {
+        if !revives(&session, event)? {
+            return Ok(());
+        }
+        revive(tx, &session.session_id)?;
+        session = get(tx, &event.session_id)?
+            .ok_or_else(|| Error::BadEvent(format!("session {} vanished", event.session_id)))?;
     }
     let mut unit = current_unit(tx, &session.session_id)?;
+    if event.kind == "session_crashed" {
+        let d: SessionCrashed = payload(event)?;
+        return crashed(tx, &session, unit, &d);
+    }
     if let Some(u) = unit.as_mut()
         && event.kind != "needs_owner"
         && let Some(since) = u.wait_started_at.take()
@@ -182,7 +210,7 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
         "prompt" => at.prompt(unit, &payload(event)?)?,
         "needs_owner" => {
             let d: NeedsOwner = payload(event)?;
-            if d.kind != NeedsOwnerKind::Drift {
+            if !matches!(d.kind, NeedsOwnerKind::Drift | NeedsOwnerKind::Squash) {
                 at.needs_owner(unit)?;
             }
         }
@@ -200,25 +228,12 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
             }
         }
         "unit_stopped" => at.unit_stopped(unit, &payload(event)?)?,
-        "session_ended" => {
-            let d: SessionEnded = payload(event)?;
-            if let Some(u) = unit {
-                at.close_unit(u)?;
-            }
-            tx.execute(
-                "UPDATE sessions SET state = 'ended', ended_at = ?2, end_reason = ?3
-                 WHERE session_id = ?1",
-                params![session.session_id, event.ts, d.reason],
-            )?;
-            // An ended session lets go of its task.
-            if let Some(task) = &session.active_task {
-                at.release(task)?;
-            }
-        }
+        "session_ended" => at.ended(unit, &payload(event)?)?,
         "task_claimed" => {
             let d: TaskClaimed = payload(event)?;
             tx.execute(
-                "UPDATE sessions SET active_task = ?2, active_since = ?3 WHERE session_id = ?1",
+                "UPDATE sessions SET active_task = ?2, active_since = ?3, last_task = ?2
+                 WHERE session_id = ?1",
                 params![session.session_id, d.task_id, event.ts],
             )?;
             if let Some(mut u) = unit.filter(|u| u.task_id.is_none()) {
@@ -234,6 +249,79 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
         // subagent_stopped and precompact only mark activity.
         _ => {}
     }
+    Ok(())
+}
+
+/// The session went silent and is declared crashed: its open unit (and any wait in it)
+/// ends at its last event, it ends there, and it lets go of its task.
+fn crashed(
+    tx: &Transaction,
+    session: &Session,
+    unit: Option<Unit>,
+    d: &SessionCrashed,
+) -> Result<()> {
+    let last: Timestamp = d
+        .last_event_at
+        .parse()
+        .map_err(|e| Error::BadEvent(format!("last_event_at {}: {e}", d.last_event_at)))?;
+    if let Some(open) = unit {
+        close_crashed_unit(tx, session, open, last)?;
+    }
+    let at = last.to_string();
+    tx.execute(
+        "UPDATE sessions SET state = 'ended', ended_at = ?2, end_reason = 'crashed',
+                             end_kind = 'crashed'
+         WHERE session_id = ?1",
+        params![session.session_id, at],
+    )?;
+    if let Some(task) = &session.active_task {
+        Moment {
+            tx,
+            ts: last,
+            ts_text: &at,
+            session,
+        }
+        .release(task)?;
+    }
+    Ok(())
+}
+
+/// Does `event` bring the ended `session` back? Late hooks after SessionEnd don't; a new
+/// start or a new prompt does. A session marked crashed was only presumed dead (its owner
+/// may just have been away, or a tool ran long), so any sign of activity from it does —
+/// except an idle notification, which isn't activity.
+fn revives(session: &Session, event: &Event) -> Result<bool> {
+    let crashed = session.end_kind == Some(EndKind::Crashed);
+    Ok(match event.kind.as_str() {
+        "session_started" | "prompt" => true,
+        "session_crashed" => false,
+        "needs_owner" => {
+            let d: NeedsOwner = payload(event)?;
+            crashed && d.kind != NeedsOwnerKind::IdlePrompt
+        }
+        _ => crashed,
+    })
+}
+
+/// The session is alive after all: it hasn't ended, and its worktree is its own again.
+fn revive(tx: &Transaction, session_id: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE sessions SET state = 'idle', ended_at = NULL, end_reason = NULL,
+                             end_kind = NULL, leftovers_analysed = 0
+         WHERE session_id = ?1",
+        [session_id],
+    )?;
+    withdraw_leftovers(tx, session_id)
+}
+
+/// A session that comes back owns its files again: the leftovers found in its worktree
+/// while it was presumed dead, and not yet resolved, are withdrawn (nobody may act on
+/// them). If it dies again, a later start finds them afresh.
+fn withdraw_leftovers(tx: &Transaction, session_id: &str) -> Result<()> {
+    tx.execute(
+        "DELETE FROM leftovers WHERE from_session = ?1 AND state != 'resolved'",
+        [session_id],
+    )?;
     Ok(())
 }
 
@@ -269,10 +357,14 @@ fn upsert_session(tx: &Transaction, event: &Event, d: &SessionStarted) -> Result
     // inside a running session, so it changes neither its state nor how it started.
     tx.execute(
         "INSERT INTO sessions (session_id, repo_id, cwd, branch, source, model, transcript_path,
-                               started_at, last_event_at, state)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, 'idle')
+                               started_at, last_event_at, state, worktree)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, 'idle', ?9)
          ON CONFLICT(session_id) DO UPDATE SET
              cwd = excluded.cwd,
+             worktree = COALESCE(excluded.worktree, worktree),
+             end_kind = CASE WHEN excluded.source = 'compact' THEN end_kind ELSE NULL END,
+             leftovers_analysed = CASE WHEN excluded.source = 'compact' THEN leftovers_analysed
+                                       ELSE 0 END,
              branch = COALESCE(excluded.branch, branch),
              model = COALESCE(excluded.model, model),
              transcript_path = COALESCE(excluded.transcript_path, transcript_path),
@@ -288,7 +380,8 @@ fn upsert_session(tx: &Transaction, event: &Event, d: &SessionStarted) -> Result
             d.source,
             d.model,
             d.transcript_path,
-            event.ts
+            event.ts,
+            d.worktree
         ],
     )?;
     Ok(())
@@ -337,7 +430,9 @@ impl Moment<'_> {
         }
         // A prompt after SessionEnd means the session is alive after all.
         self.tx.execute(
-            "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE session_id = ?1",
+            "UPDATE sessions SET ended_at = NULL, end_reason = NULL, end_kind = NULL,
+                                 leftovers_analysed = 0
+             WHERE session_id = ?1",
             [&self.session.session_id],
         )?;
         let unit_count: i64 = self.tx.query_row(
@@ -390,6 +485,27 @@ impl Moment<'_> {
             params![self.session.session_id, task],
         )?;
         mark_released(self.tx, &self.session.repo_id, task)
+    }
+
+    fn ended(&self, open: Option<Unit>, d: &SessionEnded) -> Result<()> {
+        if let Some(u) = open {
+            self.close_unit(u)?;
+        }
+        self.tx.execute(
+            "UPDATE sessions SET state = 'ended', ended_at = ?2, end_reason = ?3, end_kind = ?4
+             WHERE session_id = ?1",
+            params![
+                self.session.session_id,
+                self.ts_text,
+                d.reason,
+                d.end_kind.map(EndKind::as_str)
+            ],
+        )?;
+        // An ended session lets go of its task.
+        if let Some(task) = &self.session.active_task {
+            self.release(task)?;
+        }
+        Ok(())
     }
 
     fn unit_stopped(&self, open: Option<Unit>, d: &UnitStopped) -> Result<()> {

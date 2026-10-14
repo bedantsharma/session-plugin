@@ -87,6 +87,11 @@ const STOP_WORDS: &[&str] = &[
 /// Path parts that appear in nearly every expected file and say nothing about the task.
 const PATH_NOISE: &[&str] = &["src", "lib", "mod", "rs", "ts", "js", "py", "md", "index"];
 
+/// Lowercase keywords of `text`, stop-words removed (for comparing short texts).
+pub fn keywords(text: &str) -> HashSet<String> {
+    tokens(text)
+}
+
 /// Lowercase word tokens, stop-words removed.
 fn tokens(text: &str) -> HashSet<String> {
     text.split(|c: char| !c.is_alphanumeric())
@@ -241,6 +246,15 @@ pub fn claim_in_with_reason(
         append_in(
             tx,
             draft("task_released", serde_json::to_value(data)?, prev),
+        )?;
+        // A task boundary: the work on `prev` needs a checkpoint (spec §8.1).
+        append_in(
+            tx,
+            crate::checkpoint::due_draft(
+                &session,
+                crate::handoff::CheckpointReason::TaskSwitched,
+                &req.actor,
+            )?,
         )?;
         released = Some(prev.to_string());
     }

@@ -173,6 +173,9 @@ fn migrate(conn: &mut Connection) -> Result<()> {
     if current < 3 {
         tx.execute_batch(schema::V3)?;
     }
+    if current < 4 {
+        tx.execute_batch(schema::V4)?;
+    }
     tx.execute(
         "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
         [SCHEMA_VERSION.to_string()],
@@ -285,7 +288,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(version, "3");
+        assert_eq!(version, super::SCHEMA_VERSION.to_string());
         let s = crate::session::get(store.conn(), "s").unwrap().unwrap();
         assert_eq!((s.active_secs, s.unit_count), (42, 1));
         assert_eq!(s.nav_state, crate::tangent::NavState::Green);
@@ -300,6 +303,58 @@ mod tests {
             "repo_tuning",
             "notes_sent",
         ] {
+            let n: i64 = store
+                .conn()
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0, "{table}");
+        }
+    }
+
+    #[test]
+    fn migrates_v3_database_to_v4_keeping_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            for v in [super::schema::V1, super::schema::V2, super::schema::V3] {
+                conn.execute_batch(v).unwrap();
+            }
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('schema_version', '3')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions (session_id, repo_id, cwd, source, started_at, last_event_at,
+                                       state, unit_count, active_secs, nav_state)
+                 VALUES ('s', 'r', '/x', 'startup', 't0', 't1', 'idle', 1, 42, 'amber')",
+                [],
+            )
+            .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let version: String = store
+            .conn()
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, "4");
+        let s = crate::session::get(store.conn(), "s").unwrap().unwrap();
+        assert_eq!(
+            (s.active_secs, s.nav_state),
+            (42, crate::tangent::NavState::Amber)
+        );
+        assert_eq!(
+            (s.worktree, s.end_kind, s.last_checkpoint),
+            (None, None, None)
+        );
+        assert_eq!(s.readback, crate::handoff::ReadbackState::NotNeeded);
+        assert_eq!((s.checkpoint_missed, s.leftovers_analysed), (0, false));
+        for table in ["checkpoints", "leftovers", "handoff_notes", "claims_done"] {
             let n: i64 = store
                 .conn()
                 .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))

@@ -6,6 +6,7 @@ use anyhow::Result;
 use bridge_screen_core::binding;
 use bridge_screen_core::config::Config;
 use bridge_screen_core::error::Error;
+use bridge_screen_core::handoff::EndKind;
 use bridge_screen_core::repo;
 use bridge_screen_core::session::{
     self, FileEvent, NeedsOwner, NeedsOwnerKind, Prompt, Session, SessionEnded, SessionStarted,
@@ -15,7 +16,7 @@ use bridge_screen_core::store::{Actor, EventDraft, Store, append_in};
 use bridge_screen_core::tuning;
 use serde::Serialize;
 
-use super::{HookEvent, HookInput, HookOutput, context, nav};
+use super::{HookEvent, HookInput, HookOutput, context, handoff, nav};
 
 /// Tools whose `tool_input` names files the agent is about to change.
 const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
@@ -57,6 +58,7 @@ impl Ctx<'_> {
             source: source.to_string(),
             model: self.input.model.clone(),
             transcript_path: self.input.transcript_path.clone(),
+            worktree: worktree_root(&self.input.cwd).map(|p| p.to_string_lossy().into_owned()),
         }
     }
 }
@@ -79,11 +81,29 @@ pub fn handle(
         (Some(known), HookEvent::Stop) => nav::score_open_unit(store.conn(), known, input)?,
         _ => None,
     };
-    let drafts = drafts_for(event, &ctx, store, scored)?;
+    let mut drafts = drafts_for(event, &ctx, store, scored)?;
+    // An edit before the read-back the briefing asked for: one nudge (spec §8.4).
+    let nudge = match event {
+        HookEvent::PreToolUse => handoff::readback_nudge(
+            store.conn(),
+            ctx.known.as_ref(),
+            edited_files(input).is_some(),
+        )?
+        .map(|(draft, text)| {
+            drafts.push(draft.actor(ctx.actor()));
+            text
+        }),
+        _ => None,
+    };
     let navigates = ctx.known.is_some() && nav::navigates(event);
     // A known session with nothing to record writes nothing. An unknown one is tracked
     // from first sight (below), so its later hooks take the fast path without git.
-    if drafts.is_empty() && call.is_none() && ctx.known.is_some() && !navigates {
+    if drafts.is_empty()
+        && call.is_none()
+        && ctx.known.is_some()
+        && !navigates
+        && !(event == HookEvent::PreToolUse && handoff::opens_pr(input))
+    {
         return Ok(None);
     }
     let mut all = Vec::with_capacity(drafts.len() + 1);
@@ -100,33 +120,21 @@ pub fn handle(
         actor: ctx.actor(),
         now: jiff::Timestamp::now(),
     };
+    // Checkpoint git work, before taking the write lock (only when one is pending or a
+    // commit was just made).
+    let found = handoff::gather(event, ctx.known.as_ref(), input);
     // Nothing of our own to record: look first (read-only) whether the navigator has
     // anything to do, so the common tool call doesn't take the write lock.
     let worth_writing = !all.is_empty()
+        || found.is_some()
         || (navigates
             && !(nav::step(store.conn(), &nav_ctx)?.is_empty()
                 && nav::state_step(store.conn(), &nav_ctx)?.is_empty()));
-    let mut note = None;
-    if worth_writing {
-        note = store.write(|tx| {
-            for draft in all {
-                append_in(tx, draft)?;
-            }
-            if !navigates {
-                return Ok(None);
-            }
-            // Labels first, so the tolerance band sees them.
-            let labels = nav::step(tx, &nav_ctx)?;
-            for draft in labels.events {
-                append_in(tx, draft)?;
-            }
-            let state = nav::state_step(tx, &nav_ctx)?;
-            for draft in state.events {
-                append_in(tx, draft)?;
-            }
-            Ok(labels.note.or(state.note))
-        })?;
-    }
+    let note = if worth_writing {
+        write_all(store, all, navigates, &nav_ctx, found.as_ref())?
+    } else {
+        None
+    };
     if let Some((tool_use_id, tool, args)) = call {
         // Tell our MCP server which session is about to call it.
         binding::record(
@@ -138,15 +146,21 @@ pub fn handle(
             jiff::Timestamp::now(),
         )?;
     }
+    // Squash WIP commits before a PR opens (spec §8.1); never blocks the PR.
+    let before_pr = match event {
+        HookEvent::PreToolUse => handoff::before_pr(store, input)?,
+        _ => None,
+    };
+    if event == HookEvent::SessionStart && input.source.as_deref() != Some("compact") {
+        // Recovery (spec §8.3): crashed sessions, then leftovers of dead ones.
+        handoff::recover(store, config, &ctx.repo_id, &input.session_id)?;
+    }
     if event == HookEvent::SessionStart && tuning::due(store.conn(), &ctx.repo_id)? {
         // Enough new drift samples: tune this repo's thresholds (spec §7.6).
         store.write(|tx| tuning::run(tx, &ctx.repo_id, config))?;
     }
     let context = match event {
-        HookEvent::SessionStart => {
-            let session = stored_session(store, input)?;
-            Some(context::session_start(store.conn(), &session)?)
-        }
+        HookEvent::SessionStart => handoff::start_context(store, input)?,
         HookEvent::UserPromptSubmit => {
             let session = stored_session(store, input)?;
             let unit_no =
@@ -158,12 +172,46 @@ pub fn handle(
                 (r, n) => r.or(n),
             }
         }
+        HookEvent::PreToolUse => before_pr.or(nudge).or(note),
         _ => note,
     };
     Ok(context.map(|text| HookOutput {
         event,
         additional_context: Some(text),
     }))
+}
+
+/// Append the hook's events, then the checkpoint and navigator steps, in one transaction.
+/// Returns the note for the agent: a checkpoint request outranks every other note.
+fn write_all(
+    store: &mut Store,
+    all: Vec<EventDraft>,
+    navigates: bool,
+    nav_ctx: &nav::NavCtx,
+    found: Option<&handoff::CheckpointGit>,
+) -> Result<Option<String>> {
+    Ok(store.write(|tx| {
+        for draft in all {
+            append_in(tx, draft)?;
+        }
+        let checkpoint = match found {
+            Some(f) => handoff::apply(tx, nav_ctx.input, f, nav_ctx.stopped_unit, &nav_ctx.actor)?,
+            None => None,
+        };
+        if !navigates {
+            return Ok(checkpoint);
+        }
+        // Labels first, so the tolerance band sees them.
+        let labels = nav::step(tx, nav_ctx)?;
+        for draft in labels.events {
+            append_in(tx, draft)?;
+        }
+        let state = nav::state_step(tx, nav_ctx)?;
+        for draft in state.events {
+            append_in(tx, draft)?;
+        }
+        Ok(checkpoint.or(labels.note).or(state.note))
+    })?)
 }
 
 /// The session as stored after this hook's events.
@@ -292,27 +340,42 @@ fn drafts_for(
             };
             ctx.draft("needs_owner", &NeedsOwner { kind })?
         }
-        HookEvent::SessionEnd => ctx.draft(
-            "session_ended",
-            &SessionEnded {
-                reason: input.reason.clone(),
-            },
-        )?,
+        HookEvent::SessionEnd => {
+            // How it ended (spec §8.2): git runs here, once per session.
+            let (end_kind, dirty_files) = match &ctx.known {
+                Some(known) => handoff::end_state(store.conn(), known),
+                None => (None, Vec::new()),
+            };
+            ctx.draft(
+                "session_ended",
+                &SessionEnded {
+                    reason: input.reason.clone(),
+                    end_kind,
+                    dirty_files,
+                },
+            )?
+        }
     };
     Ok(vec![draft])
 }
 
 /// A tool running while the session waits on the owner (e.g. a Bash call just approved)
 /// ends the wait. Edit tools record their own events; any other tool records an empty
-/// `kind` event only then, so the common path still writes nothing.
+/// `kind` event only then, so the common path still writes nothing. A session marked
+/// crashed that runs a tool was only quiet (a long build, an absent owner): the event
+/// brings it back to life (spec §8.2).
 fn wait_over(ctx: &Ctx, store: &Store, kind: &str) -> Result<Vec<EventDraft>> {
+    let crashed = ctx
+        .known
+        .as_ref()
+        .is_some_and(|s| s.end_kind == Some(EndKind::Crashed));
     let waiting = ctx
         .known
         .as_ref()
         .is_some_and(|s| s.state == SessionState::NeedsOwner)
         && session::current_unit(store.conn(), &ctx.input.session_id)?
             .is_some_and(|u| u.wait_started_at.is_some());
-    if !waiting {
+    if !crashed && !waiting {
         return Ok(Vec::new());
     }
     let tool = ctx.input.tool_name.clone().unwrap_or_default();

@@ -3,16 +3,21 @@
 //! See `docs/superpowers/specs/2026-10-13-bridge-screen-design.md` §4.2 for the module map.
 
 pub mod binding;
+pub mod checkpoint;
 pub mod claim;
 pub mod config;
 pub mod drift;
 pub mod error;
+pub mod git;
+pub mod handoff;
 pub mod navigator;
 pub mod paths;
 pub mod plan;
 pub mod projection;
+pub mod recovery;
 pub mod repo;
 pub mod session;
+pub mod squash;
 pub mod store;
 pub mod tangent;
 pub mod tuning;

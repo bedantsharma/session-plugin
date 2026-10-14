@@ -1,13 +1,17 @@
+use std::fmt::Write as _;
 use std::io::Read;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use bridge_screen_core::config::Config;
+use bridge_screen_core::handoff::LeftoverAction;
 use bridge_screen_core::navigator::{self, Channel};
 use bridge_screen_core::paths::Home;
 use bridge_screen_core::plan::{EditContext, PlanOp, load_tree, plan_edit, render_text};
+use bridge_screen_core::recovery::{self, Caller};
 use bridge_screen_core::repo;
 use bridge_screen_core::session::{self, Session};
+use bridge_screen_core::squash;
 use bridge_screen_core::store::{Actor, EventDraft, OWNER_SESSION, Store, append_in};
 use bridge_screen_core::tangent::{self, Label, LabelRequest, LabelSource, NavState, OwnerAction};
 
@@ -40,6 +44,8 @@ pub fn run(cli: Cli) -> Result<()> {
             unit_no,
             label,
         } => label_cmd(&session, unit_no, label),
+        Command::Resolve { args, dir } => resolve(&dir, &args),
+        Command::Squash { dir, onto, dry_run } => squash_cmd(&dir, onto, dry_run),
         Command::Rebuild => rebuild(),
         Command::Config { action: None, dir } => config(&dir),
         Command::Config {
@@ -49,8 +55,23 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Mcp => crate::mcp::run(),
         Command::Status => {
             let home = Home::resolve()?;
-            let store = open_store(&home)?;
+            let mut store = open_store(&home)?;
             let cfg = Config::load(&home.config_path())?;
+            // Sessions silent past the crash timeout are shown as crashed, not live.
+            let mut repos: Vec<String> = session::list_live(store.conn(), None)?
+                .into_iter()
+                .map(|s| s.repo_id)
+                .collect();
+            repos.sort();
+            repos.dedup();
+            for repo_id in repos {
+                recovery::scan_crashed(
+                    &mut store,
+                    &repo_id,
+                    jiff::Timestamp::now(),
+                    cfg.crash_timeout_min,
+                )?;
+            }
             print!("{}", crate::status::render(&store, &cfg)?);
             Ok(())
         }
@@ -131,6 +152,91 @@ fn plan_edit_cmd(
         println!("added {id}");
     }
     Ok(())
+}
+
+fn resolve(dir: &Path, args: &[String]) -> Result<()> {
+    let (action, ids) = args
+        .split_last()
+        .context("give leftover ids and an action")?;
+    let action = LeftoverAction::parse(action).with_context(|| {
+        format!("the last argument must be adopt, resume or undo, not {action}")
+    })?;
+    let repo = repo::identify(dir)?;
+    let home = Home::resolve()?;
+    let mut store = open_store(&home)?;
+    store.register_repo(&repo)?;
+    let res = recovery::resolve(
+        &mut store,
+        &repo.id,
+        &home.snapshots_dir(&repo.id),
+        ids,
+        action,
+        &Caller::Owner,
+        // The owner's choice needs no waiting.
+        &recovery::Takeover::new(jiff::Timestamp::now(), 0),
+    )?;
+    println!("{}", crate::mcp::resolution_text(&store, &repo.id, &res)?);
+    Ok(())
+}
+
+fn squash_cmd(dir: &Path, onto: Option<String>, dry_run: bool) -> Result<()> {
+    let repo = repo::identify(dir)?;
+    let wt = bridge_screen_core::git::toplevel(dir)?;
+    let home = Home::resolve()?;
+    let mut store = open_store(&home)?;
+    store.register_repo(&repo)?;
+    let opts = squash::Options { onto, dry_run };
+    match squash::squash(&wt, &opts, store.conn(), &repo.id)? {
+        squash::Outcome::Refused(r) => anyhow::bail!("not squashing: {r} (history unchanged)"),
+        squash::Outcome::DryRun(plan) => {
+            println!(
+                "Would squash {} commits on {} onto {} ({}), {} of them WIP:",
+                plan.commits.len(),
+                plan.branch,
+                &plan.merge_base[..plan.merge_base.len().min(8)],
+                plan.base,
+                plan.wips
+            );
+            for c in &plan.commits {
+                println!("  {} {}", &c.sha[..c.sha.len().min(8)], c.subject);
+            }
+            println!("Message:\n{}", plan.message);
+            if let Some((u, _)) = &plan.upstream {
+                println!("Then push to {u} with --force-with-lease.");
+            }
+            Ok(())
+        }
+        squash::Outcome::Squashed(done) => {
+            store.append(EventDraft::new(
+                &repo.id,
+                OWNER_SESSION,
+                "squashed",
+                serde_json::to_value(done.event())?,
+            ))?;
+            let mut text = format!(
+                "Squashed {} commits on {} into {}. Backup: {}.",
+                done.old_shas.len(),
+                done.branch,
+                &done.new_sha[..done.new_sha.len().min(8)],
+                done.backup_ref
+            );
+            match &done.push {
+                Some(Ok(())) => text.push_str(" Pushed with --force-with-lease."),
+                Some(Err(e)) => {
+                    store.append(EventDraft::new(
+                        &repo.id,
+                        OWNER_SESSION,
+                        "squash_failed",
+                        serde_json::json!({"reason": format!("push failed: {e}")}),
+                    ))?;
+                    let _ = write!(text, " The push failed ({e}); the squash is local only.");
+                }
+                None => {}
+            }
+            println!("{text}");
+            Ok(())
+        }
+    }
 }
 
 fn rebuild() -> Result<()> {

@@ -52,6 +52,27 @@ pub enum Command {
         unit_no: i64,
         label: LabelArg,
     },
+    /// Resolve leftovers of dead sessions: `resolve <leftover-id|prefix>… adopt|resume|undo`.
+    Resolve {
+        /// Leftover ids (or unique prefixes), then the action: adopt, resume or undo.
+        #[arg(required = true, num_args = 2..)]
+        args: Vec<String>,
+        /// Any directory inside the repo.
+        #[arg(short = 'C', long = "dir", default_value = ".")]
+        dir: PathBuf,
+    },
+    /// Squash the branch's wip(bridge) checkpoint commits into one (keeps a backup ref).
+    Squash {
+        /// Any directory inside the worktree.
+        #[arg(short = 'C', long = "dir", default_value = ".")]
+        dir: PathBuf,
+        /// The base branch (default: origin's default branch, else main, else master).
+        #[arg(long)]
+        onto: Option<String>,
+        /// Show what would happen; change nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Rebuild all views from the event log.
     Rebuild,
     /// Print the effective configuration (and this repo's tuned drift thresholds).

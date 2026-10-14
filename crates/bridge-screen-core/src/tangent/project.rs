@@ -430,6 +430,12 @@ fn note_sent(tx: &Transaction, event: &Event, d: &NoteSent) -> Result<()> {
             event.ts
         ],
     )?;
+    if d.kind == "checkpoint" {
+        tx.execute(
+            "UPDATE sessions SET checkpoint_asked_unit = ?2 WHERE session_id = ?1",
+            params![event.session_id, d.unit_no],
+        )?;
+    }
     if d.kind == "owner_reply" {
         tx.execute(
             "UPDATE sessions SET pending_reply = NULL WHERE session_id = ?1",

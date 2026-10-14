@@ -1,12 +1,9 @@
 //! Text injected into the agent's context by hooks. Short and fixed-format.
 
-use std::fmt::Write as _;
-
 use anyhow::Result;
-use bridge_screen_core::claim::{Candidate, candidates, task_title};
+use bridge_screen_core::claim::{Candidate, candidates};
 use bridge_screen_core::plan::{NodeStatus, get_node};
 use bridge_screen_core::session::Session;
-use bridge_screen_core::store::repo_name;
 use rusqlite::Connection;
 
 /// How many candidates a claim reminder lists.
@@ -20,30 +17,6 @@ fn goal_title(conn: &Connection, repo_id: &str) -> Result<Option<String>> {
     Ok(get_node(conn, repo_id, "G")?
         .filter(|g| g.status != NodeStatus::Dropped)
         .map(|g| g.title))
-}
-
-/// SessionStart: where the session is tracked, the goal, and the active task or a nudge to
-/// claim one.
-pub fn session_start(conn: &Connection, session: &Session) -> Result<String> {
-    let repo = repo_name(conn, &session.repo_id)?.unwrap_or_else(|| "this repo".into());
-    let mut text = format!("bridge-screen: tracking this session in {repo}.");
-    let Some(goal) = goal_title(conn, &session.repo_id)? else {
-        text.push_str(
-            " No plan yet — ask the owner whether to create one (bridge-screen plan edit / plan_edit tool).",
-        );
-        return Ok(text);
-    };
-    let _ = writeln!(text, " Goal: {goal}.");
-    match &session.active_task {
-        Some(id) => {
-            let title = task_title(conn, &session.repo_id, id)?.unwrap_or_default();
-            let _ = write!(text, "Active task: {id} {title}.");
-        }
-        None => text.push_str(
-            "Claim your task with claim_task before working (see the bridge-screen skill).",
-        ),
-    }
-    Ok(text)
 }
 
 /// UserPromptSubmit: while the session has no task, every third prompt lists the tasks the

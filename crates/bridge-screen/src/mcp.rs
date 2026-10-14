@@ -11,10 +11,13 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use bridge_screen_core::binding;
+use bridge_screen_core::checkpoint::{self, ClaimDoneRequest};
 use bridge_screen_core::claim::{self, ClaimMode, ClaimRequest, ClaimTarget};
 use bridge_screen_core::config::Config;
+use bridge_screen_core::handoff::{self, LeftoverAction};
 use bridge_screen_core::paths::Home;
 use bridge_screen_core::plan::{EditContext, NodeKind, NodeStatus, PlanOp, get_node, load_tree};
+use bridge_screen_core::recovery::{self, Caller, Resolution};
 use bridge_screen_core::session::{self, Session, SessionState};
 use bridge_screen_core::store::{Actor, Store};
 use bridge_screen_core::tangent::{
@@ -178,6 +181,51 @@ pub struct PromoteDetourInput {
     pub estimate_min: Option<u32>,
 }
 
+/// Say a task is done (verification level L0).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ClaimDoneInput {
+    /// The task you finished; defaults to your active task.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// What shows it is done: the tests you ran and their result, the files changed.
+    pub evidence: String,
+}
+
+/// Resolve leftovers a dead session left in a worktree.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResolveLeftoverInput {
+    /// Leftover ids as the briefing or status lists them.
+    pub ids: Vec<String>,
+    /// "adopt" (commit them as they are), "resume" (claim their task and finish them) or
+    /// "undo" (stash them; nothing is lost).
+    pub action: LeftoverAction,
+}
+
+/// Read back the briefing before your first edit.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HandoffReadbackInput {
+    /// The goal, in your words.
+    pub goal: String,
+    /// What is in flight: the task id and what is half-done.
+    pub in_flight: String,
+    /// Your next action.
+    pub next_action: String,
+}
+
+/// Leave a note for the next session.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HandoffNoteInput {
+    /// What is half-done right now, in one or two sentences.
+    pub in_flight: String,
+    /// Up to 5 warnings for the next session, as "if X, then Y".
+    #[serde(default)]
+    pub if_then: Vec<String>,
+}
+
 #[derive(Clone)]
 pub struct Bridge {
     home: Home,
@@ -237,6 +285,46 @@ impl Bridge {
         Parameters(args): Parameters<Args<ClaimTaskInput>>,
     ) -> CallToolResult {
         text(self.do_claim(&args))
+    }
+
+    #[tool(
+        description = "Say a task is done when you finish it (verification level L0), with evidence: the tests you ran and their result. A checkpoint commit is then due before you stop."
+    )]
+    async fn claim_done(
+        &self,
+        Parameters(args): Parameters<Args<ClaimDoneInput>>,
+    ) -> CallToolResult {
+        text(self.do_claim_done(&args))
+    }
+
+    #[tool(
+        description = "Resolve leftovers a dead session left uncommitted: adopt (commit them), resume (claim their task and continue; only in their worktree) or undo (stash them with a snapshot record; nothing is lost). Prefer the suggested action; ask the owner when unsure."
+    )]
+    async fn resolve_leftover(
+        &self,
+        Parameters(args): Parameters<Args<ResolveLeftoverInput>>,
+    ) -> CallToolResult {
+        text(self.do_resolve_leftover(&args))
+    }
+
+    #[tool(
+        description = "Read back the briefing before your first edit when it asks: the goal, what's in flight (name the task id) and your next action. bridge-screen checks it against the log and corrects you once if it differs."
+    )]
+    async fn handoff_readback(
+        &self,
+        Parameters(args): Parameters<Args<HandoffReadbackInput>>,
+    ) -> CallToolResult {
+        text(self.do_handoff_readback(&args))
+    }
+
+    #[tool(
+        description = "Leave a note for the next session when you stop mid-task or finish one: what's in flight and up to 5 if/then warnings. The next session's briefing carries it."
+    )]
+    async fn handoff_note(
+        &self,
+        Parameters(args): Parameters<Args<HandoffNoteInput>>,
+    ) -> CallToolResult {
+        text(self.do_handoff_note(&args))
     }
 
     #[tool(
@@ -343,6 +431,88 @@ impl Bridge {
         Ok(reply)
     }
 
+    fn do_claim_done(&self, args: &Args<ClaimDoneInput>) -> Result<String, String> {
+        let mut store = self.open()?;
+        let session = self.caller(&store, "claim_done", &args.raw)?;
+        let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        let task = checkpoint::claim_done(
+            &mut store,
+            &ClaimDoneRequest {
+                session_id: session.session_id.clone(),
+                task_id: input.id.clone(),
+                evidence: input.evidence.clone(),
+                actor: Actor::default(),
+            },
+        )
+        .map_err(msg)?;
+        Ok(format!(
+            "Marked {task} claimed done. Commit a checkpoint before you stop, then leave a handoff_note if work remains in flight."
+        ))
+    }
+
+    fn do_resolve_leftover(&self, args: &Args<ResolveLeftoverInput>) -> Result<String, String> {
+        let mut store = self.open()?;
+        let session = self.caller(&store, "resolve_leftover", &args.raw)?;
+        let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        let res = recovery::resolve(
+            &mut store,
+            &session.repo_id,
+            &self.home.snapshots_dir(&session.repo_id),
+            &input.ids,
+            input.action,
+            &Caller::Agent {
+                session_id: session.session_id.clone(),
+            },
+            &recovery::Takeover::new(
+                jiff::Timestamp::now(),
+                Config::load(&self.home.config_path())
+                    .unwrap_or_default()
+                    .crash_takeover_hours,
+            ),
+        )
+        .map_err(msg)?;
+        resolution_text(&store, &session.repo_id, &res).map_err(msg)
+    }
+
+    fn do_handoff_readback(&self, args: &Args<HandoffReadbackInput>) -> Result<String, String> {
+        let mut store = self.open()?;
+        let session = self.caller(&store, "handoff_readback", &args.raw)?;
+        let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        let check = handoff::read_back(
+            &mut store,
+            &session.session_id,
+            &input.goal,
+            &input.in_flight,
+            &input.next_action,
+            &Actor::default(),
+        )
+        .map_err(msg)?;
+        Ok(check.reply)
+    }
+
+    fn do_handoff_note(&self, args: &Args<HandoffNoteInput>) -> Result<String, String> {
+        let mut store = self.open()?;
+        let session = self.caller(&store, "handoff_note", &args.raw)?;
+        let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        let task = handoff::leave_note(
+            &mut store,
+            &session.session_id,
+            &input.in_flight,
+            &input.if_then,
+            &Actor::default(),
+        )
+        .map_err(msg)?;
+        Ok(match task {
+            Some(t) => {
+                let title = claim::task_title(store.conn(), &session.repo_id, &t)
+                    .map_err(msg)?
+                    .unwrap_or_default();
+                format!("Handoff note saved for {t} {title}.")
+            }
+            None => "Handoff note saved (no active task).".to_string(),
+        })
+    }
+
     fn do_plan_edit(&self, args: &Args<PlanEditInput>) -> Result<String, String> {
         let mut store = self.open()?;
         let session = self.caller(&store, "plan_edit", &args.raw)?;
@@ -392,7 +562,7 @@ impl Bridge {
                 let what =
                     tangent::item_display(store.conn(), &session.repo_id, item).map_err(msg)?;
                 format!(
-                    "{head} Suspended {what} — on return: {}",
+                    "{head} Suspended {what} — on return: {} If you stop before returning, leave a handoff_note.",
                     sentence(&item.resume_cue)
                 )
             }
@@ -520,6 +690,45 @@ impl ServerHandler for Bridge {
     }
 }
 
+/// What a leftover resolution did, in one line.
+pub fn resolution_text(
+    store: &Store,
+    repo_id: &str,
+    res: &Resolution,
+) -> bridge_screen_core::error::Result<String> {
+    let n = res.ids.len();
+    let what = format!("{n} leftover{}", if n == 1 { "" } else { "s" });
+    let short = |sha: &str| sha.chars().take(8).collect::<String>();
+    Ok(match res.action {
+        LeftoverAction::Adopt => match &res.commit {
+            Some(sha) => format!("Adopted {what}: committed {}.", short(sha)),
+            None => format!("Adopted {what}: nothing was left uncommitted."),
+        },
+        LeftoverAction::Undo => match &res.stash {
+            Some(st) => format!(
+                "Undid {what}: stashed as {} (`git stash apply {}` in {} brings them back).",
+                short(&st.sha),
+                st.sha,
+                res.worktree
+            ),
+            None => format!("Undid {what}: nothing was left uncommitted."),
+        },
+        LeftoverAction::Resume => match &res.claimed {
+            Some(task) => {
+                let title = claim::task_title(store.conn(), repo_id, task)?.unwrap_or_default();
+                format!(
+                    "Resumed {task} {title}: {what} in {} are yours to finish.",
+                    res.worktree
+                )
+            }
+            None => format!(
+                "Marked {what} to resume: the next session in {} continues them.",
+                res.worktree
+            ),
+        },
+    })
+}
+
 /// The newest live session whose working directory is inside `dir`.
 fn newest_session_in(store: &Store, dir: &Path) -> Result<Option<Session>, String> {
     let real_dir = std::fs::canonicalize(dir).ok();
@@ -537,6 +746,64 @@ fn newest_session_in(store: &Store, dir: &Path) -> Result<Option<Session>, Strin
         .collect();
     live.sort_by_cached_key(|s| std::cmp::Reverse(s.last_event_at.parse::<jiff::Timestamp>().ok()));
     Ok(live.into_iter().next())
+}
+
+/// The handoff part of `status`: a pending or missed checkpoint, the read-back, and the
+/// repo's open leftovers.
+fn handoff_status(
+    conn: &rusqlite::Connection,
+    s: &Session,
+    out: &mut String,
+) -> bridge_screen_core::error::Result<()> {
+    if let Some(reason) = &s.checkpoint_pending {
+        if s.checkpoint_missed == 0 {
+            let _ = writeln!(
+                out,
+                "Checkpoint pending ({reason}): commit as `wip(bridge): <id> <title>` before you stop."
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "Checkpoint missed ({reason}): commit your work now as `wip(bridge): <id> <title>`."
+            );
+        }
+    }
+    if s.readback == handoff::ReadbackState::Pending {
+        out.push_str("Read-back pending: call handoff_readback.\n");
+    }
+    let left: Vec<handoff::Leftover> = handoff::leftovers(conn, &s.repo_id, true)?;
+    if !left.is_empty() {
+        let list: Vec<String> = left
+            .iter()
+            .take(5)
+            .map(|l| {
+                let only = if l.state == handoff::LeftoverState::ReportOnly {
+                    " (report-only)"
+                } else {
+                    ""
+                };
+                format!(
+                    "{} {} ({}) → {}{only}",
+                    l.leftover_id,
+                    l.path,
+                    l.task_id.as_deref().unwrap_or("no task"),
+                    l.suggested.as_str()
+                )
+            })
+            .collect();
+        let more = if left.len() > 5 {
+            format!(" (+{} more)", left.len() - 5)
+        } else {
+            String::new()
+        };
+        let _ = writeln!(
+            out,
+            "Leftovers ({}): {}{more} — resolve with resolve_leftover",
+            left.len(),
+            list.join(" · ")
+        );
+    }
+    Ok(())
 }
 
 /// Compact state for the agent.
@@ -562,6 +829,7 @@ fn agent_status(store: &Store, s: &Session) -> bridge_screen_core::error::Result
         }
         None => out.push_str("Active task: none — claim one with claim_task.\n"),
     }
+    handoff_status(conn, s, &mut out)?;
     let open = tangent::open_detours(conn, &s.session_id)?;
     if !open.is_empty() {
         let list: Vec<String> = open

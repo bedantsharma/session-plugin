@@ -13,6 +13,10 @@ pub struct Config {
     pub points_minutes: u32,
     /// Minutes of silence after which a session counts as crashed (spec §8.2).
     pub crash_timeout_min: u32,
+    /// Hours a crashed session must have been silent before an agent in another worktree
+    /// may act on its leftovers; until then they are report-only (the owner may still
+    /// resolve them). A "crashed" session may just have an owner who stepped away.
+    pub crash_takeover_hours: u32,
     /// Drift scores below this are on-task without asking (spec §7.2). Tuned per repo.
     pub drift_lower: f64,
     /// Drift scores above this are flagged as possible drift. Tuned per repo.
@@ -28,6 +32,7 @@ impl Default for Config {
         Self {
             points_minutes: 15,
             crash_timeout_min: 30,
+            crash_takeover_hours: 24,
             drift_lower: 0.3,
             drift_upper: 0.7,
             tolerance_min_minutes: 15,
@@ -77,6 +82,7 @@ mod tests {
             Config {
                 points_minutes: 15,
                 crash_timeout_min: 30,
+                crash_takeover_hours: 24,
                 drift_lower: 0.3,
                 drift_upper: 0.7,
                 tolerance_min_minutes: 15,
@@ -123,6 +129,7 @@ mod tests {
         let cfg = Config {
             points_minutes: 12,
             crash_timeout_min: 45,
+            crash_takeover_hours: 6,
             drift_lower: 0.25,
             drift_upper: 0.8,
             tolerance_min_minutes: 10,

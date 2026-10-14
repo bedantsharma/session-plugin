@@ -6,6 +6,7 @@
 
 pub mod context;
 pub mod handlers;
+pub mod handoff;
 pub mod nav;
 
 use std::io::{Read, Write};

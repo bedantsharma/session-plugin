@@ -49,6 +49,11 @@ fn register(s: &Store, id: &str, name: &str) {
 }
 
 fn status(env: &Env) -> String {
+    // The scripted sessions are dated in the past: keep the crash scan away from them.
+    let config = env.home.path().join("config.toml");
+    if !config.exists() {
+        std::fs::write(&config, "crash_timeout_min = 100000000\n").unwrap();
+    }
     let out = env.run(&["status"], "");
     assert!(
         out.status.success(),
@@ -296,6 +301,74 @@ shop  no plan yet
   S dri00b  needs you (no task)             1 unit  · 40m · drift ⚠ 40m
   S dis00c  idle      (no task)             1 unit  · 1m · on task ⚠
   S det00a  idle      (no task)             1 unit  · 25m · detour 25m · D1 \"CI cache is broken\"
+"
+    );
+}
+
+#[test]
+fn checkpoints_read_back_and_leftovers_show() {
+    let env = Env::new();
+    let mut s = Store::open(&env.db_path()).unwrap();
+    register(&s, "r1", "shop");
+    // ok: idle, nothing pending.
+    start(&mut s, "r1", "ok000aaa", 0);
+    // pend: a checkpoint is due and the read-back is pending.
+    start(&mut s, "r1", "pend0bbb", 1);
+    ev(
+        &mut s,
+        "r1",
+        "pend0bbb",
+        "checkpoint_due",
+        json!({"reason": "claimed_done"}),
+        2,
+    );
+    ev(
+        &mut s,
+        "r1",
+        "pend0bbb",
+        "briefed",
+        json!({"status": "watcher", "readback_required": true}),
+        2,
+    );
+    // miss: the checkpoint was asked for and missed — it needs the owner.
+    start(&mut s, "r1", "miss0ccc", 3);
+    ev(
+        &mut s,
+        "r1",
+        "miss0ccc",
+        "checkpoint_due",
+        json!({"reason": "detour_closed"}),
+        4,
+    );
+    ev(
+        &mut s,
+        "r1",
+        "miss0ccc",
+        "checkpoint_missed",
+        json!({"unit_no": 2}),
+        5,
+    );
+    for (id, report_only) in [("l1", false), ("l2", false), ("l3", true)] {
+        ev(
+            &mut s,
+            "r1",
+            "ok000aaa",
+            "leftover_found",
+            json!({"leftover_id": id, "from_session": "gone", "worktree": "/w",
+                   "path": format!("{id}.rs"), "suggested": "undo", "report_only": report_only}),
+            6,
+        );
+    }
+    drop(s);
+    assert_eq!(
+        status(&env),
+        "\
+bridge-screen · 3 live sessions · 1 project
+shop  no plan yet
+  leftovers: 3 open (1 report-only)
+  S miss0c  needs you (no task)             0 units · 0m · on task · checkpoint missed
+  S pend0b  idle      (no task)             0 units · 0m · on task · checkpoint pending · read-back pending
+  S ok000a  idle      (no task)             0 units · 0m · on task
 "
     );
 }

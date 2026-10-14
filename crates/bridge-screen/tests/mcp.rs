@@ -154,11 +154,15 @@ fn lists_three_tools_with_schemas() {
     assert_eq!(
         names,
         vec![
+            "claim_done",
             "claim_task",
             "close_detour",
+            "handoff_note",
+            "handoff_readback",
             "label_unit",
             "plan_edit",
             "promote_detour",
+            "resolve_leftover",
             "resume",
             "start_detour",
             "status"
@@ -348,7 +352,9 @@ fn detour_round_trip_returns_the_cue_verbatim() {
     assert!(!is_error, "{text}");
     assert_eq!(
         text,
-        format!("Detour D1 opened: build is broken. Suspended 1.1 Login form — on return: {cue}.")
+        format!(
+            "Detour D1 opened: build is broken. Suspended 1.1 Login form — on return: {cue}. If you stop before returning, leave a handoff_note."
+        )
     );
     let (is_error, text) = call_as(
         &mut mcp,
@@ -410,7 +416,7 @@ fn nested_detour_returns_to_the_outer_one() {
     );
     assert_eq!(
         text,
-        "Detour D2 opened: lockfile conflict. Suspended D1 build is broken — on return: rebuild after cargo update."
+        "Detour D2 opened: lockfile conflict. Suspended D1 build is broken — on return: rebuild after cargo update. If you stop before returning, leave a handoff_note."
     );
     let (_, text) = call_as(
         &mut mcp,
@@ -711,4 +717,153 @@ fn status_lists_detours_and_suspended_items() {
         text.contains("Suspended: 1.1 Login form — on return: rerun the login test"),
         "{text}"
     );
+}
+
+#[test]
+fn claim_done_marks_the_task_and_asks_for_a_checkpoint() {
+    let env = setup();
+    let args = json!({"id": "1.1", "mode": "auto", "confidence": 0.9});
+    bind(&env, "s1", "claim_task", &args, "toolu_1");
+    let mut mcp = Mcp::start(&env, "/nonexistent");
+    assert!(!mcp.call("claim_task", &args).0);
+    let args = json!({"evidence": "cargo test: 12 passed"});
+    bind(&env, "s1", "claim_done", &args, "toolu_2");
+    let (is_error, text) = mcp.call("claim_done", &args);
+    assert!(!is_error, "{text}");
+    assert_eq!(
+        text,
+        "Marked 1.1 claimed done. Commit a checkpoint before you stop, then leave a handoff_note if work remains in flight."
+    );
+    let store = Store::open(&env.db_path()).unwrap();
+    let node = get_node(
+        store.conn(),
+        &session::get(store.conn(), "s1").unwrap().unwrap().repo_id,
+        "1.1",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(node.status, NodeStatus::Claimed);
+    let s = session::get(store.conn(), "s1").unwrap().unwrap();
+    assert_eq!(s.checkpoint_pending.as_deref(), Some("claimed_done"));
+
+    // Without an active task and without an id there is nothing to mark.
+    let args = json!({"evidence": "x"});
+    bind(&env, "s2", "claim_done", &args, "toolu_3");
+    let (is_error, text) = mcp.call("claim_done", &args);
+    assert!(is_error);
+    assert_eq!(text, "no active task; give the id of the task you finished");
+}
+
+#[test]
+fn resolve_leftover_undoes_into_a_stash() {
+    let env = setup();
+    // s1 leaves an untracked file behind and ends; s3 starts in the same worktree.
+    env.hook("user-prompt-submit", "s1");
+    let path = env.repo.path().join("scratch.txt");
+    std::fs::write(&path, "half a thought\n").unwrap();
+    let mut p = fixture_json("post-tool-use", "s1", &env.repo_path());
+    p["tool_input"]["file_path"] = json!(path.to_str().unwrap());
+    env.hook_raw("post-tool-use", &p.to_string());
+    env.hook("session-end", "s1");
+    env.hook("session-end", "s2");
+    env.hook("session-start", "s3");
+    let store = Store::open(&env.db_path()).unwrap();
+    let repo_id = session::get(store.conn(), "s3").unwrap().unwrap().repo_id;
+    let found = bridge_screen_core::handoff::leftovers(store.conn(), &repo_id, true).unwrap();
+    assert_eq!(found.len(), 1);
+    let id = found[0].leftover_id.clone();
+
+    let args = json!({"ids": [id], "action": "undo"});
+    bind(&env, "s3", "resolve_leftover", &args, "toolu_1");
+    let mut mcp = Mcp::start(&env, "/nonexistent");
+    let (is_error, text) = mcp.call("resolve_leftover", &args);
+    assert!(!is_error, "{text}");
+    assert!(text.starts_with("Undid 1 leftover: stashed as "), "{text}");
+    assert!(text.contains("git stash apply"), "{text}");
+    assert!(!path.exists());
+    let snap = env
+        .home
+        .path()
+        .join("snapshots")
+        .join(&repo_id)
+        .join(format!("{id}.json"));
+    assert!(snap.exists(), "{}", snap.display());
+
+    // A bad action is a tool error the agent can read.
+    let args = json!({"ids": [id], "action": "delete"});
+    bind(&env, "s3", "resolve_leftover", &args, "toolu_2");
+    let (is_error, text) = mcp.call("resolve_leftover", &args);
+    assert!(is_error);
+    assert!(text.starts_with("invalid arguments"), "{text}");
+}
+
+#[test]
+fn handoff_note_and_readback_round_trip() {
+    let env = setup();
+    let args = json!({"id": "1.1", "mode": "auto", "confidence": 0.9});
+    bind(&env, "s1", "claim_task", &args, "toolu_1");
+    let mut mcp = Mcp::start(&env, "/nonexistent");
+    assert!(!mcp.call("claim_task", &args).0);
+    let args = json!({"in_flight": "validation half wired",
+                      "if_then": ["if the form test flakes, rerun it once"]});
+    bind(&env, "s1", "handoff_note", &args, "toolu_2");
+    let (is_error, text) = mcp.call("handoff_note", &args);
+    assert!(!is_error, "{text}");
+    assert_eq!(text, "Handoff note saved for 1.1 Login form.");
+    let args = json!({"in_flight": ""});
+    bind(&env, "s1", "handoff_note", &args, "toolu_3");
+    let (is_error, text) = mcp.call("handoff_note", &args);
+    assert!(is_error);
+    assert!(text.starts_with("in_flight is required"), "{text}");
+
+    let args = json!({"goal": "ship", "in_flight": "1.1 login form", "next_action": "wire it"});
+    bind(&env, "s1", "handoff_readback", &args, "toolu_4");
+    let (is_error, text) = mcp.call("handoff_readback", &args);
+    assert!(!is_error, "{text}");
+    assert_eq!(text, "Read-back matches the log. Go ahead.");
+    let store = Store::open(&env.db_path()).unwrap();
+    let s = session::get(store.conn(), "s1").unwrap().unwrap();
+    assert_eq!(s.readback, bridge_screen_core::handoff::ReadbackState::Ok);
+    let args = json!({"goal": "ship", "in_flight": "the reset page", "next_action": "x"});
+    bind(&env, "s1", "handoff_readback", &args, "toolu_5");
+    let (_, text) = mcp.call("handoff_readback", &args);
+    assert_eq!(
+        text,
+        "Close, but the log says: active task 1.1 \"Login form\". Carry on from there."
+    );
+}
+
+#[test]
+fn status_shows_checkpoint_read_back_and_leftovers() {
+    let env = setup();
+    // s1 leaves a file behind and ends; s2 also ends; s3 starts and gets the leftover.
+    env.hook("user-prompt-submit", "s1");
+    let path = env.repo.path().join("left.txt");
+    std::fs::write(&path, "x\n").unwrap();
+    let mut p = fixture_json("post-tool-use", "s1", &env.repo_path());
+    p["tool_input"]["file_path"] = json!(path.to_str().unwrap());
+    env.hook_raw("post-tool-use", &p.to_string());
+    env.hook("session-end", "s1");
+    env.hook("session-end", "s2");
+    env.hook("session-start", "s3");
+    let args = json!({"id": "1.1", "mode": "auto", "confidence": 0.9});
+    bind(&env, "s3", "claim_task", &args, "toolu_1");
+    let mut mcp = Mcp::start(&env, "/nonexistent");
+    assert!(!mcp.call("claim_task", &args).0);
+    let args = json!({"evidence": "done"});
+    bind(&env, "s3", "claim_done", &args, "toolu_2");
+    assert!(!mcp.call("claim_done", &args).0);
+    bind(&env, "s3", "status", &json!({}), "toolu_3");
+    let (is_error, text) = mcp.call("status", &json!({}));
+    assert!(!is_error, "{text}");
+    assert!(
+        text.contains("Checkpoint pending (claimed_done): commit as `wip(bridge): <id> <title>` before you stop."),
+        "{text}"
+    );
+    assert!(
+        text.contains("Read-back pending: call handoff_readback."),
+        "{text}"
+    );
+    assert!(text.contains("Leftovers (1): "), "{text}");
+    assert!(text.contains(" left.txt (no task) → adopt"), "{text}");
 }

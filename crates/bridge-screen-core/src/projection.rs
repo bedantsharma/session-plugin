@@ -3,6 +3,7 @@
 use rusqlite::Transaction;
 
 use crate::error::Result;
+use crate::handoff::{HANDOFF_KINDS, project as project_handoff};
 use crate::plan::project::{PLAN_KINDS, project as project_plan};
 use crate::session::{SESSION_KINDS, project as project_session};
 use crate::store::Event;
@@ -20,6 +21,10 @@ pub const VIEW_TABLES: &[&str] = &[
     "drift_samples",
     "repo_tuning",
     "notes_sent",
+    "checkpoints",
+    "leftovers",
+    "handoff_notes",
+    "claims_done",
 ];
 
 /// Update view tables for one event. Unknown kinds change no views.
@@ -31,6 +36,8 @@ pub fn apply(tx: &Transaction, event: &Event) -> Result<()> {
         project_session(tx, event)?;
     } else if TANGENT_KINDS.contains(&kind) {
         project_tangent(tx, event)?;
+    } else if HANDOFF_KINDS.contains(&kind) {
+        project_handoff(tx, event)?;
     }
     Ok(())
 }

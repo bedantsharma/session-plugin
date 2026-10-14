@@ -7,7 +7,9 @@ use std::fmt::Write as _;
 use anyhow::Result;
 use bridge_screen_core::claim::task_title;
 use bridge_screen_core::config::Config;
+use bridge_screen_core::handoff::{BriefingStatus, ReadbackState};
 use bridge_screen_core::plan::{NodeStatus, get_node};
+use bridge_screen_core::recovery;
 use bridge_screen_core::session::{self, Session, SessionState};
 use bridge_screen_core::store::{Store, repo_name};
 use bridge_screen_core::tangent::{self, Label, NavState};
@@ -20,16 +22,27 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
-/// Red drift first, then other needs-you, then working, then idle.
+/// A checkpoint was asked for and missed, or the briefing found the session unstable:
+/// the owner should look.
+fn handoff_trouble(s: &Session) -> bool {
+    (s.checkpoint_missed != 0 && s.checkpoint_pending.is_some())
+        || s.briefing_status == Some(BriefingStatus::Unstable)
+}
+
+/// Red drift first, then a missed checkpoint or unstable handoff, then other needs-you,
+/// then working, then idle.
 fn state_rank(s: &Session) -> u8 {
     if s.nav_state == NavState::Red {
         return 0;
     }
+    if handoff_trouble(s) {
+        return 1;
+    }
     match s.state {
-        SessionState::NeedsOwner => 1,
-        SessionState::Working => 2,
-        SessionState::Idle => 3,
-        SessionState::Ended => 4,
+        SessionState::NeedsOwner => 2,
+        SessionState::Working => 3,
+        SessionState::Idle => 4,
+        SessionState::Ended => 5,
     }
 }
 
@@ -93,6 +106,10 @@ pub fn render(store: &Store, cfg: &Config) -> Result<String> {
                 let _ = writeln!(out, "{name}  no plan yet");
             }
         }
+        let (open, report_only) = recovery::open_counts(conn, &repo_id)?;
+        if open > 0 {
+            let _ = writeln!(out, "  leftovers: {open} open ({report_only} report-only)");
+        }
         // `list_live` is newest first; a stable sort keeps that within each state.
         sessions.sort_by_key(state_rank);
         for s in &sessions {
@@ -105,7 +122,7 @@ pub fn render(store: &Store, cfg: &Config) -> Result<String> {
 fn session_line(store: &Store, s: &Session) -> Result<String> {
     let short: String = s.session_id.chars().take(6).collect();
     let label = match s.state {
-        _ if s.nav_state == NavState::Red => "needs you",
+        _ if s.nav_state == NavState::Red || handoff_trouble(s) => "needs you",
         SessionState::NeedsOwner => "needs you",
         SessionState::Working => "working",
         SessionState::Idle => "idle",
@@ -122,7 +139,17 @@ fn session_line(store: &Store, s: &Session) -> Result<String> {
     let count = usize::try_from(s.unit_count).unwrap_or(0);
     let units = plural(count, "unit", "units");
     let minutes = s.active_secs / 60;
-    let nav = nav_text(store, s)?;
+    let mut nav = nav_text(store, s)?;
+    if s.checkpoint_pending.is_some() {
+        nav.push_str(if s.checkpoint_missed != 0 {
+            " · checkpoint missed"
+        } else {
+            " · checkpoint pending"
+        });
+    }
+    if s.readback == ReadbackState::Pending {
+        nav.push_str(" · read-back pending");
+    }
     Ok(format!(
         "  S {short}  {left:<TASK_COLUMN$}{units:<7} · {minutes}m · {nav}\n"
     ))

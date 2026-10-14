@@ -39,6 +39,10 @@ fn dump(store: &Store) -> Vec<String> {
         ("drift_samples", "repo_id, unit_ref, ts, label"),
         ("repo_tuning", "repo_id"),
         ("notes_sent", "session_id, unit_no, ts, kind"),
+        ("checkpoints", "sha"),
+        ("leftovers", "leftover_id"),
+        ("handoff_notes", "session_id, ts"),
+        ("claims_done", "repo_id, task_id, ts"),
     ] {
         let mut stmt = store
             .conn()
@@ -287,7 +291,8 @@ fn rebuild_reproduces_session_views() {
         &claim_req("s2", ClaimTarget::Existing("1.1".into())),
     )
     .unwrap();
-    events += 1 + 3 + 1;
+    // The switch to the new task also makes a checkpoint due.
+    events += 1 + 4 + 1;
     s.append(EventDraft::new("a", "s1", "unit_stopped", json!({})))
         .unwrap();
     s.append(EventDraft::new(
@@ -485,6 +490,180 @@ fn rebuild_reproduces_tangent_views() {
             .any(|r| r.starts_with("repo_tuning: ") && r.ends_with("|Integer(40)")),
         "{before:?}"
     );
+    s.rebuild().unwrap();
+    assert_eq!(dump(&s), before);
+}
+
+/// Two sessions hand work over: a claim, a checkpoint asked for, missed and made, a note,
+/// a briefing and read-back, a dirty end, a crash, leftovers found and resolved, a squash.
+#[allow(clippy::too_many_lines)] // one event per line, as data
+fn handoff_script() -> Vec<(&'static str, i64, &'static str, Value)> {
+    vec![
+        (
+            "s1",
+            0,
+            "session_started",
+            json!({"cwd": "/a/sub", "worktree": "/a", "source": "startup"}),
+        ),
+        (
+            "s1",
+            1,
+            "briefed",
+            json!({"status": "watcher", "readback_required": true}),
+        ),
+        (
+            "s1",
+            2,
+            "readback",
+            json!({"result": "mismatch", "diff": "task"}),
+        ),
+        (
+            "s1",
+            3,
+            "task_claimed",
+            json!({"task_id": "1.1", "mode": "auto", "confidence": 0.9}),
+        ),
+        ("s1", 4, "prompt", json!({"chars": 3})),
+        (
+            "s1",
+            9,
+            "file_changed",
+            json!({"tool": "Edit", "files": ["src/a.rs"]}),
+        ),
+        (
+            "s1",
+            10,
+            "claimed_done",
+            json!({"task_id": "1.1", "evidence": "tests pass"}),
+        ),
+        (
+            "s1",
+            10,
+            "checkpoint_due",
+            json!({"reason": "claimed_done"}),
+        ),
+        ("s1", 20, "unit_stopped", json!({"unit_no": 1})),
+        (
+            "s1",
+            20,
+            "note_sent",
+            json!({"unit_no": 1, "kind": "checkpoint", "channel": "stop", "state_key": "cp:1"}),
+        ),
+        ("s1", 30, "checkpoint_missed", json!({"unit_no": 1})),
+        (
+            "s1",
+            40,
+            "checkpoint",
+            json!({"sha": "aaa", "task_id": "1.1", "next_action": "wire the form"}),
+        ),
+        (
+            "s1",
+            41,
+            "handoff_note",
+            json!({"task_id": "1.1", "in_flight": "form half done", "if_then": ["if x then y"]}),
+        ),
+        (
+            "s1",
+            50,
+            "session_ended",
+            json!({"reason": "other", "end_kind": "dirty", "dirty_files": ["src/a.rs"]}),
+        ),
+        (
+            "s2",
+            60,
+            "session_started",
+            json!({"cwd": "/a/wt", "worktree": "/a/wt", "source": "startup"}),
+        ),
+        ("s2", 61, "prompt", json!({"chars": 3})),
+        (
+            "s2",
+            70,
+            "file_changed",
+            json!({"tool": "Edit", "files": ["src/b.rs"]}),
+        ),
+        (
+            "s2",
+            4000,
+            "session_crashed",
+            json!({"last_event_at": "2026-10-13T09:01:10Z"}),
+        ),
+        (
+            "s3",
+            4001,
+            "session_started",
+            json!({"cwd": "/a", "worktree": "/a", "source": "startup"}),
+        ),
+        (
+            "s3",
+            4002,
+            "leftover_found",
+            json!({"leftover_id": "L1", "from_session": "s1", "worktree": "/a",
+                   "path": "src/a.rs", "task_id": "1.1", "suggested": "adopt",
+                   "report_only": false}),
+        ),
+        (
+            "s3",
+            4002,
+            "leftover_found",
+            json!({"leftover_id": "L2", "from_session": "s2", "worktree": "/a/wt",
+                   "path": "src/b.rs", "task_id": null, "suggested": "undo",
+                   "report_only": false}),
+        ),
+        (
+            "s3",
+            4002,
+            "leftovers_analysed",
+            json!({"from_session": "s1"}),
+        ),
+        (
+            "s3",
+            4003,
+            "leftover_resolved",
+            json!({"leftover_id": "L1", "action": "adopt", "commit": "bbb", "by": "agent"}),
+        ),
+        (
+            "owner",
+            4004,
+            "leftover_resolved",
+            json!({"leftover_id": "L2", "action": "undo", "stash_ref": "ccc", "by": "owner"}),
+        ),
+        (
+            "s3",
+            4005,
+            "squashed",
+            json!({"branch": "feat", "old_shas": ["aaa", "bbb"], "new_sha": "ddd",
+                   "backup_ref": "refs/bridge-screen/backup/feat/1"}),
+        ),
+    ]
+}
+
+#[test]
+fn rebuild_reproduces_handoff_views() {
+    let mut s = Store::open_in_memory().unwrap();
+    plan_edit(
+        &mut s,
+        &ctx("a", false),
+        &[
+            add(None, NodeKind::Goal, "goal"),
+            add(Some("G"), NodeKind::Milestone, "core"),
+            add(Some("1"), NodeKind::Task, "schema"),
+        ],
+    )
+    .unwrap();
+    let t0: Timestamp = "2026-10-13T09:00:00Z".parse().unwrap();
+    s.write(|tx| {
+        for (session, secs, kind, data) in handoff_script() {
+            let draft = EventDraft::new("a", session, kind, data);
+            append_in_at(tx, draft, t0 + SignedDuration::from_secs(secs))?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let before = dump(&s);
+    for table in ["checkpoints", "leftovers", "handoff_notes", "claims_done"] {
+        let prefix = format!("{table}: ");
+        assert!(before.iter().any(|r| r.starts_with(&prefix)), "{table}");
+    }
     s.rebuild().unwrap();
     assert_eq!(dump(&s), before);
 }
