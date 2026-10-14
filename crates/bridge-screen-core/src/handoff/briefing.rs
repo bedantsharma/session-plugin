@@ -24,6 +24,7 @@ const VERIFY_SHOWN: usize = 3;
 const LEFTOVERS_SHOWN: usize = 5;
 const IF_THEN_SHOWN: usize = 5;
 const DEPS_SHOWN: usize = 5;
+const DECISIONS_SHOWN: usize = 5;
 
 /// Asking for the read-back at the end of a briefing.
 pub const READBACK_ASK: &str = "Read back before your first edit: call handoff_readback with the goal, what's in flight, and your next action.";
@@ -482,8 +483,9 @@ pub fn briefing(conn: &Connection, me: &Session) -> Result<Briefing> {
     })
 }
 
-/// After compaction (≤ 8 lines, no read-back): the active task, its cue or next action,
-/// and open detours.
+/// After compaction (no read-back): the active task, its cue or next action and open
+/// detours (≤ 8 lines), then this session's latest decisions (≤ 5) and, when the
+/// decision-capture flag is set, the ask.
 pub fn compact_rebriefing(conn: &Connection, me: &Session) -> Result<String> {
     let mut lines = vec!["bridge-screen: re-briefing after compaction.".to_string()];
     match &me.active_task {
@@ -516,6 +518,21 @@ pub fn compact_rebriefing(conn: &Connection, me: &Session) -> Result<String> {
         lines.push(format!("Open detours: {}", capped(&list, VERIFY_SHOWN)));
     }
     lines.truncate(8);
+    // This session's decisions survive the compaction (spec §8.4, §8.6).
+    let decisions = crate::decision::by_session(conn, &me.session_id)?;
+    let live: Vec<&crate::decision::Decision> = decisions
+        .iter()
+        .filter(|d| d.superseded_by.is_none())
+        .collect();
+    if !live.is_empty() {
+        lines.push("Decisions so far:".to_string());
+        for d in live.iter().rev().take(DECISIONS_SHOWN).rev() {
+            lines.push(format!("  {} {}", d.decision_id, d.what));
+        }
+    }
+    if me.decision_capture.is_some() {
+        lines.push(crate::decision::DECISION_ASK.to_string());
+    }
     Ok(lines.join("\n"))
 }
 

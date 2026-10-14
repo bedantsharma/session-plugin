@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use bridge_screen_core::checkpoint::{self, StopGit};
 use bridge_screen_core::config::Config;
+use bridge_screen_core::decision;
 use bridge_screen_core::error::Result;
 use bridge_screen_core::git::{self, HeadCommit};
 use bridge_screen_core::handoff::{self, EndKind, ReadbackState};
@@ -186,6 +187,19 @@ pub fn recover(store: &mut Store, config: &Config, repo_id: &str, session_id: &s
     Ok(())
 }
 
+/// Any other note goes out with the decision ask when the session's capture flag is set
+/// (after a compaction or a claim): one extra line, once per flag (spec §8.6).
+pub fn with_decision_ask(store: &mut Store, session_id: &str, note: String) -> Result<String> {
+    let Some(s) = session::get(store.conn(), session_id)? else {
+        return Ok(note);
+    };
+    if s.decision_capture.is_none() {
+        return Ok(note);
+    }
+    store.append(decision::asked_draft(&s.repo_id, &s.session_id, "note"))?;
+    Ok(format!("{note}\nbridge-screen: {}", decision::DECISION_ASK))
+}
+
 /// At SessionStart (after recovery, before the briefing): drop verifications whose files
 /// changed since their commit, in the starting session's worktree.
 pub fn staleness(store: &mut Store, repo_id: &str, session_id: &str) -> Result<()> {
@@ -203,7 +217,15 @@ pub fn start_context(store: &mut Store, input: &HookInput) -> Result<Option<Stri
         return Ok(None);
     };
     if input.source.as_deref() == Some("compact") {
-        return Ok(Some(handoff::compact_rebriefing(store.conn(), &me)?));
+        let text = handoff::compact_rebriefing(store.conn(), &me)?;
+        if me.decision_capture.is_some() {
+            store.append(decision::asked_draft(
+                &me.repo_id,
+                &me.session_id,
+                "compact",
+            ))?;
+        }
+        return Ok(Some(text));
     }
     let b = handoff::briefing(store.conn(), &me)?;
     let data = handoff::Briefed {

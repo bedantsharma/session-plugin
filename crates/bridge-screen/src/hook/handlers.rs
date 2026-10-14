@@ -151,15 +151,8 @@ pub fn handle(
         HookEvent::PreToolUse => handoff::before_pr(store, input)?,
         _ => None,
     };
-    if event == HookEvent::SessionStart && input.source.as_deref() != Some("compact") {
-        // Recovery (spec §8.3): crashed sessions, then leftovers of dead ones.
-        handoff::recover(store, config, &ctx.repo_id, &input.session_id)?;
-        // Verifications whose files changed since drop a level (spec §8.5).
-        handoff::staleness(store, &ctx.repo_id, &input.session_id)?;
-    }
-    if event == HookEvent::SessionStart && tuning::due(store.conn(), &ctx.repo_id)? {
-        // Enough new drift samples: tune this repo's thresholds (spec §7.6).
-        store.write(|tx| tuning::run(tx, &ctx.repo_id, config))?;
+    if event == HookEvent::SessionStart {
+        start_steps(store, config, input, &ctx.repo_id)?;
     }
     let context = match event {
         HookEvent::SessionStart => handoff::start_context(store, input)?,
@@ -177,10 +170,33 @@ pub fn handle(
         HookEvent::PreToolUse => before_pr.or(nudge).or(note),
         _ => note,
     };
+    let context = match context {
+        // A known session's note carries the pending decision ask (spec §8.6).
+        Some(text) if event != HookEvent::SessionStart && ctx.known.is_some() => {
+            Some(handoff::with_decision_ask(store, &input.session_id, text)?)
+        }
+        other => other,
+    };
     Ok(context.map(|text| HookOutput {
         event,
         additional_context: Some(text),
     }))
+}
+
+/// SessionStart's work before the briefing: recovery and staleness (not after a
+/// compaction), then drift tuning when due.
+fn start_steps(store: &mut Store, config: &Config, input: &HookInput, repo_id: &str) -> Result<()> {
+    if input.source.as_deref() != Some("compact") {
+        // Recovery (spec §8.3): crashed sessions, then leftovers of dead ones.
+        handoff::recover(store, config, repo_id, &input.session_id)?;
+        // Verifications whose files changed since drop a level (spec §8.5).
+        handoff::staleness(store, repo_id, &input.session_id)?;
+    }
+    if tuning::due(store.conn(), repo_id)? {
+        // Enough new drift samples: tune this repo's thresholds (spec §7.6).
+        store.write(|tx| tuning::run(tx, repo_id, config))?;
+    }
+    Ok(())
 }
 
 /// Append the hook's events, then the checkpoint and navigator steps, in one transaction.

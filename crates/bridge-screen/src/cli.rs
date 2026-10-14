@@ -87,6 +87,18 @@ pub enum Command {
         #[arg(short = 'C', long = "dir", default_value = ".")]
         dir: PathBuf,
     },
+    /// The repo's decisions (spec §8.6); superseded ones only with --all.
+    Decisions {
+        /// Any directory inside the repo.
+        #[arg(short = 'C', long = "dir", default_value = ".")]
+        dir: PathBuf,
+        /// Only the decisions on this task.
+        #[arg(long)]
+        task: Option<String>,
+        /// Include superseded decisions.
+        #[arg(long)]
+        all: bool,
+    },
     /// Rebuild all views from the event log.
     Rebuild,
     /// Print the effective configuration (and this repo's tuned drift thresholds).

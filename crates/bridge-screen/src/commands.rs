@@ -53,6 +53,7 @@ pub fn run(cli: Cli) -> Result<()> {
             level,
             dir,
         } => verify_cmd(&dir, &task, broken.as_deref(), level),
+        Command::Decisions { dir, task, all } => decisions_cmd(&dir, task.as_deref(), all),
         Command::Rebuild => rebuild(),
         Command::Config { action: None, dir } => config(&dir),
         Command::Config {
@@ -334,6 +335,20 @@ fn set_setting(dir: &Path, key: SettingArg, value: Option<&str>) -> Result<()> {
         }
     } else {
         println!("The {what} for {} is unchanged.", repo.name);
+    }
+    Ok(())
+}
+
+fn decisions_cmd(dir: &Path, task: Option<&str>, all: bool) -> Result<()> {
+    let repo = repo::identify(dir)?;
+    let home = Home::resolve()?;
+    let store = open_store(&home)?;
+    let list = bridge_screen_core::decision::list(store.conn(), &repo.id, task, all)?;
+    if list.is_empty() {
+        println!("No decisions logged for {} yet.", repo.name);
+    }
+    for d in &list {
+        println!("{}", bridge_screen_core::decision::line(d));
     }
     Ok(())
 }

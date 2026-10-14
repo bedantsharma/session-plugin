@@ -49,6 +49,7 @@ fn lists_three_tools_with_schemas() {
             "handoff_note",
             "handoff_readback",
             "label_unit",
+            "log_decision",
             "plan_edit",
             "promote_detour",
             "resolve_leftover",
@@ -604,7 +605,7 @@ fn claim_done_marks_the_task_and_asks_for_a_checkpoint() {
     assert!(!is_error, "{text}");
     assert_eq!(
         text,
-        "Marked 1.1 claimed done. Name the files that show the work (files) so bridge-screen can check L1. Commit a checkpoint before you stop, then leave a handoff_note if work remains in flight."
+        "Marked 1.1 claimed done. Name the files that show the work (files) so bridge-screen can check L1. Commit a checkpoint before you stop, then leave a handoff_note if work remains in flight. Log any decisions this task settled (log_decision): what, why, alternatives."
     );
     let store = Store::open(&env.db_path()).unwrap();
     let node = get_node(
@@ -681,7 +682,10 @@ fn handoff_note_and_readback_round_trip() {
     bind(&env, "s1", "handoff_note", &args, "toolu_2");
     let (is_error, text) = mcp.call("handoff_note", &args);
     assert!(!is_error, "{text}");
-    assert_eq!(text, "Handoff note saved for 1.1 Login form.");
+    assert_eq!(
+        text,
+        "Handoff note saved for 1.1 Login form. Log any decisions this task settled (log_decision): what, why, alternatives."
+    );
     let args = json!({"in_flight": ""});
     bind(&env, "s1", "handoff_note", &args, "toolu_3");
     let (is_error, text) = mcp.call("handoff_note", &args);

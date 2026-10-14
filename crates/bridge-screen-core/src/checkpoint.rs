@@ -131,7 +131,23 @@ fn claim_done_in(tx: &Transaction, req: &ClaimDoneRequest) -> Result<String> {
         tx,
         due_draft(&session, CheckpointReason::ClaimedDone, &req.actor)?,
     )?;
+    // Task completion is when decisions are captured (spec §8.6): the claim's reply asks
+    // unless some are logged already ([`asks_for_decisions`]). Either way this claim's
+    // capture flag is answered here; a flag set earlier (a compaction) stays unless the
+    // reply asks.
+    if asks_for_decisions(tx, &session.repo_id, &task)? || session.decision_capture.is_none() {
+        append_in(
+            tx,
+            crate::decision::asked_draft(&session.repo_id, &session.session_id, "claim_done")
+                .actor(req.actor.clone()),
+        )?;
+    }
     Ok(task)
+}
+
+/// Does a claim of `task` ask for decisions? Only when none are logged on it.
+pub fn asks_for_decisions(conn: &Connection, repo_id: &str, task: &str) -> Result<bool> {
+    Ok(crate::decision::list(conn, repo_id, Some(task), true)?.is_empty())
 }
 
 /// Does this shell command look like it makes a commit?
@@ -374,7 +390,10 @@ mod tests {
             .map(|e| e.kind)
             .skip(4)
             .collect();
-        assert_eq!(kinds, vec!["claimed_done", "checkpoint_due"]);
+        assert_eq!(
+            kinds,
+            vec!["claimed_done", "checkpoint_due", "decision_asked"]
+        );
     }
 
     #[test]

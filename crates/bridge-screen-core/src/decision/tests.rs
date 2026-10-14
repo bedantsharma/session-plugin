@@ -142,3 +142,202 @@ fn the_capture_flag_is_set_and_cleared() {
     assert_eq!(capture(&s, "s1"), None);
     assert_eq!(by_session(s.conn(), "s1").unwrap().len(), 1);
 }
+
+fn plan(s: &mut Store, repo: &str) {
+    for (id, parent, kind) in [
+        ("G", None, "goal"),
+        ("1", Some("G"), "milestone"),
+        ("1.1", Some("1"), "task"),
+        ("1.2", Some("1"), "task"),
+    ] {
+        script(
+            s,
+            &[(
+                repo,
+                "owner",
+                0,
+                "node_added",
+                json!({"id": id, "parent_id": parent, "kind": kind, "title": format!("T{id}"),
+                       "intent": "why", "expected_files": []}),
+            )],
+        );
+    }
+}
+
+fn req(what: &str, supersedes: Option<&str>) -> LogRequest {
+    LogRequest {
+        session_id: "s1".into(),
+        task: DecisionTask::Active,
+        what: what.into(),
+        why: format!("because {what}"),
+        alternatives: vec![],
+        supersedes: supersedes.map(str::to_string),
+        actor: crate::store::Actor::default(),
+    }
+}
+
+fn store_with_task() -> Store {
+    let mut s = Store::open_in_memory().unwrap();
+    plan(&mut s, "r");
+    plan(&mut s, "r2");
+    started(&mut s, "s1");
+    script(
+        &mut s,
+        &[
+            (
+                "r",
+                "s1",
+                1,
+                "task_claimed",
+                json!({"task_id": "1.1", "mode": "auto", "confidence": 0.9}),
+            ),
+            (
+                "r2",
+                "s2",
+                1,
+                "session_started",
+                json!({"cwd": "/w2", "source": "startup"}),
+            ),
+        ],
+    );
+    s
+}
+
+fn err(r: Result<Logged>) -> String {
+    r.unwrap_err().to_string()
+}
+
+#[test]
+fn decision_chain_rules() {
+    let mut s = store_with_task();
+    let d1 = log_decision(&mut s, &req("Use SQLite", None)).unwrap();
+    assert_eq!(d1.reply(), "Logged D1.");
+    assert_eq!(d1.task_id.as_deref(), Some("1.1"));
+    let d2 = log_decision(&mut s, &req("Use Postgres", Some("D1"))).unwrap();
+    assert_eq!(d2.reply(), "Logged D2 (supersedes D1).");
+    let d3 = log_decision(&mut s, &req("Use CockroachDB", Some("D2"))).unwrap();
+    assert_eq!(d3.decision_id, "D3");
+    // Superseding an already-superseded decision names the newer one.
+    assert_eq!(
+        err(log_decision(&mut s, &req("Use files", Some("D1")))),
+        "D1 was already superseded by D2 — supersede D2 instead"
+    );
+    // Unknown here, or from another repo.
+    let mut other = req("Other repo", None);
+    other.session_id = "s2".into();
+    other.task = DecisionTask::RepoWide;
+    assert_eq!(log_decision(&mut s, &other).unwrap().decision_id, "D1");
+    assert_eq!(
+        err(log_decision(&mut s, &req("Use files", Some("D9")))),
+        "no decision D9 in this repo"
+    );
+    let mut cross = req("Cross", Some("D3"));
+    cross.session_id = "s2".into();
+    cross.task = DecisionTask::RepoWide;
+    assert_eq!(
+        err(log_decision(&mut s, &cross)),
+        "no decision D3 in this repo"
+    );
+    // Itself: the same `what` merges into D3, which can't supersede itself.
+    assert_eq!(
+        err(log_decision(&mut s, &req("use cockroachdb.", Some("D3")))),
+        "D3 can't supersede itself"
+    );
+    let ids: Vec<String> = chain(s.conn(), "r", "D2")
+        .unwrap()
+        .into_iter()
+        .map(|d| d.decision_id)
+        .collect();
+    assert_eq!(ids, vec!["D1", "D2", "D3"]);
+    // Refusals recorded nothing.
+    assert_eq!(list(s.conn(), "r", None, true).unwrap().len(), 3);
+    assert_eq!(
+        err(log_decision(&mut s, &req("  ", None))),
+        "what and why are both required"
+    );
+}
+
+#[test]
+fn duplicates_merge_and_rebuild_gives_the_same_rows() {
+    let mut s = store_with_task();
+    let mut first = req("Use SQLite", None);
+    first.alternatives = vec!["Postgres".into(), "JSON".into()];
+    log_decision(&mut s, &first).unwrap();
+    let mut again = req("  use   SQLITE! ", None);
+    again.why = "WAL is enough".into();
+    again.alternatives = vec!["JSON".into(), "sled".into(), " ".into()];
+    let merged = log_decision(&mut s, &again).unwrap();
+    assert_eq!(merged.reply(), "Merged into D1 (same decision on 1.1).");
+    // The same `what` on another task, or repo-wide, is a different decision.
+    let mut other_task = req("Use SQLite", None);
+    other_task.task = DecisionTask::Task("1.2".into());
+    assert_eq!(log_decision(&mut s, &other_task).unwrap().decision_id, "D2");
+    let mut wide = req("Use SQLite", None);
+    wide.task = DecisionTask::RepoWide;
+    let repo_wide = log_decision(&mut s, &wide).unwrap();
+    assert_eq!(repo_wide.task_id, None);
+    assert_eq!(repo_wide.decision_id, "D3");
+    let rows = list(s.conn(), "r", Some("1.1"), true).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].why, "WAL is enough");
+    assert_eq!(rows[0].alternatives, vec!["Postgres", "JSON", "sled"]);
+    assert_eq!(rows[0].merged_count, 2);
+    // Long text is cut, not refused.
+    let mut long = req(&"w".repeat(300), None);
+    long.why = "y".repeat(900);
+    long.alternatives = (0..9).map(|i| format!("alt{i}")).collect();
+    let id = log_decision(&mut s, &long).unwrap().decision_id;
+    let cut = get(s.conn(), "r", &id).unwrap().unwrap();
+    assert_eq!(
+        (
+            cut.what.chars().count(),
+            cut.why.chars().count(),
+            cut.alternatives.len()
+        ),
+        (MAX_WHAT, MAX_WHY, MAX_ALTERNATIVES)
+    );
+    let before = list(s.conn(), "r", None, true).unwrap();
+    s.rebuild().unwrap();
+    assert_eq!(list(s.conn(), "r", None, true).unwrap(), before);
+}
+
+#[test]
+fn ids_stay_unique_under_concurrent_writers() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    {
+        let mut s = Store::open(&path).unwrap();
+        plan(&mut s, "r");
+        started(&mut s, "s1");
+        started(&mut s, "s2");
+    }
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let handles: Vec<_> = ["s1", "s2"]
+        .into_iter()
+        .map(|sid| {
+            let path = path.clone();
+            let barrier = std::sync::Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let mut s = Store::open(&path).unwrap();
+                barrier.wait();
+                for i in 0..20 {
+                    let mut r = req(&format!("{sid} decision {i}"), None);
+                    r.session_id = sid.into();
+                    r.task = DecisionTask::RepoWide;
+                    log_decision(&mut s, &r).unwrap();
+                }
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().unwrap();
+    }
+    let s = Store::open(&path).unwrap();
+    let ids: Vec<String> = list(s.conn(), "r", None, true)
+        .unwrap()
+        .into_iter()
+        .map(|d| d.decision_id)
+        .collect();
+    let want: Vec<String> = (1..=40).map(|n| format!("D{n}")).collect();
+    assert_eq!(ids, want);
+}
