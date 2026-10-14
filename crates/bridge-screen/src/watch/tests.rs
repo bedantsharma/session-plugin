@@ -313,3 +313,31 @@ fn without_colour_no_cell_has_a_colour() {
             .any(|c| c.fg == Color::Indexed(173) || c.fg == Color::Red)
     );
 }
+
+#[test]
+fn the_picker_stays_on_its_item_when_the_queue_changes_under_it() {
+    let g = glance(2);
+    let mut app = App::new(g.clone(), false);
+    let mut fake = Fake::default();
+    let first = g.needs_you[0].session_id.clone().unwrap();
+    key(&mut app, KeyCode::Char('a'), &mut fake);
+    // A refresh reorders the queue while the picker is open.
+    let mut reordered = g.clone();
+    reordered.needs_you.reverse();
+    app.set_glance(reordered);
+    let _ = draw(&app, 100, 30);
+    key(&mut app, KeyCode::Char('3'), &mut fake);
+    assert_eq!(
+        serde_json::to_value(&fake.acted[0]).unwrap()["session"],
+        first.as_str()
+    );
+    // The item goes away while the picker is open: nothing is sent, nothing panics.
+    key(&mut app, KeyCode::Char('a'), &mut fake);
+    let mut gone = g.clone();
+    gone.needs_you
+        .retain(|i| i.session_id.as_deref() != Some(first.as_str()));
+    app.set_glance(gone.clone());
+    let _ = draw(&app, 100, 30);
+    key(&mut app, KeyCode::Char('1'), &mut fake);
+    assert_eq!(fake.acted.len(), 1);
+}

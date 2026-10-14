@@ -56,11 +56,11 @@ struct Field {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Picker {
-    /// Choose an action with 1–9.
-    Choose { item: usize },
+    /// Choose an action with 1–9. Items are held by id: a refresh may reorder the queue.
+    Choose { item: String },
     /// Type the action's inputs, one prompt at a time.
     Input {
-        item: usize,
+        item: String,
         action: usize,
         fields: Vec<Field>,
         at: usize,
@@ -131,9 +131,17 @@ impl App {
         self.selected = current
             .and_then(|c| rows.iter().position(|r| *r == c))
             .unwrap_or(self.selected.min(rows.len().saturating_sub(1)));
-        if self.picker.is_some() && !matches!(rows.get(self.selected), Some(Target::Item(_))) {
+        if let Some(Picker::Choose { item } | Picker::Input { item, .. }) = &self.picker
+            && self.item_pos(item).is_none()
+        {
             self.picker = None;
+            self.message = Some("already resolved / no longer needed".into());
         }
+    }
+
+    /// Where the needs-you item `id` is now.
+    fn item_pos(&self, id: &str) -> Option<usize> {
+        self.glance.needs_you.iter().position(|i| i.id == id)
     }
 
     fn item_index(&self) -> Option<usize> {
@@ -177,7 +185,9 @@ impl App {
             }
             KeyCode::Char('a') => match self.item_index() {
                 Some(i) if !self.glance.needs_you[i].actions.is_empty() => {
-                    self.picker = Some(Picker::Choose { item: i });
+                    self.picker = Some(Picker::Choose {
+                        item: self.glance.needs_you[i].id.clone(),
+                    });
                 }
                 Some(i) => {
                     let item = &self.glance.needs_you[i];
@@ -204,8 +214,14 @@ impl App {
             self.picker = None;
             return;
         }
+        let (Picker::Choose { item: id } | Picker::Input { item: id, .. }) = &picker;
+        let Some(item) = self.item_pos(id) else {
+            self.picker = None;
+            self.message = Some("already resolved / no longer needed".into());
+            return;
+        };
         match picker {
-            Picker::Choose { item } => {
+            Picker::Choose { item: id } => {
                 let KeyCode::Char(c) = code else { return };
                 let Some(n) = c.to_digit(10).and_then(|d| usize::try_from(d).ok()) else {
                     return;
@@ -228,7 +244,7 @@ impl App {
                     self.run(item, n - 1, &[], actor);
                 } else {
                     self.picker = Some(Picker::Input {
-                        item,
+                        item: id,
                         action: n - 1,
                         fields,
                         at: 0,
@@ -236,7 +252,7 @@ impl App {
                 }
             }
             Picker::Input {
-                item,
+                item: id,
                 action,
                 mut fields,
                 at,
@@ -256,7 +272,7 @@ impl App {
                             return;
                         }
                         self.picker = Some(Picker::Input {
-                            item,
+                            item: id,
                             action,
                             fields,
                             at: at + 1,
@@ -266,7 +282,7 @@ impl App {
                     _ => return,
                 }
                 self.picker = Some(Picker::Input {
-                    item,
+                    item: id,
                     action,
                     fields,
                     at,
@@ -625,7 +641,9 @@ fn overlays(f: &mut Frame, app: &App) {
     if let Some(p) = &app.picker {
         let text: Vec<String> = match p {
             Picker::Choose { item } => {
-                let i = &app.glance.needs_you[*item];
+                let Some(i) = app.glance.needs_you.iter().find(|i| &i.id == item) else {
+                    return;
+                };
                 let mut t = vec![i.title.clone()];
                 t.extend(
                     i.actions
