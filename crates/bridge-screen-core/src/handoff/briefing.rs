@@ -15,6 +15,7 @@ use crate::error::Result;
 use crate::plan::{NodeKind, NodeStatus, PlanNode, get_node, load_tree};
 use crate::session::{self, Session};
 use crate::tangent::{self, ItemKind};
+use crate::verify;
 
 /// The longest briefing, in lines.
 pub const MAX_LINES: usize = 40;
@@ -36,6 +37,9 @@ pub struct Briefing {
     pub status: BriefingStatus,
     pub text: String,
     pub readback_required: bool,
+    /// The unverified tasks the briefing shows, with their level: each counts as a
+    /// verification nudge (spec §8.5).
+    pub nudges: Vec<(String, i64)>,
 }
 
 /// First sentence of an intent.
@@ -83,6 +87,8 @@ struct Facts {
     cue: Option<String>,
     note: Option<super::HandoffNote>,
     unverified: Vec<String>,
+    /// The tasks behind `unverified`, with their level.
+    unverified_tasks: Vec<(String, i64)>,
     failed: Vec<String>,
     missed: Vec<Session>,
     leftovers: Vec<super::Leftover>,
@@ -169,17 +175,30 @@ fn gather(conn: &Connection, me: &Session) -> Result<Facts> {
     let tree = load_tree(conn, repo, false)?;
     let goal = tree.iter().find(|n| n.kind == NodeKind::Goal).cloned();
     let mut unverified = Vec::new();
+    let mut unverified_tasks = Vec::new();
     let mut failed = Vec::new();
     for n in &tree {
         if !matches!(n.kind, NodeKind::Task | NodeKind::Subtask) {
             continue;
         }
-        match (n.status, crate::verify::stale_note(conn, repo, &n.id)?) {
-            (NodeStatus::Failed, _) => failed.push(format!("{} {}", n.id, n.title)),
-            (_, Some(note)) => unverified.push(format!("{} {} ({note})", n.id, n.title)),
-            (NodeStatus::Claimed, None) => unverified.push(format!("{} {}", n.id, n.title)),
-            _ => {}
+        if n.status == NodeStatus::Failed {
+            failed.push(format!("{} {}", n.id, n.title));
+            continue;
         }
+        // Claimed or L1 from an earlier session (this one knows what it just claimed),
+        // and anything whose verification went stale (spec §8.5).
+        let stale = verify::stale_note(conn, repo, &n.id)?;
+        let older_claim = matches!(n.status, NodeStatus::Claimed | NodeStatus::L1)
+            && super::latest_claim(conn, repo, &n.id)?
+                .is_some_and(|c| c.session_id != me.session_id);
+        if stale.is_none() && !older_claim {
+            continue;
+        }
+        unverified.push(match stale {
+            Some(note) => format!("{} {} ({note})", n.id, n.title),
+            None => format!("{} {}", n.id, n.title),
+        });
+        unverified_tasks.push((n.id.clone(), verify::current_level(conn, repo, &n.id)?));
     }
     let missed = session::list_live(conn, Some(repo))?
         .into_iter()
@@ -236,6 +255,7 @@ fn gather(conn: &Connection, me: &Session) -> Result<Facts> {
         cue,
         note,
         unverified,
+        unverified_tasks,
         failed,
         missed,
         leftovers,
@@ -386,6 +406,7 @@ pub fn briefing(conn: &Connection, me: &Session) -> Result<Briefing> {
                 status,
                 text: lines.join("\n"),
                 readback_required: false,
+                nudges: Vec::new(),
             });
         }
         lines.push(match &me.active_task {
@@ -399,6 +420,7 @@ pub fn briefing(conn: &Connection, me: &Session) -> Result<Briefing> {
             status,
             text: lines.join("\n"),
             readback_required: false,
+            nudges: Vec::new(),
         });
     }
     if let Some(m) = &f.milestone {
@@ -446,10 +468,17 @@ pub fn briefing(conn: &Connection, me: &Session) -> Result<Briefing> {
     if readback_required {
         lines.push(READBACK_ASK.to_string());
     }
+    let nudges = f
+        .unverified_tasks
+        .iter()
+        .take(VERIFY_SHOWN)
+        .cloned()
+        .collect();
     Ok(Briefing {
         status,
         text: lines.join("\n"),
         readback_required,
+        nudges,
     })
 }
 

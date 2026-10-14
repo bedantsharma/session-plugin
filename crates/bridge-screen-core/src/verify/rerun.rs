@@ -4,8 +4,8 @@
 //!
 //! The command runs in its own process group, so at the time limit the whole group —
 //! including anything it started in the background — is stopped (`TERM`, then `KILL`
-//! after a grace period). Output is read on threads so a chatty command never blocks on
-//! a full pipe; only its tail is kept.
+//! after a grace period). Output (stdout and stderr on one pipe) is read on a thread so a chatty command never
+//! blocks on a full pipe; only its tail is kept.
 
 use std::io::Read;
 use std::path::Path;
@@ -118,31 +118,37 @@ fn secs(d: Duration) -> u64 {
 
 /// Run `command` with `sh -c` in `wt`, stdin closed, for at most `timeout`.
 pub fn run(wt: &Path, command: &str, timeout: Duration) -> RerunOutcome {
+    // stdout and stderr share one pipe, so the last line is the last one written.
+    let (out_read, out_write) = match std::io::pipe() {
+        Ok(p) => p,
+        Err(e) => return RerunOutcome::SpawnError(format!("could not make a pipe: {e}")),
+    };
+    let err_write = match out_write.try_clone() {
+        Ok(w) => w,
+        Err(e) => return RerunOutcome::SpawnError(format!("could not make a pipe: {e}")),
+    };
     let mut cmd = Command::new("sh");
     cmd.arg("-c")
         .arg(command)
         .current_dir(wt)
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdout(out_write)
+        .stderr(err_write);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
         cmd.process_group(0);
     }
     let start = Instant::now();
-    let mut child = match cmd.spawn() {
+    let spawned = cmd.spawn();
+    // Our copies of the write ends must close, or the reader never sees the end.
+    drop(cmd);
+    let mut child = match spawned {
         Ok(c) => c,
         Err(e) => return RerunOutcome::SpawnError(format!("could not run sh: {e}")),
     };
     let buf = Arc::new(Mutex::new(Vec::new()));
-    let mut done = Vec::new();
-    if let Some(out) = child.stdout.take() {
-        done.push(reader(out, Arc::clone(&buf)));
-    }
-    if let Some(err) = child.stderr.take() {
-        done.push(reader(err, Arc::clone(&buf)));
-    }
+    let done = vec![reader(out_read, Arc::clone(&buf))];
     let status = wait_until(&mut child, start + timeout);
     let took = start.elapsed();
     if status.is_none() {

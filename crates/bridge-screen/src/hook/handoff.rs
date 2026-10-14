@@ -210,12 +210,24 @@ pub fn start_context(store: &mut Store, input: &HookInput) -> Result<Option<Stri
         status: b.status,
         readback_required: b.readback_required,
     };
-    store.append(EventDraft::new(
-        &me.repo_id,
-        &me.session_id,
-        "briefed",
-        serde_json::to_value(data)?,
-    ))?;
+    store.write(|tx| {
+        append_in(
+            tx,
+            EventDraft::new(
+                &me.repo_id,
+                &me.session_id,
+                "briefed",
+                serde_json::to_value(data)?,
+            ),
+        )?;
+        // Each unverified task the briefing shows is a nudge (spec §8.5).
+        for (task, level) in &b.nudges {
+            for draft in verify::nudge_drafts(tx, &me.repo_id, &me.session_id, task, *level)? {
+                append_in(tx, draft)?;
+            }
+        }
+        Ok(())
+    })?;
     Ok(Some(b.text))
 }
 

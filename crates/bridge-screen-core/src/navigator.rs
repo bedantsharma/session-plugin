@@ -31,9 +31,9 @@ pub enum NoteKind {
     OwnerReply,
     ToleranceWarning,
     DriftRed,
-    /// Reserved.
+    /// A task this one depends on reached L2 (spec §9.1).
     DependencyReady,
-    /// Reserved for sub-project 5.
+    /// A task claimed done in an earlier unit is still unverified (spec §8.5).
     VerifyNudge,
 }
 
@@ -507,20 +507,121 @@ pub fn nav_step(
             format!("reply:{id}"),
         ));
     }
+    let unit = session::last_unit(conn, session_id)?;
+    if channel == Channel::PromptSubmit {
+        candidates.extend(dependency_ready(conn, &session)?);
+        if let Some(u) = &unit {
+            candidates.extend(verify_nudge(conn, &session, u)?);
+        }
+    }
     if candidates.is_empty() {
         return Ok(step);
     }
-    let unit_no = session::last_unit(conn, session_id)?.map_or(0, |u| u.unit_no);
-    if let Some(note) = select(conn, session_id, unit_no, channel, candidates)? {
-        step.events.push(note_sent_draft(
-            &session.repo_id,
-            session_id,
-            unit_no,
-            &note,
-        )?);
-        step.note = Some(note.text);
-    }
+    let unit_no = unit.map_or(0, |u| u.unit_no);
+    deliver(conn, &session, unit_no, channel, candidates, &mut step)?;
     Ok(step)
+}
+
+/// Pick the note among `candidates` and record it (a verification nudge also counts as
+/// one, spec §8.5).
+fn deliver(
+    conn: &Connection,
+    session: &Session,
+    unit_no: i64,
+    channel: Channel,
+    candidates: Vec<Candidate>,
+    step: &mut Step,
+) -> Result<()> {
+    let Some(note) = select(conn, &session.session_id, unit_no, channel, candidates)? else {
+        return Ok(());
+    };
+    step.events.push(note_sent_draft(
+        &session.repo_id,
+        &session.session_id,
+        unit_no,
+        &note,
+    )?);
+    if note.kind == NoteKind::VerifyNudge
+        && let Some((task, level)) = note
+            .state_key
+            .strip_prefix("verify:")
+            .and_then(|k| k.rsplit_once(':'))
+    {
+        step.events.extend(crate::verify::nudge_drafts(
+            conn,
+            &session.repo_id,
+            &session.session_id,
+            task,
+            level.parse().unwrap_or(0),
+        )?);
+    }
+    step.note = Some(note.text);
+    Ok(())
+}
+
+/// The first task this session claimed done in an earlier unit that is still claimed or
+/// at L1 (spec §8.5): a nudge to verify it.
+fn verify_nudge(conn: &Connection, session: &Session, unit: &Unit) -> Result<Option<Candidate>> {
+    let Ok(started) = unit.started_at.parse::<jiff::Timestamp>() else {
+        return Ok(None);
+    };
+    let pending = crate::verify::pending_claims(conn, &session.session_id, started)?;
+    let Some((task, level)) = pending.into_iter().next() else {
+        return Ok(None);
+    };
+    Ok(Some(Candidate::new(
+        NoteKind::VerifyNudge,
+        Channel::PromptSubmit,
+        format!(
+            "bridge-screen: {task} is claimed done but not verified (L{level}). Run the tests and call verify({task}, level 2)."
+        ),
+        format!("verify:{task}:{level}"),
+    )))
+}
+
+/// Dependencies of the active task that reached L2 or above, verified by another session
+/// (spec §9.1): once per dependency and commit per session.
+fn dependency_ready(conn: &Connection, session: &Session) -> Result<Vec<Candidate>> {
+    let Some(task) = &session.active_task else {
+        return Ok(Vec::new());
+    };
+    let Some(node) = crate::plan::get_node(conn, &session.repo_id, task)? else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for dep in node.depends_on {
+        let Some(v) =
+            crate::verify::top_verification(conn, &session.repo_id, &dep)?.filter(|v| v.level >= 2)
+        else {
+            continue;
+        };
+        if v.session_id == session.session_id {
+            continue;
+        }
+        let key = format!("dep:{dep}:{}", v.sha);
+        let sent: i64 = conn
+            .prepare_cached(
+                "SELECT count(*) FROM notes_sent WHERE session_id = ?1 AND state_key = ?2",
+            )?
+            .query_row(params![session.session_id, key], |r| r.get(0))?;
+        if sent > 0 {
+            continue;
+        }
+        let title = task_title(conn, &session.repo_id, &dep)?.unwrap_or_default();
+        let branch = session::get(conn, &v.session_id)?.and_then(|s| s.branch);
+        let short: String = v.sha.chars().take(7).collect();
+        let on = branch.map_or_else(String::new, |b| format!(" on `{b}`"));
+        out.push(Candidate::new(
+            NoteKind::DependencyReady,
+            Channel::PromptSubmit,
+            format!(
+                "bridge-screen: {dep} {title} is done{on} @{short}. Merge or rebase to pick it up."
+            )
+            .replace("  ", " "),
+            key,
+        ));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@
 
 pub mod l1;
 pub mod ladder;
+pub mod nudge;
 pub mod project;
 pub mod rerun;
 pub mod stale;
@@ -22,6 +23,7 @@ pub use l1::{
     verified_draft,
 };
 pub use ladder::{VerifyOutcome, VerifyRequest, change_setting, owner_verdict, verify};
+pub use nudge::{ESCALATE_AFTER, nudge_drafts, overdue, pending_claims};
 pub use project::{
     SettingChanged, VERIFY_KINDS, VerificationFailed, VerificationStale, Verified, VerifyNudged,
     project,

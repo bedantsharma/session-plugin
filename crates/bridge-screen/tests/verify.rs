@@ -770,3 +770,132 @@ fn an_l1_that_drops_to_nothing_is_rechecked_at_head() {
         None
     );
 }
+
+fn prompt(env: &Env, session: &str) -> String {
+    context(&env.hook("user-prompt-submit", session))
+}
+
+const NUDGE: &str = "bridge-screen: 1.1 is claimed done but not verified (L1). Run the tests and call verify(1.1, level 2).";
+
+fn status_text(env: &Env) -> String {
+    String::from_utf8(env.run(&["status"], "").stdout).unwrap()
+}
+
+#[test]
+fn unverified_work_leads_the_next_briefing_only() {
+    let (env, _mcp) = at_l1();
+    // The session that claimed it isn't briefed about its own claim.
+    let own = start(&env, "s1");
+    assert!(!own.contains("Verify first"), "{own}");
+    let briefing = start(&env, "s2");
+    assert!(
+        briefing.contains("Verify first (1): 1.1 Login form"),
+        "{briefing}"
+    );
+    assert_eq!(
+        of_kind(&env, "verify_nudged"),
+        vec![json!({"task_id": "1.1", "level": 1})]
+    );
+}
+
+#[test]
+fn the_prompt_nudge_repeats_only_after_the_window_and_escalates() {
+    let (env, _mcp) = at_l1();
+    // The claim was in unit 1: the next prompt carries the nudge.
+    assert_eq!(prompt(&env, "s1"), NUDGE);
+    assert!(!status_text(&env).contains("needs you: verify"));
+    for _ in 0..3 {
+        assert_eq!(prompt(&env, "s1"), "");
+    }
+    // The second nudge, ignored like the first: the owner is asked.
+    assert_eq!(prompt(&env, "s1"), NUDGE);
+    let owner = of_kind(&env, "needs_owner");
+    assert_eq!(owner, vec![json!({"kind": "verify", "task_id": "1.1"})]);
+    let text = status_text(&env);
+    assert!(
+        text.contains(
+            "needs you: verify 1.1 Login form — bridge-screen verify 1.1 (or --broken \"…\")"
+        ),
+        "{text}"
+    );
+    // A later nudge doesn't ask the owner twice.
+    for _ in 0..4 {
+        prompt(&env, "s1");
+    }
+    assert_eq!(of_kind(&env, "needs_owner").len(), 1);
+    // L2 answers it.
+    let out = env.run(&["verify", "1.1", "--level", "2"], "");
+    assert!(out.status.success());
+    assert!(!status_text(&env).contains("needs you: verify"));
+    assert_eq!(prompt(&env, "s1"), "");
+    assert_eq!(env.log(), "");
+}
+
+#[test]
+fn dependency_ready_goes_once_to_the_waiting_session_only() {
+    let (env, mut mcp) = setup();
+    let deps = r#"[{"op":"add_dep","id":"1.1","depends_on":"1.2"}]"#;
+    assert!(env.run(&["plan", "edit"], deps).status.success());
+    env.hook("session-start", "s2");
+    let (err, _) = call_as(
+        &mut mcp,
+        &env,
+        "s2",
+        "claim_task",
+        &json!({"id": "1.2", "mode": "auto", "confidence": 0.9}),
+    );
+    assert!(!err);
+    env.hook("user-prompt-submit", "s2");
+    write(&env, "src/reset.rs", "pub fn reset() {}\n");
+    edited(&env, "s2", "src/reset.rs");
+    commit(&env, "reset");
+    for (tool, args) in [
+        (
+            "claim_done",
+            json!({"evidence": "done", "files": ["src/reset.rs"]}),
+        ),
+        ("verify", l2()),
+    ] {
+        let (err, text) = call_as(&mut mcp, &env, "s2", tool, &args);
+        assert!(!err, "{text}");
+    }
+    let short: String = head(&env).chars().take(7).collect();
+    // s1 works on 1.1, which waits for 1.2.
+    assert_eq!(
+        prompt(&env, "s1"),
+        format!(
+            "bridge-screen: 1.2 Password reset is done on `main` @{short}. Merge or rebase to pick it up."
+        )
+    );
+    for _ in 0..5 {
+        assert_eq!(prompt(&env, "s1"), "");
+    }
+    // The verifier itself never hears about its own work.
+    let notes: Vec<Value> = of_kind(&env, "note_sent")
+        .into_iter()
+        .filter(|n| n["kind"] == "dependency_ready")
+        .collect();
+    assert_eq!(notes.len(), 1);
+    // Re-verified at a new commit by the owner: the state changed, so it goes out again.
+    write(&env, "src/reset.rs", "pub fn reset() { /* v2 */ }\n");
+    commit(&env, "reset v2");
+    assert!(env.run(&["verify", "1.2"], "").status.success());
+    let short: String = head(&env).chars().take(7).collect();
+    assert_eq!(
+        prompt(&env, "s1"),
+        format!(
+            "bridge-screen: 1.2 Password reset is done @{short}. Merge or rebase to pick it up."
+        )
+    );
+}
+
+#[test]
+fn dependency_ready_outranks_the_verify_nudge() {
+    let (env, _mcp) = at_l1();
+    let deps = r#"[{"op":"add_dep","id":"1.1","depends_on":"1.2"}]"#;
+    assert!(env.run(&["plan", "edit"], deps).status.success());
+    assert!(env.run(&["verify", "1.2"], "").status.success());
+    assert!(prompt(&env, "s1").contains("1.2 Password reset is done"));
+    // One note per unit: the nudge waits for the next prompt.
+    assert_eq!(prompt(&env, "s1"), NUDGE);
+}

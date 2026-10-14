@@ -385,9 +385,18 @@ fn stable_with_nothing_pending_is_three_lines() {
 fn status_classification() {
     let mut s = setup();
     assert_eq!(brief(&s, "s1").status, BriefingStatus::Stable);
+    // The briefed session's own claim isn't "older than one session".
     ev(
         &mut s,
         "s1",
+        "claimed_done",
+        json!({"task_id": "1.2", "evidence": "e"}),
+        3,
+    );
+    assert_eq!(brief(&s, "s1").status, BriefingStatus::Stable);
+    ev(
+        &mut s,
+        "s0",
         "claimed_done",
         json!({"task_id": "1.2", "evidence": "e"}),
         3,
@@ -433,6 +442,24 @@ fn briefing_is_bounded_and_scaled() {
             3,
         );
     }
+    // This session's own fresh claim isn't "older than one session".
+    node(&mut s, "1.13", Some("1"), "task");
+    ev(
+        &mut s,
+        "s1",
+        "claimed_done",
+        json!({"task_id": "1.13", "evidence": "e"}),
+        3,
+    );
+    // An L1 from an earlier session still needs verifying.
+    ev(
+        &mut s,
+        "old",
+        "verified",
+        json!({"verif_id": "v1", "task_id": "1.4", "level": 1, "sha": "a", "evidence": "e",
+               "by": "auto"}),
+        3,
+    );
     for n in 0..30 {
         ev(
             &mut s,
@@ -468,6 +495,11 @@ fn briefing_is_bounded_and_scaled() {
         b.text
     );
     assert!(b.text.contains("    (+25 more)"), "{}", b.text);
+    assert!(!b.text.contains("1.13"), "{}", b.text);
+    assert_eq!(
+        b.nudges,
+        vec![("1.3".into(), 0), ("1.4".into(), 1), ("1.5".into(), 0)]
+    );
     assert!(
         b.text.contains("l004 ") && !b.text.contains("l005 "),
         "{}",

@@ -13,6 +13,7 @@ use bridge_screen_core::recovery;
 use bridge_screen_core::session::{self, Session, SessionState};
 use bridge_screen_core::store::{Store, repo_name};
 use bridge_screen_core::tangent::{self, Label, NavState};
+use bridge_screen_core::verify;
 
 /// Width of the "state + task" column, and the most of it the text may use.
 const TASK_COLUMN: usize = 32;
@@ -109,6 +110,14 @@ pub fn render(store: &Store, cfg: &Config) -> Result<String> {
         let (open, report_only) = recovery::open_counts(conn, &repo_id)?;
         if open > 0 {
             let _ = writeln!(out, "  leftovers: {open} open ({report_only} report-only)");
+        }
+        // Claimed work nudged twice without being verified (spec §8.5, §10.1).
+        for (task, title) in verify::overdue(conn, &repo_id)? {
+            let _ = writeln!(
+                out,
+                "  needs you: verify {} — bridge-screen verify {task} (or --broken \"…\")",
+                format!("{task} {title}").trim_end()
+            );
         }
         // `list_live` is newest first; a stable sort keeps that within each state.
         sessions.sort_by_key(state_rank);
