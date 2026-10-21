@@ -246,7 +246,9 @@
     </section>
   {/if}
 
-  <p class="text-meta text-muted" data-testid="readback">Read-back: {readbackWord(d.readback)}</p>
+  <p class="text-meta text-muted" data-testid="readback">
+    Handoff understood: {readbackWord(d.readback)}
+  </p>
 {:else}
   <p class="text-row text-muted">Loading…</p>
 {/if}

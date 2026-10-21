@@ -96,9 +96,13 @@ describe('Session drill', () => {
 
   it('never shows the snake_case codes the API sends', async () => {
     const { container } = render(Session, { client, id: 's1aaaa', version: 1 })
-    expect(await screen.findByTestId('readback')).toHaveTextContent('Read-back: not needed')
+    expect(await screen.findByTestId('readback')).toHaveTextContent(
+      'Handoff understood: not needed',
+    )
     expect(screen.getByText('make it a task')).toBeInTheDocument()
-    expect(screen.getByText('report only (suggested: resume)')).toBeInTheDocument()
+    expect(
+      screen.getByText('for information only — suggested: resume (carry on with it)'),
+    ).toBeInTheDocument()
     expect(container.textContent).not.toMatch(/[a-z]_[a-z]/)
   })
 

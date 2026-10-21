@@ -745,11 +745,11 @@ impl Actor for StoreActor {
                 match view::drill::session(s.conn(), id, &self.cfg, now) {
                     Ok(Some(d)) => {
                         let mut out = vec![format!(
-                            "{} units · on task {} · drift {} · read-back {}",
+                            "{} units · on task {} · drift {} · handoff understood: {}",
                             d.units.len(),
                             crate::words::mins(d.split.on_task_s),
                             crate::words::mins(d.split.drift_s),
-                            d.readback.as_str()
+                            crate::words::readback(d.readback)
                         )];
                         // The last few units with their labels in words.
                         let skip = d.units.len().saturating_sub(UNITS_SHOWN);
@@ -772,7 +772,7 @@ impl Actor for StoreActor {
                         }));
                         out.extend(d.checkpoints.last().map(|c| {
                             format!(
-                                "checkpoint {} — next: {}",
+                                "last saved at {} — next: {}",
                                 c.sha.chars().take(8).collect::<String>(),
                                 c.next_action.clone().unwrap_or_default()
                             )

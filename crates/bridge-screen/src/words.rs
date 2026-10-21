@@ -3,8 +3,10 @@
 //! the model, the API and the agent's tool inputs keep `uphill`/`downhill` and
 //! `on_task`/`detour`/`drift`.
 
+use bridge_screen_core::handoff::ReadbackState;
 use bridge_screen_core::plan::{Hill, Rollup};
 use bridge_screen_core::tangent::{Label, LabelSource};
+use bridge_screen_core::verify::level_words;
 use bridge_screen_core::view::MilestoneRow;
 
 /// A milestone's hill as an icon and a word, or `None` when there is none or the
@@ -69,11 +71,11 @@ pub fn status(code: &str) -> &'static str {
     match code {
         "todo" => "to do",
         "active" => "being worked on",
-        "claimed" => "said done, not checked yet",
-        "l1" => "code written, tests not run",
-        "l2" => "tests pass",
-        "l3" => "tried end to end",
-        "l4" => "you checked it",
+        "claimed" => level_words(0),
+        "l1" => level_words(1),
+        "l2" => level_words(2),
+        "l3" => level_words(3),
+        "l4" => level_words(4),
         "failed" => "failed a check",
         "dropped" => "dropped",
         "in_progress" => "in progress",
@@ -81,6 +83,59 @@ pub fn status(code: &str) -> &'static str {
         "needs_attention" => "needs attention",
         _ => "unknown",
     }
+}
+
+/// Whether the new session confirmed it understood the handoff.
+pub fn readback(state: ReadbackState) -> &'static str {
+    match state {
+        ReadbackState::NotNeeded => "not needed",
+        ReadbackState::Pending => "not confirmed yet",
+        ReadbackState::Ok => "confirmed",
+        ReadbackState::Mismatch => "misunderstood — check what it said",
+    }
+}
+
+/// The raw codes in `text` an owner should never see, from the list shared with the web
+/// tests (`web/src/lib/jargon.json`) plus L0–L4, `snake_case` tokens and session UUIDs.
+#[cfg(test)]
+pub fn jargon_in(text: &str) -> Vec<String> {
+    let list: serde_json::Value =
+        serde_json::from_str(include_str!("../../../web/src/lib/jargon.json")).unwrap();
+    let words: Vec<String> = list["words"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|w| w.as_str().map(str::to_lowercase))
+        .collect();
+    let uuid = |t: &str| {
+        t.len() == 36
+            && t.char_indices().all(|(i, c)| {
+                if matches!(i, 8 | 13 | 18 | 23) {
+                    c == '-'
+                } else {
+                    c.is_ascii_hexdigit()
+                }
+            })
+    };
+    let snake = |t: &str| {
+        t.contains('_')
+            && t.split('_').all(|p| {
+                !p.is_empty()
+                    && p.chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+            })
+    };
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+        .filter(|t| !t.is_empty())
+        .filter(|t| {
+            let l = t.to_lowercase();
+            words.contains(&l)
+                || matches!(l.as_str(), "l0" | "l1" | "l2" | "l3" | "l4")
+                || snake(&l)
+                || uuid(&l)
+        })
+        .map(str::to_string)
+        .collect()
 }
 
 /// `<1 min`, `6 min`.
@@ -105,6 +160,23 @@ mod tests {
         assert_eq!(
             hill_tip(Hill::Uphill),
             "Unknowns remain — this % may still change"
+        );
+    }
+
+    #[test]
+    fn jargon_is_found() {
+        assert_eq!(
+            jargon_in("checkpoint missed at L2"),
+            vec!["checkpoint", "L2"]
+        );
+        assert_eq!(jargon_in("a drift_red item"), vec!["drift_red"]);
+        assert_eq!(
+            jargon_in("tests pass · you signed it off · bridge-screen ui"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            jargon_in("S 3f2a1b4c-0000-4000-8000-1234567890ab"),
+            vec!["3f2a1b4c-0000-4000-8000-1234567890ab"]
         );
     }
 

@@ -469,7 +469,15 @@ pub fn owner_verdict(
             } else {
                 format!(" at {}", short(&sha))
             };
-            ("works", format!("Verified {task} {title} L{level}{at}."))
+            let line = if level == 4 {
+                format!("Signed off {task} {title}{at}.")
+            } else {
+                format!(
+                    "Recorded {task} {title} as \"{}\"{at}.",
+                    super::level_words(level)
+                )
+            };
+            ("works", line)
         };
         let action = OwnerAction {
             action: "verify".into(),

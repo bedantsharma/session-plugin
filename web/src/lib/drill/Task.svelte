@@ -7,7 +7,7 @@
   import { hhmm } from '$lib/format'
   import type { TaskDrill } from '$lib/types'
   import ActionButton from '$lib/glance/ActionButton.svelte'
-  import { statusWord } from '$lib/words'
+  import { statusWord, verificationWord } from '$lib/words'
   import { useModel } from './useModel.svelte'
 
   let { client, repo, id, version }: { client: Client; repo: string; id: string; version: number } =
@@ -163,7 +163,7 @@
           ]}
         >
           <span class="text-row">
-            L{v.level} by {v.by}{v.rerun ? ` (re-run ${v.rerun})` : ''} · {v.state}
+            {verificationWord(v)}
           </span>
           <span class="text-meta text-muted">
             <span class="font-mono">{v.sha.slice(0, 8)}</span> · {hhmm(v.ts)} · {v.evidence}

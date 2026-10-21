@@ -82,7 +82,10 @@
           {project.leftovers.open === 1 ? 'leftover' : 'leftovers'}</span
         >
       {/if}
-      {#if project.unestimated > 0}<span>{project.unestimated} unestimated</span>{/if}
+      {#if project.unestimated > 0}<span
+          >{project.unestimated}
+          {project.unestimated === 1 ? 'task' : 'tasks'} without an estimate</span
+        >{/if}
     </div>
   {/if}
 </li>

@@ -32,6 +32,17 @@ pub use project::{
 pub use stale::{StaleChange, scan_stale, stale_note};
 pub use withdraw::{Withdrawable, withdraw, withdrawable};
 
+/// What a level of the ladder means, in the owner's words (L-codes stay in the model).
+pub fn level_words(level: i64) -> &'static str {
+    match level {
+        ..=0 => "said done, not checked yet",
+        1 => "code written, tests not run",
+        2 => "tests pass",
+        3 => "tried end to end",
+        _ => "you signed it off",
+    }
+}
+
 /// Longest evidence kept, in characters.
 pub const MAX_EVIDENCE: usize = 500;
 

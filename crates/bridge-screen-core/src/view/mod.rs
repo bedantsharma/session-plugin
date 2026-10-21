@@ -250,12 +250,12 @@ impl FlagKind {
     /// How the flag reads on a session line.
     pub fn text(self) -> &'static str {
         match self {
-            Self::CheckpointMissed => "checkpoint missed",
-            Self::HandoffUnstable => "handoff unstable",
-            Self::SquashFailed => "squash failed",
-            Self::CheckpointPending => "checkpoint pending",
-            Self::ReadbackPending => "read-back pending",
-            Self::VerifyPending => "verify pending",
+            Self::CheckpointMissed => "didn't save its work when asked",
+            Self::HandoffUnstable => "started from an unclear handoff",
+            Self::SquashFailed => "couldn't tidy its commits",
+            Self::CheckpointPending => "work not saved yet",
+            Self::ReadbackPending => "hasn't confirmed it understood the handoff yet",
+            Self::VerifyPending => "said done, not checked yet",
         }
     }
 }
@@ -663,6 +663,18 @@ fn facts(conn: &Connection, s: &Session) -> Result<Facts> {
     })
 }
 
+/// `40 minutes`, `3 hours`, `2 days`.
+fn ago_words(secs: i64) -> String {
+    let (n, unit) = if secs < 3600 {
+        (secs / 60, "minute")
+    } else if secs < 86_400 {
+        (secs / 3600, "hour")
+    } else {
+        (secs / 86_400, "day")
+    };
+    format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
+}
+
 /// A drift-red item's title: "b1 · far off its task (40 min)", the time away when known.
 fn far_off_title(short: &str, away_secs: i64) -> String {
     if away_secs >= 60 {
@@ -921,6 +933,10 @@ fn verify_items(
             .query_row(params![repo_id, task], |r| r.get(0))
             .optional()?;
         let level = verify::current_level(conn, repo_id, &task)?;
+        let claimed = crate::handoff::latest_claim(conn, repo_id, &task)?
+            .and_then(|c| age(now, Some(&c.ts)))
+            .map(|secs| format!(" {} ago", ago_words(secs)))
+            .unwrap_or_default();
         let node = NodeRef {
             id: task.clone(),
             title,
@@ -941,9 +957,14 @@ fn verify_items(
             repo_id: repo_id.to_string(),
             repo_name: repo_name.to_string(),
             session_id: None,
-            title: format!("Verify {}", node_text(&node)),
+            title: format!("Check {}", node_text(&node)),
             detail: format!(
-                "claimed done (L{level}), nudged twice without a check · does it work?"
+                "The agent said it was done{claimed}{} and nobody has checked it. Check it, or ask the agent to.",
+                if level >= 1 {
+                    " (the code is there; tests not run)"
+                } else {
+                    ""
+                }
             ),
             task: Some(node),
             files: Vec::new(),
@@ -1021,11 +1042,18 @@ fn leftover_items(
             session_id: Some(from.clone()),
             task,
             title: format!(
-                "S {} left {n} uncommitted file{}",
+                "S {} stopped with {n} unsaved file{}",
                 short(&from),
                 if n == 1 { "" } else { "s" }
             ),
-            detail: format!("suggested: {} · in {wt}{on}", suggested.as_str()),
+            detail: format!(
+                "suggested: {} · in {wt}{on}",
+                match suggested {
+                    LeftoverAction::Adopt => "adopt (commit it)",
+                    LeftoverAction::Resume => "resume (carry on with it)",
+                    LeftoverAction::Undo => "undo (put it aside, recoverable)",
+                }
+            ),
             files,
             actions: vec![
                 button(

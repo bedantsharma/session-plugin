@@ -541,7 +541,7 @@ fn owner_verifies_or_marks_broken_from_the_cli() {
     let short: String = head(&env).chars().take(7).collect();
     assert_eq!(
         String::from_utf8_lossy(&out.stdout).trim(),
-        format!("Verified 1.1 Login form L4 at {short}.")
+        format!("Signed off 1.1 Login form at {short}.")
     );
     assert_eq!(status(&env, "1.1"), NodeStatus::L4);
     let top = rows(&env, "1.1").pop().unwrap();
@@ -938,7 +938,7 @@ fn the_prompt_nudge_repeats_only_after_the_window_and_escalates() {
     let (env, _mcp) = at_l1();
     // The claim was in unit 1: the next prompt carries the nudge.
     assert_eq!(prompt(&env, "s1"), NUDGE);
-    assert!(!status_text(&env).contains("needs you: verify"));
+    assert!(!status_text(&env).contains("needs you: check"));
     for _ in 0..3 {
         assert_eq!(prompt(&env, "s1"), "");
     }
@@ -949,7 +949,7 @@ fn the_prompt_nudge_repeats_only_after_the_window_and_escalates() {
     let text = status_text(&env);
     assert!(
         text.contains(
-            "needs you: verify 1.1 Login form — bridge-screen verify 1.1 (or --broken \"…\")"
+            "needs you: check 1.1 Login form — then `bridge-screen verify 1.1` (or --broken \"what's wrong\")"
         ),
         "{text}"
     );
@@ -961,7 +961,7 @@ fn the_prompt_nudge_repeats_only_after_the_window_and_escalates() {
     // L2 answers it.
     let out = env.run(&["verify", "1.1", "--level", "2"], "");
     assert!(out.status.success());
-    assert!(!status_text(&env).contains("needs you: verify"));
+    assert!(!status_text(&env).contains("needs you: check"));
     assert_eq!(prompt(&env, "s1"), "");
     assert_eq!(env.log(), "");
 }
@@ -1063,7 +1063,7 @@ fn status_and_plan_show_the_ladder() {
         text.contains("goal: Ship  · done 0% · claimed 75%"),
         "{text}"
     );
-    assert!(text.contains("· verify pending: 1.1"), "{text}");
+    assert!(text.contains("· said done, not checked yet: 1.1"), "{text}");
     let agent = ok_call(&env, &mut mcp, "status", &json!({}));
     assert!(
         agent.contains("Verification: L1 (code exists) — next: run tests, verify level 2"),

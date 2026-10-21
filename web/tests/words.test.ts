@@ -8,6 +8,7 @@ import {
   readbackWord,
   sessionWord,
   statusWord,
+  verificationWord,
   unitWord,
 } from '../src/lib/words'
 
@@ -61,18 +62,22 @@ describe('owner-facing words', () => {
   it('puts read-back, leftover, answer and status codes into words', () => {
     expect(['not_needed', 'pending', 'ok', 'mismatch'].map(readbackWord)).toEqual([
       'not needed',
-      'pending',
-      'done',
-      'mismatch',
+      'not confirmed yet',
+      'confirmed',
+      'misunderstood — check what it said',
     ])
     expect(leftoverWord({ state: 'open', suggested: 'adopt', resolution: null })).toBe(
-      'open (suggested: adopt)',
+      'open — suggested: adopt (commit it)',
     )
     expect(leftoverWord({ state: 'resolved', suggested: 'adopt', resolution: 'undo' })).toBe(
       'undone',
     )
     expect(answerWord('make_task')).toBe('make it a task')
-    expect(statusWord('l2').word).toBe('L2 tests pass')
+    expect(statusWord('l2').word).toBe('tests pass')
+    expect(statusWord('l4').word).toBe('you signed it off')
+    expect(verificationWord({ level: 2, by: 'rerun', rerun: 'passed', state: 'stale' })).toBe(
+      'tests pass · by bridge-screen re-ran the tests (they passed) · out of date: files changed since',
+    )
     expect(statusWord('some_new').word).toBe('some new')
   })
 })

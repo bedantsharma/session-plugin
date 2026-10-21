@@ -47,7 +47,7 @@ describe('Task drill', () => {
     )
     expect(screen.getByTestId('task-cost')).toHaveTextContent('$12.40 spent · 3.1M tokens')
     expect(container.querySelector('[data-step="1.1.2"]')).toHaveTextContent(
-      'Errors · active · current',
+      'Errors · being worked on · current',
     )
     expect(container.querySelector('[data-step="1.1.1"]')).not.toHaveTextContent('current')
     const rows = [...screen.getByRole('table', { name: 'By model' }).querySelectorAll('tbody tr')]

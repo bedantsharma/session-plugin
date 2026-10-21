@@ -1,0 +1,26 @@
+{
+  "_doc": "Codes that must never reach an owner-facing screen (plan Task 7). Shared by the Rust tests (crates/bridge-screen/src/words.rs) and the web tests (web/src/lib/words.ts). Besides these words: L0-L4 level codes, snake_case tokens and raw session UUIDs.",
+  "words": [
+    "drift_red",
+    "readback",
+    "read-back",
+    "checkpoint",
+    "checkpoints",
+    "on_task",
+    "uphill",
+    "downhill",
+    "verify_overdue",
+    "verify_pending",
+    "permission_wait",
+    "report_only",
+    "report-only",
+    "not_needed",
+    "make_task",
+    "owner_via_agent",
+    "timed_out",
+    "not_configured",
+    "in_progress",
+    "needs_attention",
+    "unestimated"
+  ]
+}
