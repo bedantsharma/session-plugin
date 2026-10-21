@@ -55,6 +55,8 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
   `src/lib/api.ts`) and the single-file desktop card (`src/card`, `vite.card.config.ts`);
   palette tokens once in `src/app.css`; `tests/` (vitest), `e2e/` (Playwright)
 - `docs/superpowers/` — specs and implementation plans
+- `docs/lead/` — the owner's living docs: intent, project map, current state, decision log,
+  glossary (see "Reporting to the owner")
 
 ## Commands
 
@@ -93,6 +95,32 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
 - Never lose work: undo is a `git stash push` plus a snapshot record; squash leaves a backup ref; never `reset --hard`, `clean` or `checkout --` on unstashed files; never touch a live session's worktree.
 - Projectors use event timestamps only; "now" (live away time) is for hook decisions and never written into views.
 - Tests never touch the real `~/.claude` or `~/.bridge-screen` and never run the real `claude` CLI: use temp homes and a fake `claude` on a test-controlled PATH (`bridge-screen install --no-plugin` otherwise).
+
+## Reporting to the owner
+
+The owner leads this project but doesn't read the code. Every status update, finding, review result, checklist or "what's going on?" answer follows the lead-briefing shape (the `lead-briefing` skill, where available, has the full version and templates):
+
+1. **Effect first, in plain words.** The first sentence says what is true or wrong for the owner (their time, their data, what works, what ships). No file names, config keys or code terms in it.
+2. **Why it matters,** and whether it blocks anything.
+3. **The idea before the detail:** 2–4 sentences a newcomer would need; define any project term the first time (see `docs/lead/glossary.md`).
+4. **The cause,** systemic if there is one. No blame.
+5. **State:** Open / Being fixed / Fix ready, waiting for merge / Merged, not deployed / Live and checked — and what's exposed meanwhile.
+6. **The ask:** a specific decision (options, recommendation, cost of waiting) or "Nothing".
+7. **Checked vs believed:** say what you checked by running it, what you believe from reading, and what you relayed from another agent without checking.
+8. **Details last,** under a "Details" heading: paths, commands, commit and PR numbers.
+9. **Never round up to green.** "Done" means checked, not written.
+10. **Short:** under ~300 words above Details; several items → a one-line overview first.
+
+Shapes: a problem card (headline, why it matters, what's going on, why it happened, state, what I need from you, how sure, details) for blockers and findings; a status update (bottom line with Green/Amber/Red, what changed, blocked, needs your decision, next, how sure, details); checklists with a plain action, why, and "done when" per item, ordered by what blocks shipping.
+
+**Subagents:** any subagent whose result reaches the owner gets these rules in its prompt (effect first, checked vs believed, details last). Verify what it reports before relaying it, and say which parts you re-checked.
+
+**Living docs** in `docs/lead/` (one page each; agents keep them current, the owner reads them):
+- `intent.md` — owned by the owner; never change it without them.
+- `project-map.md` — update when a part is added, removed or changes job.
+- `current-state.md` — overwrite (don't append), dated, after each merge or working day.
+- `decision-log.md` — add an entry for every choice someone will later ask "why?" about; never delete, mark "Superseded by #N".
+- `glossary.md` — add every new project term the first time it appears in a report.
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence

@@ -1,0 +1,28 @@
+# Glossary — bridge-screen
+
+- **Owner:** you — the person the project serves and who decides. See: intent.
+- **Session:** one Claude Code conversation working in one folder of a repo.
+- **Sub-project (SP1–SP9):** the nine build stages in the design spec; each is a milestone in the plan.
+- **Goal / milestone / task / subtask:** the plan tree, top to bottom. Progress is counted on the smallest pieces.
+- **Unit (of work):** one round of an agent's work, from your prompt to the agent stopping.
+- **Active time:** time an agent actually worked, minus time waiting on you or on permission prompts.
+- **On task / detour / drift:** what a unit was. On task advances the task; a detour isn't the task but blocks it; drift does neither.
+- **Tolerance band:** how much detour or drift time is normal before you're told (at least 15 min, or 20% of the task's estimate).
+- **Resume cue:** a one-line note an agent leaves when it sets work aside, saying exactly where to pick up.
+- **Needs you (queue):** things a session is blocked on until you act. The red count on every screen.
+- **Done / idle (session):** a stopped session whose task is finished and nothing is pending / any other stopped session. Neither needs you.
+- **Checkpoint (also called WIP commit):** a save-point commit an agent makes at task boundaries, marked `wip(bridge):`.
+- **Squash:** merging all checkpoint commits into one before a pull request; a backup is kept.
+- **Clean / dirty / crashed (session end):** ended tidily / ended with unsaved changes or unfinished work / went silent for 30 minutes.
+- **Leftover:** an unsaved change a dead session left behind. You or an agent **adopt** it (commit it), **resume** it (keep working on it) or **undo** it (stash it away — recoverable).
+- **Briefing:** the short status a new session gets when it starts. **Read-back:** the agent repeating it back so mistakes surface early. **Handoff note:** what a stopping agent leaves for the next one.
+- **Verification ladder (L0–L4):** L0 claimed done · L1 the code exists · L2 tests pass · L3 checked end to end · L4 you signed it off. **Stale:** a later change touched the verified files, so it dropped a level.
+- **Done% / claimed%:** share of estimated work verified at L2 or above / claimed but not yet verified.
+- **Exploring / executing (also called uphill / downhill, from hill charts):** a milestone with unknowns left (its % may change) / one where the path is clear (its % is reliable).
+- **Stuck:** a milestone whose progress hasn't moved over three sessions that worked on it.
+- **Owner action:** anything you do from a screen or the CLI (answer a drift, sign off, resolve a leftover); recorded like everything else.
+- **Glance / drill-down:** the first dashboard screen / the detail pages behind it.
+- **Desktop card:** the inline progress view inside the Claude desktop app.
+- **Hook:** the moment Claude Code hands an event to bridge-screen. **MCP tools (agent tools):** the functions agents call on bridge-screen. **Skill:** the instructions that teach agents the protocol.
+- **Worktree:** a second working folder of the same repo, so parallel sessions don't trip over each other.
+- **Living docs:** these five pages in `docs/lead/`: intent, project map, current state, decision log, glossary.
