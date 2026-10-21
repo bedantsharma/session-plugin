@@ -79,7 +79,7 @@ export interface Forecast {
   points: number
   hours_per_day: number | null
   reason: string | null
-  mean_ratio?: number | null
+  median_ratio?: number | null
 }
 
 /** A project's forecast with its words (dates only when `compact` is set). */

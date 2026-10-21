@@ -1019,7 +1019,7 @@ pub struct ModelCalibration {
     pub name: String,
     pub points: Vec<Point>,
     pub median_ratio: f64,
-    /// `tasks take 1.8× their estimate`.
+    /// `tasks typically take 1.8× their estimate`.
     pub text: String,
     /// It has enough points to be used on its own; until then the forecast uses every
     /// model's points together.
@@ -1049,7 +1049,7 @@ pub struct CalibrationDrill {
     pub models: Vec<ModelCalibration>,
     /// Every point, oldest first.
     pub pooled: Vec<Point>,
-    /// `tasks take 1.8× their estimate`, over every point; `None` without points.
+    /// `tasks typically take 1.8× their estimate`, over every point; `None` without points.
     pub pooled_text: Option<String>,
     pub forecast: ForecastRow,
     /// Recorded forecasts, oldest first (the convergence band).
@@ -1059,13 +1059,6 @@ pub struct CalibrationDrill {
     pub unpriced_models: Vec<String>,
     /// `No price for gpt-x: add one under [prices] in config.toml.`
     pub notes: Vec<String>,
-}
-
-/// `tasks take 1.8× their estimate`.
-fn ratio_text(r: f64) -> String {
-    let t = format!("{r:.1}");
-    let t = t.strip_suffix(".0").unwrap_or(&t);
-    format!("tasks take {t}× their estimate")
 }
 
 pub fn calibration(
@@ -1086,13 +1079,13 @@ pub fn calibration(
                 name: telemetry::model_text(m),
                 points: pts.clone(),
                 median_ratio: median,
-                text: ratio_text(median),
+                text: forecast::ratio_text(median),
                 own: pts.len() >= forecast::MODEL_POINTS,
             }
         })
         .collect();
-    let pooled_text =
-        (!cal.pooled.is_empty()).then(|| ratio_text(forecast::median(&ratios(&cal.pooled))));
+    let pooled_text = (!cal.pooled.is_empty())
+        .then(|| forecast::ratio_text(forecast::median(&ratios(&cal.pooled))));
     let used = telemetry::totals(conn, &Scope::Repo(repo.to_string()))?;
     let unpriced_models = telemetry::cost(&used, &cfg.prices).unpriced_models;
     let notes = unpriced_models

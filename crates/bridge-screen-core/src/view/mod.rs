@@ -104,7 +104,7 @@ pub struct ForecastRow {
     pub short: String,
     /// Tooltip and screen-reader text: what the two dates mean.
     pub help: String,
-    /// `based on 12 finished tasks; this project averages 1.8× its estimates`.
+    /// `based on 12 finished tasks; tasks typically take 1.8× their estimate`.
     pub basis: String,
 }
 

@@ -141,7 +141,7 @@ export function forecast(reason: string | null = null): ForecastRow {
     compact: reason ? null : 'Oct 30–Nov 8',
     short: reason ? 'forecast needs 2 more finished tasks' : 'likely Oct 30–Nov 8',
     help: `50% and 90% chance, based on how long ${reason ? 1 : 5} verified tasks actually took`,
-    basis: 'based on 5 finished tasks; this project averages 1.5× its estimates',
+    basis: 'based on 5 finished tasks; tasks typically take 1.5× their estimate',
   }
 }
 

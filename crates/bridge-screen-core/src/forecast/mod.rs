@@ -92,9 +92,10 @@ pub struct Forecast {
     /// Why there are no dates, in plain words.
     #[serde(default)]
     pub reason: Option<String>,
-    /// The mean of the ratios used ("averages 1.8× its estimates").
+    /// The median of the ratios used ("tasks typically take 1.8× their estimate"), the
+    /// same figure the calibration page shows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mean_ratio: Option<f64>,
+    pub median_ratio: Option<f64>,
 }
 
 impl Forecast {
@@ -354,16 +355,14 @@ pub fn run_with(
         points: cal.pooled.len(),
         hours_per_day: hours_per_day(conn, repo, now, tz)?,
         reason: None,
-        mean_ratio: None,
+        median_ratio: None,
     };
     if cal.pooled.len() < MIN_POINTS {
         f.reason = Some(thin_reason(cal.pooled.len()));
         return Ok(f);
     }
     let pooled: Vec<f64> = cal.pooled.iter().map(|p| p.ratio).collect();
-    #[allow(clippy::cast_precision_loss)] // a handful of points
-    let mean = pooled.iter().sum::<f64>() / pooled.len() as f64;
-    f.mean_ratio = Some(mean);
+    f.median_ratio = Some(median(&pooled));
     if remaining.is_empty() {
         f.reason = Some("Nothing with an estimate is left to forecast".into());
         return Ok(f);
@@ -447,7 +446,7 @@ fn read_row(r: &rusqlite::Row) -> rusqlite::Result<(String, Forecast)> {
             points: usize::try_from(n(6)?).unwrap_or(0),
             hours_per_day: r.get(7)?,
             reason: r.get(8)?,
-            mean_ratio: None,
+            median_ratio: None,
         },
     ))
 }
@@ -498,7 +497,7 @@ pub fn record(
         return Ok(false);
     }
     let mut data = new;
-    data.mean_ratio = None;
+    data.median_ratio = None;
     store.append(EventDraft::new(
         repo,
         session,
@@ -598,23 +597,21 @@ pub fn hours_text(hours: f64) -> String {
     format!("{}h", t.strip_suffix(".0").unwrap_or(&t))
 }
 
-/// `based on 12 finished tasks; this project averages 1.8× its estimates`.
+/// `based on 12 finished tasks; tasks typically take 1.8× their estimate`.
 pub fn basis_text(f: &Forecast) -> String {
     let tasks = if f.points == 1 { "task" } else { "tasks" };
-    match f.mean_ratio {
-        Some(r) => format!(
-            "based on {} finished {tasks}; this project averages {}× its estimates",
-            f.points,
-            trim2(r)
-        ),
+    match f.median_ratio {
+        Some(r) => format!("based on {} finished {tasks}; {}", f.points, ratio_text(r)),
         None => format!("based on {} finished {tasks}", f.points),
     }
 }
 
-/// One decimal place, trailing `.0` dropped.
-fn trim2(v: f64) -> String {
-    let t = format!("{v:.1}");
-    t.strip_suffix(".0").map_or(t.clone(), str::to_string)
+/// `tasks typically take 1.8× their estimate`: a median ratio in words (the basis line
+/// and the calibration page both use it).
+pub fn ratio_text(r: f64) -> String {
+    let t = format!("{r:.1}");
+    let t = t.strip_suffix(".0").unwrap_or(&t);
+    format!("tasks typically take {t}× their estimate")
 }
 
 #[cfg(test)]

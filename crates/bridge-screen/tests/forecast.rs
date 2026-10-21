@@ -143,7 +143,7 @@ fn forecast_cli_says_the_range_and_its_basis() {
     );
     // Ratios 1, 2 and 3: an average of 2×.
     assert!(
-        text.contains("Based on 3 finished tasks; this project averages 2× its estimates."),
+        text.contains("Based on 3 finished tasks; tasks typically take 2× their estimate."),
         "{text}"
     );
     assert!(text.contains("30m of estimated work left"), "{text}");
@@ -204,7 +204,7 @@ fn status_and_mcp_status_show_the_forecast_and_cost() {
     );
     assert!(text.contains("Forecast: likely by "), "{text}");
     assert!(
-        text.contains("(based on 3 finished tasks; this project averages 2× its estimates)"),
+        text.contains("(based on 3 finished tasks; tasks typically take 2× their estimate)"),
         "{text}"
     );
 }

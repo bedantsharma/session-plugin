@@ -709,11 +709,11 @@ fn calibration_drill_ratios_history_and_prices() {
     assert_eq!(c.models.len(), 1);
     // The task's only replies are the unpriced model's: it is the task's model.
     assert_eq!(c.models[0].model, "mystery");
-    assert_eq!(c.models[0].text, "tasks take 2× their estimate");
+    assert_eq!(c.models[0].text, "tasks typically take 2× their estimate");
     assert!(!c.models[0].own);
     assert_eq!(
         c.pooled_text.as_deref(),
-        Some("tasks take 2× their estimate")
+        Some("tasks typically take 2× their estimate")
     );
     assert_eq!(c.history.len(), 1);
     assert_eq!(c.unpriced_models, ["mystery"]);

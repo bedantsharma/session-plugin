@@ -77,12 +77,12 @@ describe('Calibration drill', () => {
           name: 'Opus 5.5',
           points: [p],
           median_ratio: 2,
-          text: 'tasks take 2× their estimate',
+          text: 'tasks typically take 2× their estimate',
           own: false,
         },
       ],
       pooled: [p],
-      pooled_text: 'tasks take 2× their estimate',
+      pooled_text: 'tasks typically take 2× their estimate',
       forecast: forecast('Not enough finished tasks to forecast yet — 2 more are needed'),
       history: [
         {
@@ -98,7 +98,7 @@ describe('Calibration drill', () => {
       '1.1 Task 1.1 · 60 of 30 min (2×)',
     )
     expect(container.querySelector('[data-model="claude-opus-5-5"]')).toHaveTextContent(
-      'tasks take 2× their estimate',
+      'tasks typically take 2× their estimate',
     )
     expect(screen.getByTestId('history-list')).toHaveTextContent('Not enough finished tasks')
     expect(screen.getByRole('note')).toHaveTextContent('No price for mystery')
@@ -120,12 +120,12 @@ describe('Calibration drill', () => {
           name: 'Opus 5.5',
           points: pts,
           median_ratio: 1.5,
-          text: 'tasks take 1.5× their estimate',
+          text: 'tasks typically take 1.5× their estimate',
           own: false,
         },
       ],
       pooled: pts,
-      pooled_text: 'tasks take 1.5× their estimate',
+      pooled_text: 'tasks typically take 1.5× their estimate',
       forecast: forecast(),
       history: [
         { ts: '2026-10-15T09:00:00Z', ...forecast() },

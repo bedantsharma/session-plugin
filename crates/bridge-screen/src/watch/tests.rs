@@ -366,7 +366,7 @@ fn the_project_line_shows_the_forecast_and_cost_and_sessions_their_cost() {
             points: 5,
             hours_per_day: Some(2.0),
             reason: None,
-            mean_ratio: Some(1.5),
+            median_ratio: Some(1.5),
         },
         text: "likely by Oct 30 · could take until Nov 8".into(),
         compact: Some("Oct 30–Nov 8".into()),

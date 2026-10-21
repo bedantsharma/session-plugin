@@ -198,7 +198,7 @@ fn forecast_refuses_thin_data_and_is_deterministic() {
     assert_eq!((f.points, f.remaining_min, f.unestimated), (3, 60, 1));
     assert!(f.p50_hours <= f.p90_hours);
     assert!(f.dates().is_some());
-    assert_eq!(f.mean_ratio, Some(2.0));
+    assert_eq!(f.median_ratio, Some(2.0));
     // The same inputs give the same forecast.
     assert_eq!(run(s.conn(), "r", now, &utc()).unwrap(), f);
     // The draws come from the ratios: 60 × {1, 2, 3} minutes.
@@ -339,7 +339,7 @@ fn words_for_the_forecast() {
         points: 12,
         hours_per_day: Some(2.0),
         reason: None,
-        mean_ratio: Some(1.83),
+        median_ratio: Some(1.83),
     };
     assert_eq!(
         range_text(&f, now, &utc()),
@@ -351,7 +351,7 @@ fn words_for_the_forecast() {
     );
     assert_eq!(
         basis_text(&f),
-        "based on 12 finished tasks; this project averages 1.8× its estimates"
+        "based on 12 finished tasks; tasks typically take 1.8× their estimate"
     );
     assert_eq!(
         (hours_text(14.0), hours_text(2.56), hours_text(0.66)),
@@ -381,11 +381,44 @@ fn one_date_reads_as_one_date() {
         points: 4,
         hours_per_day: Some(2.0),
         reason: None,
-        mean_ratio: None,
+        median_ratio: None,
     };
     assert_eq!(
         range_text(&f, now, &utc()),
         "likely by Oct 25 · 90% chance by then too"
     );
     assert_eq!(compact_range(&f, now, &utc()).as_deref(), Some("Oct 25"));
+}
+
+/// The basis line and the calibration page give the same figure for "how much longer
+/// than estimated tasks take": the median, so one long task doesn't skew it.
+#[test]
+fn the_basis_uses_the_same_ratio_as_the_calibration_page() {
+    let mut s = Store::open_in_memory().unwrap();
+    plan(
+        &mut s,
+        &[
+            ("1.1", Some(10)),
+            ("1.2", Some(10)),
+            ("1.3", Some(10)),
+            ("1.4", Some(60)),
+        ],
+    );
+    work(&mut s, "1.1", 0, 10, 2);
+    work(&mut s, "1.2", 1000, 10, 2);
+    work(&mut s, "1.3", 3000, 40, 2);
+    let now = at(DAY / 2);
+    let f = run(s.conn(), "r", now, &utc()).unwrap();
+    assert_eq!(f.median_ratio, Some(1.0));
+    assert_eq!(
+        basis_text(&f),
+        "based on 3 finished tasks; tasks typically take 1× their estimate"
+    );
+    let drill =
+        crate::view::drill::calibration(s.conn(), "r", &crate::config::Config::default(), now)
+            .unwrap();
+    assert_eq!(
+        drill.pooled_text.as_deref(),
+        Some("tasks typically take 1× their estimate")
+    );
 }
