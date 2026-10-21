@@ -97,6 +97,7 @@ fn rebuild_reproduces_incremental_views() {
             PlanOp::AddDep {
                 id: "1.2".into(),
                 depends_on: "1.1".into(),
+                repo: None,
             },
             PlanOp::SetHill {
                 id: "1".into(),

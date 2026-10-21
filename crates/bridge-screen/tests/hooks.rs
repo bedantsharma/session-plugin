@@ -900,6 +900,7 @@ fn hook_latency_prompt_with_verify_notes() {
             PlanOp::AddDep {
                 id: "1".into(),
                 depends_on: "2".into(),
+                repo: None,
             },
         ],
     )

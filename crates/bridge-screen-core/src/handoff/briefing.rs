@@ -139,7 +139,8 @@ fn is_done(status: NodeStatus) -> bool {
     )
 }
 
-/// `id ready`, `id waiting` or `id waiting on <session>` for each dependency of `task`.
+/// `id ready`, `id waiting` or `id waiting on <session>` for each dependency of `task`,
+/// then `<repo>:<id> ready|waiting` for each link into another repo.
 fn deps_of(conn: &Connection, repo: &str, task: &str) -> Result<Vec<String>> {
     let mut deps = Vec::new();
     let Some(node) = get_node(conn, repo, task)? else {
@@ -163,6 +164,16 @@ fn deps_of(conn: &Connection, repo: &str, task: &str) -> Result<Vec<String>> {
             ),
             None => format!("{d} waiting"),
         });
+    }
+    // Links to tasks in other repos (spec §9.1).
+    for d in node.external_deps {
+        let ready = get_node(conn, &d.repo_id, &d.id)?.is_some_and(|n| is_done(n.status));
+        deps.push(format!(
+            "{}:{} {}",
+            d.repo_name,
+            d.id,
+            if ready { "ready" } else { "waiting" }
+        ));
     }
     Ok(deps)
 }

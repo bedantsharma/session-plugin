@@ -158,14 +158,30 @@ pub fn next_child(conn: &Connection, repo_id: &str, id: &str) -> Result<u32> {
 
 /// Would adding "`id` depends on `depends_on`" create a cycle (including a self-loop)?
 pub fn would_cycle(conn: &Connection, repo_id: &str, id: &str, depends_on: &str) -> Result<bool> {
+    would_cycle_across(conn, repo_id, id, repo_id, depends_on)
+}
+
+/// Most nodes a cycle check visits across repos.
+const CYCLE_VISITS: i64 = 1000;
+
+/// [`would_cycle`] for a link into another repo: follows plan links in every repo
+/// (`repo_id:id` depending on `dep_repo:depends_on`), visiting at most 1000 nodes.
+pub fn would_cycle_across(
+    conn: &Connection,
+    repo_id: &str,
+    id: &str,
+    dep_repo: &str,
+    depends_on: &str,
+) -> Result<bool> {
     let reaches: i64 = conn.query_row(
-        "WITH RECURSIVE reach(n) AS (
-             SELECT ?3
+        "WITH RECURSIVE reach(r, n) AS (
+             SELECT ?3, ?4
              UNION
-             SELECT d.depends_on FROM plan_deps d JOIN reach ON d.node_id = reach.n
-             WHERE d.repo_id = ?1 AND d.dep_repo_id = ?1)
-         SELECT count(*) FROM reach WHERE n = ?2",
-        params![repo_id, id, depends_on],
+             SELECT d.dep_repo_id, d.depends_on FROM plan_deps d
+             JOIN reach ON d.repo_id = reach.r AND d.node_id = reach.n
+             LIMIT ?5)
+         SELECT count(*) FROM reach WHERE r = ?1 AND n = ?2",
+        params![repo_id, id, dep_repo, depends_on, CYCLE_VISITS],
         |r| r.get(0),
     )?;
     Ok(reaches > 0)

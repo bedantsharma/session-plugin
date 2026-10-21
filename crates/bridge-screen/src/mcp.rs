@@ -489,7 +489,7 @@ impl Bridge {
     }
 
     #[tool(
-        description = "Change the plan: add, edit, move or remove nodes; set intents, estimates (agent-minutes), dependencies and milestone hill state. Give a reason. All ops apply together or none do."
+        description = "Change the plan: add, edit, move or remove nodes; set intents, estimates (agent-minutes), dependencies and milestone hill state. A dependency can be on a task in another repo: give `repo` (its folder name) for a task in another repo. Give a reason. All ops apply together or none do."
     )]
     async fn plan_edit(&self, Parameters(args): Parameters<Args<PlanEditInput>>) -> CallToolResult {
         text(self.do_plan_edit(&args))
