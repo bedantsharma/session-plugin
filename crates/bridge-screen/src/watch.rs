@@ -357,8 +357,8 @@ fn kind_word(kind: NeedsKind) -> &'static str {
         NeedsKind::DriftRed => "drift",
         NeedsKind::Question => "question",
         NeedsKind::PermissionWait => "waiting",
-        NeedsKind::VerifyOverdue => "verify",
-        NeedsKind::Leftover => "leftovers",
+        NeedsKind::VerifyOverdue => "check",
+        NeedsKind::Leftover => "unsaved",
     }
 }
 

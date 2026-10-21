@@ -44,6 +44,7 @@ which is the raw event log on purpose.
 | CLI `verify --withdraw` | — | Took back your sign-off on 1.2 Login form; it's back to where it was before. |
 | CLI `verify --withdraw`, nothing to take back | — | nothing to withdraw on 1.2: you haven't signed it off or marked it broken |
 | Any tool, after an upgrade | database schema version 8 is newer than this bridge-screen supports (7); upgrade bridge-screen | bridge-screen was updated while this session was open. Start a new Claude session to keep using it (data format 8; this session's copy understands up to 7). |
+| watch, needs-you tag | verify / leftovers | check / unsaved |
 | Scope summary (project drill) | +20 min at 10:02 · +15 min at 10:02 · +10 min at 10:02 | 3 additions, +45 min at 10:02 |
 
 Reviewed and kept (already plain, or a glossary term): "far off its task (40 min)",
