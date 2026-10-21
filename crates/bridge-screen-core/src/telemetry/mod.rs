@@ -243,7 +243,7 @@ impl Counts {
         self.input + self.output + self.cache_read + self.cache_write_5m + self.cache_write_1h
     }
 
-    fn add(&mut self, other: &Self) {
+    pub fn add(&mut self, other: &Self) {
         self.input += other.input;
         self.output += other.output;
         self.cache_read += other.cache_read;
@@ -265,6 +265,15 @@ pub struct Tokens {
 impl Tokens {
     pub fn is_empty(&self) -> bool {
         self.replies == 0
+    }
+
+    /// Add another scope's tokens to these.
+    pub fn merge(&mut self, other: &Self) {
+        self.replies += other.replies;
+        self.sum.add(&other.sum);
+        for (model, c) in &other.by_model {
+            self.by_model.entry(model.clone()).or_default().add(c);
+        }
     }
 }
 
@@ -330,6 +339,73 @@ pub fn totals(conn: &Connection, scope: &Scope) -> Result<Tokens> {
         out.by_model.insert(model, counts);
     }
     Ok(out)
+}
+
+/// How [`split`] groups a repo's usage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitBy {
+    Model,
+    Task,
+    Session,
+    /// By agent type (`None`: the main agent).
+    Agent,
+}
+
+/// Narrows [`split`] to one session and/or one task (with its detours).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Filter {
+    pub session: Option<String>,
+    pub task: Option<String>,
+}
+
+/// A repo's tokens grouped `by` (`None`: no task, the main agent, …), keys in order.
+pub fn split(
+    conn: &Connection,
+    repo: &str,
+    filter: &Filter,
+    by: SplitBy,
+) -> Result<Vec<(Option<String>, Tokens)>> {
+    let key = match by {
+        SplitBy::Model => "model",
+        SplitBy::Task => "task_id",
+        SplitBy::Session => "session_id",
+        SplitBy::Agent => "agent_type",
+    };
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {key}, model, count(*), SUM(input), SUM(output), SUM(cache_read),
+                SUM(cache_write_5m), SUM(cache_write_1h)
+         FROM usage_replies
+         WHERE repo_id = ?1 AND (?2 IS NULL OR session_id = ?2)
+           AND (?3 IS NULL OR task_id = ?3 OR detour_id IN
+                (SELECT detour_id FROM detours WHERE repo_id = ?1 AND blocks_task = ?3))
+         GROUP BY {key}, model"
+    ))?;
+    let rows = stmt.query_map(params![repo, filter.session, filter.task], |r| {
+        let n = |i: usize| -> rusqlite::Result<u64> {
+            Ok(u64::try_from(r.get::<_, Option<i64>>(i)?.unwrap_or(0)).unwrap_or(0))
+        };
+        Ok((
+            r.get::<_, Option<String>>(0)?,
+            r.get::<_, String>(1)?,
+            n(2)?,
+            Counts {
+                input: n(3)?,
+                output: n(4)?,
+                cache_read: n(5)?,
+                cache_write_5m: n(6)?,
+                cache_write_1h: n(7)?,
+            },
+        ))
+    })?;
+    let mut groups: BTreeMap<Option<String>, Tokens> = BTreeMap::new();
+    for row in rows {
+        let (k, model, replies, counts) = row?;
+        let t = groups.entry(k).or_default();
+        t.replies += replies;
+        t.sum.add(&counts);
+        t.by_model.insert(model, counts);
+    }
+    Ok(groups.into_iter().collect())
 }
 
 /// The tokens of a task per agent type (`None`: the main agent).

@@ -351,3 +351,197 @@ fn session_end_reads_the_last_lines() {
     hook(&env, "session-end", "s1", &t, |_| {});
     assert_eq!(session_tokens(&env, "s1").sum.output, 9);
 }
+
+/// Task 1.1 "Login form" with Opus and Sonnet replies; an Explore subagent on an unpriced
+/// model outside any task.
+fn seeded_usage(env: &Env) {
+    use bridge_screen_core::plan::{EditContext, NodeKind, PlanOp, plan_edit};
+    use bridge_screen_core::store::{Actor, EventDraft};
+    let repo = bridge_screen_core::repo::identify(env.repo.path()).unwrap();
+    let mut store = Store::open(&env.db_path()).unwrap();
+    store.register_repo(&repo).unwrap();
+    let add = |parent: Option<&str>, kind, title: &str| PlanOp::AddNode {
+        parent: parent.map(str::to_string),
+        kind,
+        title: title.into(),
+        intent: Some("why".into()),
+        estimate_min: Some(30),
+        expected_files: vec![],
+    };
+    plan_edit(
+        &mut store,
+        &EditContext {
+            repo_id: repo.id.clone(),
+            session_id: "owner".into(),
+            actor: Actor::default(),
+            reason: None,
+            replan: false,
+        },
+        &[
+            add(None, NodeKind::Goal, "Ship"),
+            add(Some("G"), NodeKind::Milestone, "Auth"),
+            add(Some("1"), NodeKind::Task, "Login form"),
+        ],
+    )
+    .unwrap();
+    let t0: jiff::Timestamp = "2026-10-14T09:00:00Z".parse().unwrap();
+    let at = |s: i64| (t0 + jiff::SignedDuration::from_secs(s)).to_string();
+    let reply = |id: &str, model: &str, secs: i64, input: u64, output: u64| {
+        json!({"message_id": id, "model": model, "ts": at(secs), "input": input,
+               "output": output, "cache_read": 0, "cache_write_5m": 0, "cache_write_1h": 0})
+    };
+    let sid = "s1abcdef";
+    let events = vec![
+        (
+            "session_started",
+            json!({"cwd": env.repo_path(), "source": "startup", "branch": "feat/login"}),
+            Actor::default(),
+        ),
+        (
+            "task_claimed",
+            json!({"task_id": "1.1", "mode": "auto", "confidence": 0.9}),
+            Actor::default(),
+        ),
+        ("prompt", json!({"chars": 3}), Actor::default()),
+        (
+            "usage",
+            json!({"path": "/t/main.jsonl", "offset_after": 10, "replies": [
+                reply("a", "claude-opus-5-5", 10, 1_000_000, 100_000),
+                reply("b", "claude-sonnet-5-5", 20, 500_000, 0)]}),
+            Actor::default(),
+        ),
+        ("unit_stopped", json!({"unit_no": 1}), Actor::default()),
+        (
+            "usage",
+            json!({"path": "/t/sub.jsonl", "offset_after": 10, "agent_id": "ag",
+                   "agent_type": "Explore",
+                   "replies": [reply("c", "mystery-model", 500, 0, 1_000)]}),
+            Actor {
+                agent_id: Some("ag".into()),
+                agent_type: Some("Explore".into()),
+                model: None,
+            },
+        ),
+    ];
+    store
+        .write(|tx| {
+            for (i, (kind, data, actor)) in events.into_iter().enumerate() {
+                let draft = EventDraft::new(&repo.id, sid, kind, data).actor(actor);
+                let secs = i64::try_from(i).unwrap();
+                bridge_screen_core::store::append_in_at(
+                    tx,
+                    draft,
+                    t0 + jiff::SignedDuration::from_secs(secs),
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+}
+
+fn usage_text(env: &Env, args: &[&str]) -> String {
+    let mut all = vec!["usage"];
+    all.extend_from_slice(args);
+    let out = env.run(&all, "");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn usage_cli_splits_by_task_model_session_and_agent() {
+    let env = Env::new();
+    seeded_usage(&env);
+    let name = env
+        .repo
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let total = format!("Total for {name}: 1.6M tokens · ≥ $7.00 (some models unpriced)");
+    let note = "No price for mystery-model: add one under [prices] in config.toml.";
+
+    let by_task = usage_text(&env, &[]);
+    assert!(
+        by_task
+            .contains("Login form (1.1): 1.6M tokens · $7.00 (Opus 5.5 $6.00, Sonnet 5.5 $1.00)"),
+        "{by_task}"
+    );
+    assert!(
+        by_task.contains("No task: 1k tokens · cost unknown"),
+        "{by_task}"
+    );
+    assert!(by_task.contains(&total), "{by_task}");
+    assert!(by_task.contains(note), "{by_task}");
+
+    let by_model = usage_text(&env, &["--by", "model"]);
+    assert!(
+        by_model.contains("Opus 5.5: 1.1M tokens · $6.00"),
+        "{by_model}"
+    );
+    assert!(
+        by_model.contains("Sonnet 5.5: 500k tokens · $1.00"),
+        "{by_model}"
+    );
+    assert!(
+        by_model.contains("mystery-model: 1k tokens · cost unknown"),
+        "{by_model}"
+    );
+
+    let by_session = usage_text(&env, &["--by", "session"]);
+    assert!(
+        by_session.contains("s1abcd (feat/login): 1.6M tokens · ≥ $7.00 (some models unpriced)"),
+        "{by_session}"
+    );
+
+    let by_agent = usage_text(&env, &["--by", "agent"]);
+    assert!(
+        by_agent.contains("Main agent: 1.6M tokens · $7.00"),
+        "{by_agent}"
+    );
+    assert!(
+        by_agent.contains("Explore: 1k tokens · cost unknown"),
+        "{by_agent}"
+    );
+
+    let one_task = usage_text(&env, &["--task", "1.1", "--by", "model"]);
+    assert!(!one_task.contains("mystery-model"), "{one_task}");
+    assert!(
+        one_task.contains("Total for Login form (1.1): 1.6M tokens · $7.00"),
+        "{one_task}"
+    );
+    let one_session = usage_text(&env, &["--session", "s1a"]);
+    assert!(
+        one_session.contains("Total for session s1abcd"),
+        "{one_session}"
+    );
+    let unknown = env.run(&["usage", "--session", "zz"], "");
+    assert!(!unknown.status.success());
+}
+
+#[test]
+fn config_shows_the_price_table_and_its_sources() {
+    let env = Env::new();
+    std::fs::write(
+        env.home.path().join("config.toml"),
+        "[prices.claude-opus-5-5]\ninput = 1.0\noutput = 2.0\ncache_read = 0.1\n\
+         cache_write_5m = 1.25\ncache_write_1h = 2.0\n",
+    )
+    .unwrap();
+    let out = env.run(&["config"], "");
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.contains("#   claude-opus-5-5: 1 / 2 / 0.1 / 1.25 / 2 (yours)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("#   claude-sonnet-5-5: 2 / 10 / 0.2 / 2.5 / 4 (default)"),
+        "{text}"
+    );
+    assert!(!text.contains("[prices"), "{text}");
+}

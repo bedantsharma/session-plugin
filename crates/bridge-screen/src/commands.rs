@@ -288,7 +288,12 @@ fn rebuild() -> Result<()> {
 fn config(dir: &Path) -> Result<()> {
     let home = Home::resolve()?;
     let cfg = Config::load(&home.config_path())?;
-    print!("{}", cfg.to_toml()?);
+    let settings = Config {
+        prices: std::collections::BTreeMap::new(),
+        ..cfg.clone()
+    };
+    print!("{}", settings.to_toml()?);
+    print!("{}", price_table(&cfg));
     // Outside a repo there are no tuned values to show.
     if let Ok(repo) = repo::identify(dir) {
         let store = open_store(&home)?;
@@ -307,6 +312,27 @@ fn config(dir: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The prices in use (USD per million tokens), each marked as a default or the owner's.
+fn price_table(cfg: &Config) -> String {
+    let mut out = String::from(
+        "# prices in use, USD per million tokens (input / output / cache read / cache write 5m / 1h):\n",
+    );
+    for (model, p) in &cfg.prices {
+        let _ = writeln!(
+            out,
+            "#   {model}: {} / {} / {} / {} / {} ({})",
+            p.input,
+            p.output,
+            p.cache_read,
+            p.cache_write_5m,
+            p.cache_write_1h,
+            cfg.price_source(model).unwrap_or("yours")
+        );
+    }
+    out.push_str("# models not listed are unpriced: their cost shows as unknown\n");
+    out
 }
 
 /// `# tuned for shop: drift_lower = 0.35, …`, if the repo has tuned values.

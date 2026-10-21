@@ -33,6 +33,7 @@ pub struct Config {
     pub ui_port: u16,
     /// USD per million tokens, per model id or id prefix (spec §9.2). Entries in the file
     /// override the built-in defaults key by key; models with no entry are unpriced.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub prices: BTreeMap<String, Price>,
 }
 
@@ -59,9 +60,50 @@ pub fn price_for<'a>(prices: &'a BTreeMap<String, Price>, model: &str) -> Option
         .map(|(_, p)| p)
 }
 
-/// The built-in price table.
+/// Where the built-in prices came from, written into a new `config.toml`.
+pub const PRICES_SOURCE: &str = "\
+# Prices are USD per million tokens, per model id (or id prefix: the longest one that
+# matches is used). The defaults come from the claude-api skill's pricing reference
+# (Anthropic first-party API rates, cached 2026-10-06), taken 2026-10-21: input and
+# output per model; cache reads at 0.1x input (0.05x on Opus 5.5, 0.025x on Fable 5.1 and
+# Mythos 5.1); cache writes at 1.25x input (5-minute) and 2x input (1-hour).
+# Not included: Haiku 5.5 (its price changes above 100K-token prompts, which one rate
+# can't express) and fast mode (priced higher). Models without a price show their cost
+# as unknown. Entries here override the defaults key by key.
+";
+
+/// The built-in price table (see [`PRICES_SOURCE`]).
 pub fn default_prices() -> BTreeMap<String, Price> {
-    BTreeMap::new()
+    // (model, input, output, cache read); writes are 1.25x / 2x input.
+    const TABLE: &[(&str, f64, f64, f64)] = &[
+        ("claude-fable-5-1", 10.0, 50.0, 0.25),
+        ("claude-mythos-5-1", 10.0, 50.0, 0.25),
+        ("claude-fable-5", 10.0, 50.0, 1.0),
+        ("claude-opus-5-5", 4.0, 20.0, 0.2),
+        ("claude-opus-5", 5.0, 25.0, 0.5),
+        ("claude-opus-4-8", 5.0, 25.0, 0.5),
+        ("claude-opus-4-7", 5.0, 25.0, 0.5),
+        ("claude-opus-4-6", 5.0, 25.0, 0.5),
+        ("claude-sonnet-5-5", 2.0, 10.0, 0.2),
+        ("claude-sonnet-5", 2.0, 10.0, 0.2),
+        ("claude-sonnet-4-6", 3.0, 15.0, 0.3),
+        ("claude-haiku-4-5", 1.0, 5.0, 0.1),
+    ];
+    TABLE
+        .iter()
+        .map(|&(model, input, output, cache_read)| {
+            (
+                model.to_string(),
+                Price {
+                    input,
+                    output,
+                    cache_read,
+                    cache_write_5m: input * 1.25,
+                    cache_write_1h: input * 2.0,
+                },
+            )
+        })
+        .collect()
 }
 
 impl Default for Config {
@@ -104,9 +146,23 @@ impl Config {
         if path.exists() {
             return Ok(false);
         }
-        let body = format!("# bridge-screen settings\n{}", Self::default().to_toml()?);
+        let body = format!(
+            "# bridge-screen settings\n{PRICES_SOURCE}{}",
+            Self::default().to_toml()?
+        );
         std::fs::write(path, body)?;
         Ok(true)
+    }
+
+    /// Whether the price entry for `model` (an exact key) is a built-in `default` or the
+    /// owner's own (`yours`); `None` without an entry.
+    pub fn price_source(&self, model: &str) -> Option<&'static str> {
+        let mine = self.prices.get(model)?;
+        Some(if default_prices().get(model) == Some(mine) {
+            "default"
+        } else {
+            "yours"
+        })
     }
 
     pub fn to_toml(&self) -> Result<String> {
@@ -171,6 +227,75 @@ mod tests {
         std::fs::write(&path, "points_minutes = 9\n").unwrap();
         assert!(!Config::write_default_if_missing(&path).unwrap());
         assert_eq!(Config::load(&path).unwrap().points_minutes, 9);
+    }
+
+    fn price(input: f64) -> super::Price {
+        super::Price {
+            input,
+            output: input * 5.0,
+            cache_read: input / 10.0,
+            cache_write_5m: input * 1.25,
+            cache_write_1h: input * 2.0,
+        }
+    }
+
+    #[test]
+    fn prices_match_exactly_or_by_the_longest_prefix() {
+        let prices = std::collections::BTreeMap::from([
+            ("claude-opus-5".to_string(), price(5.0)),
+            ("claude-opus-5-5".to_string(), price(4.0)),
+            ("claude".to_string(), price(1.0)),
+        ]);
+        let input = |m: &str| super::price_for(&prices, m).map(|p| p.input);
+        assert_eq!(input("claude-opus-5-5"), Some(4.0));
+        assert_eq!(input("claude-opus-5-5-fast"), Some(4.0));
+        assert_eq!(input("claude-opus-5-1"), Some(5.0));
+        assert_eq!(input("claude-sonnet-9"), Some(1.0));
+        assert_eq!(input("gpt-4"), None);
+    }
+
+    #[test]
+    fn default_prices_and_owner_overrides() {
+        let defaults = super::default_prices();
+        let opus = defaults["claude-opus-5-5"];
+        assert_eq!((opus.input, opus.output, opus.cache_read), (4.0, 20.0, 0.2));
+        assert_eq!((opus.cache_write_5m, opus.cache_write_1h), (5.0, 8.0));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        // A file without [prices] gets the defaults.
+        std::fs::write(&path, "points_minutes = 20\n").unwrap();
+        assert_eq!(Config::load(&path).unwrap().prices, defaults);
+        // The owner's entries override defaults key by key, and add models.
+        std::fs::write(
+            &path,
+            "[prices.claude-opus-5-5]\ninput = 1.0\noutput = 2.0\ncache_read = 0.1\n\
+             cache_write_5m = 1.25\ncache_write_1h = 2.0\n\n\
+             [prices.\"my-model\"]\ninput = 3.0\noutput = 4.0\ncache_read = 0.3\n\
+             cache_write_5m = 3.75\ncache_write_1h = 6.0\n",
+        )
+        .unwrap();
+        let cfg = Config::load(&path).unwrap();
+        assert_eq!(cfg.prices["claude-opus-5-5"].input, 1.0);
+        assert_eq!(cfg.prices["my-model"].output, 4.0);
+        assert_eq!(
+            cfg.prices["claude-sonnet-5-5"],
+            defaults["claude-sonnet-5-5"]
+        );
+        assert_eq!(cfg.price_source("claude-opus-5-5"), Some("yours"));
+        assert_eq!(cfg.price_source("my-model"), Some("yours"));
+        assert_eq!(cfg.price_source("claude-sonnet-5-5"), Some("default"));
+        assert_eq!(cfg.price_source("nope"), None);
+    }
+
+    #[test]
+    fn the_default_file_names_where_prices_came_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        Config::write_default_if_missing(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("claude-api"), "{text}");
+        assert!(text.contains("2026-10-21"), "{text}");
+        assert_eq!(Config::load(&path).unwrap(), Config::default());
     }
 
     #[test]

@@ -4,10 +4,13 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
+use bridge_screen_core::claim::task_title;
+use bridge_screen_core::config::Config;
 use bridge_screen_core::paths::Home;
 use bridge_screen_core::repo;
-use bridge_screen_core::telemetry::{self, Scope};
+use bridge_screen_core::telemetry::{self, Filter, SplitBy, Tokens};
+use rusqlite::Connection;
 
 use crate::cli::UsageBy;
 use crate::commands::open_store;
@@ -43,14 +46,128 @@ pub fn run(
             );
         }
     }
-    let _ = (session, task, by);
-    let total = telemetry::totals(store.conn(), &Scope::Repo(repo.id.clone()))?;
-    let _ = writeln!(
-        text,
-        "{}: {} tokens",
-        repo.name,
-        telemetry::tokens_text(total.sum.total())
-    );
+    let cfg = Config::load(&home.config_path())?;
+    let conn = store.conn();
+    let session = match session {
+        Some(prefix) => Some(session_by_prefix(conn, &repo.id, prefix)?),
+        None => None,
+    };
+    let filter = Filter {
+        session: session.clone(),
+        task: task.map(str::to_string),
+    };
+    let split_by = match by {
+        UsageBy::Model => SplitBy::Model,
+        UsageBy::Task => SplitBy::Task,
+        UsageBy::Session => SplitBy::Session,
+        UsageBy::Agent => SplitBy::Agent,
+    };
+    let rows = telemetry::split(conn, &repo.id, &filter, split_by)?;
+    let mut all = Tokens::default();
+    for (key, tokens) in &rows {
+        let label = row_label(conn, &repo.id, by, key.as_deref())?;
+        let _ = writeln!(
+            text,
+            "  {}",
+            line(&label, tokens, &cfg, by != UsageBy::Model)
+        );
+        all.merge(tokens);
+    }
+    let scope = match (&filter.task, &session) {
+        (Some(t), _) => task_label(conn, &repo.id, t)?,
+        (None, Some(s)) => format!("session {}", short(s)),
+        (None, None) => repo.name.clone(),
+    };
+    if rows.is_empty() {
+        let _ = writeln!(text, "No usage recorded for {scope} yet.");
+    } else {
+        let _ = writeln!(
+            text,
+            "{}",
+            line(&format!("Total for {scope}"), &all, &cfg, false)
+        );
+    }
+    for model in telemetry::cost(&all, &cfg.prices).unpriced_models {
+        let _ = writeln!(
+            text,
+            "No price for {model}: add one under [prices] in config.toml."
+        );
+    }
     print!("{text}");
     Ok(())
+}
+
+/// `Login form (2.3): 1.2M tokens · $4.10 (Opus 5.5 $3.90, Haiku 4.5 $0.20)`; the split
+/// by model only when asked for and there is more than one.
+fn line(label: &str, tokens: &Tokens, cfg: &Config, per_model: bool) -> String {
+    let cost = telemetry::cost(tokens, &cfg.prices);
+    let mut out = format!(
+        "{label}: {} tokens · {}",
+        telemetry::tokens_text(tokens.sum.total()),
+        telemetry::cost_text(&cost)
+    );
+    if per_model && tokens.by_model.len() > 1 {
+        let parts: Vec<String> = tokens
+            .by_model
+            .keys()
+            .map(|m| match cost.by_model.get(m) {
+                Some(usd) => format!("{} {}", telemetry::model_text(m), telemetry::usd_text(*usd)),
+                None => format!("{} cost unknown", telemetry::model_text(m)),
+            })
+            .collect();
+        let _ = write!(out, " ({})", parts.join(", "));
+    }
+    out
+}
+
+fn short(id: &str) -> String {
+    id.chars().take(6).collect()
+}
+
+/// `Login form (2.3)`, or the bare id when the task is gone from the plan.
+fn task_label(conn: &Connection, repo: &str, id: &str) -> Result<String> {
+    Ok(match task_title(conn, repo, id)? {
+        Some(title) => format!("{title} ({id})"),
+        None => id.to_string(),
+    })
+}
+
+fn row_label(conn: &Connection, repo: &str, by: UsageBy, key: Option<&str>) -> Result<String> {
+    Ok(match (by, key) {
+        (UsageBy::Task, Some(id)) => task_label(conn, repo, id)?,
+        (UsageBy::Task, None) => "No task".to_string(),
+        (UsageBy::Model, Some(m)) => telemetry::model_text(m),
+        (UsageBy::Agent, Some(t)) => t.to_string(),
+        (UsageBy::Agent, None) => "Main agent".to_string(),
+        (UsageBy::Session, Some(s)) => {
+            let branch: Option<String> = conn
+                .query_row(
+                    "SELECT branch FROM sessions WHERE session_id = ?1",
+                    [s],
+                    |r| r.get(0),
+                )
+                .unwrap_or(None);
+            match branch {
+                Some(b) => format!("{} ({b})", short(s)),
+                None => short(s),
+            }
+        }
+        (_, None) => "Unknown".to_string(),
+    })
+}
+
+/// The one session of this repo whose id starts with `prefix` (ended ones too).
+fn session_by_prefix(conn: &Connection, repo: &str, prefix: &str) -> Result<String> {
+    let mut stmt = conn.prepare(
+        "SELECT session_id FROM sessions WHERE repo_id = ?1 AND substr(session_id, 1, ?3) = ?2",
+    )?;
+    let len = i64::try_from(prefix.chars().count()).unwrap_or(i64::MAX);
+    let ids: Vec<String> = stmt
+        .query_map(rusqlite::params![repo, prefix, len], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    match ids.as_slice() {
+        [one] => Ok(one.clone()),
+        [] => bail!("no session of this repo starts with {prefix}"),
+        many => bail!("session prefix {prefix} is ambiguous: {}", many.join(", ")),
+    }
 }

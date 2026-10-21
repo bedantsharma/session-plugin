@@ -438,3 +438,76 @@ fn pending_skips_replies_already_recorded() {
     let t = totals(s.conn(), &Scope::Session("s1".into())).unwrap();
     assert_eq!((t.replies, t.sum.output), (2, 8));
 }
+
+fn price(input: f64, output: f64) -> crate::config::Price {
+    crate::config::Price {
+        input,
+        output,
+        cache_read: input / 10.0,
+        cache_write_5m: input * 1.25,
+        cache_write_1h: input * 2.0,
+    }
+}
+
+fn tokens(rows: &[(&str, Counts)]) -> Tokens {
+    let mut t = Tokens::default();
+    for (model, c) in rows {
+        t.replies += 1;
+        t.sum.add(c);
+        t.by_model.insert((*model).to_string(), *c);
+    }
+    t
+}
+
+#[test]
+fn unknown_model_cost_is_unknown() {
+    let prices =
+        std::collections::BTreeMap::from([("claude-opus-5".to_string(), price(5.0, 25.0))]);
+    let million = Counts {
+        output: 1_000_000,
+        ..Counts::default()
+    };
+    // Only an unpriced model: the cost is unknown, never $0.
+    let c = cost(&tokens(&[("gpt-like-9", million)]), &prices);
+    assert_eq!(c.usd, None);
+    assert_eq!(c.unpriced_models, ["gpt-like-9"]);
+    assert_eq!(cost_text(&c), "cost unknown");
+    // Priced and unpriced: a lower bound, said so.
+    let c = cost(
+        &tokens(&[("claude-opus-5-1", million), ("gpt-like-9", million)]),
+        &prices,
+    );
+    assert_eq!(c.usd, Some(25.0));
+    assert!(!c.complete());
+    assert_eq!(cost_text(&c), "≥ $25.00 (some models unpriced)");
+    // Known models still sum.
+    let c = cost(
+        &tokens(&[("claude-opus-5", million), ("claude-opus-5-1", million)]),
+        &prices,
+    );
+    assert_eq!((c.usd, c.complete()), (Some(50.0), true));
+    assert_eq!(cost_text(&c), "$50.00");
+    // Nothing spent at all: $0, which is true.
+    assert_eq!(cost(&Tokens::default(), &prices).usd, Some(0.0));
+}
+
+#[test]
+fn cache_writes_are_priced_by_duration() {
+    let p = price(4.0, 20.0);
+    let w5 = Counts {
+        cache_write_5m: 1_000_000,
+        ..Counts::default()
+    };
+    let w1 = Counts {
+        cache_write_1h: 1_000_000,
+        ..Counts::default()
+    };
+    let read = Counts {
+        cache_read: 2_000_000,
+        input: 500_000,
+        ..Counts::default()
+    };
+    assert!((priced(&w5, &p) - 5.0).abs() < 1e-9);
+    assert!((priced(&w1, &p) - 8.0).abs() < 1e-9);
+    assert!((priced(&read, &p) - (0.8 + 2.0)).abs() < 1e-9);
+}
