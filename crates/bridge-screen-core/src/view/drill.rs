@@ -53,8 +53,65 @@ pub struct TreeNode {
     /// Active minutes recorded against it.
     pub actual_min: i64,
     pub depends_on: Vec<String>,
+    /// Links to tasks in other repos, with whether each is done (spec §10.2).
+    pub external_deps: Vec<ExternalDepRow>,
+    /// Where it came from: `from sp7 plan, task 3`, `drafted at setup`; `None` by hand.
+    pub source_text: Option<String>,
+    /// The branch it was last claimed on.
+    pub branch: Option<String>,
     pub decisions: usize,
     pub depth: usize,
+}
+
+/// A link to a task in another repo.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExternalDepRow {
+    /// `api:2.4`.
+    pub label: String,
+    pub title: String,
+    pub ready: bool,
+}
+
+/// `from sp7-telemetry plan, task 3` (step `k` too), `drafted at setup`, or `None`.
+pub fn source_text(source: &crate::plan::NodeSource) -> Option<String> {
+    use crate::plan::NodeSource;
+    match source {
+        NodeSource::Manual => None,
+        NodeSource::Init => Some("drafted at setup".into()),
+        NodeSource::File { file, task, step } => {
+            let name = crate::import::short_name(file);
+            // `2026-10-21-sp7-x` → `sp7-x`.
+            let name = match name.get(..11) {
+                Some(date)
+                    if date.len() == 11
+                        && date.as_bytes()[10] == b'-'
+                        && date[..10].chars().all(|c| c.is_ascii_digit() || c == '-') =>
+                {
+                    &name[11..]
+                }
+                _ => name,
+            };
+            Some(match step {
+                Some(k) => format!("from {name} plan, task {task}, step {k}"),
+                None => format!("from {name} plan, task {task}"),
+            })
+        }
+    }
+}
+
+fn external_rows(conn: &Connection, n: &PlanNode) -> Result<Vec<ExternalDepRow>> {
+    let mut out = Vec::new();
+    for d in &n.external_deps {
+        let target = crate::plan::get_node(conn, &d.repo_id, &d.id)?;
+        out.push(ExternalDepRow {
+            label: format!("{}:{}", d.repo_name, d.id),
+            title: target.as_ref().map(|t| t.title.clone()).unwrap_or_default(),
+            ready: target.is_some_and(|t| {
+                matches!(t.status, NodeStatus::L2 | NodeStatus::L3 | NodeStatus::L4)
+            }),
+        });
+    }
+    Ok(out)
 }
 
 /// Total live estimate and the part done, at one moment (spec §5.6 scope line).
@@ -107,9 +164,13 @@ pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectD
     let decisions = decision_counts(conn, repo)?;
     let nodes = load_tree(conn, repo, false)?;
     let rolled = crate::plan::rollups(&nodes);
-    let tree = nodes
-        .into_iter()
-        .map(|n: PlanNode| TreeNode {
+    let mut tree = Vec::with_capacity(nodes.len());
+    for n in nodes {
+        let external_deps = external_rows(conn, &n)?;
+        tree.push(TreeNode {
+            external_deps,
+            source_text: source_text(&n.source),
+            branch: n.branch.clone(),
             rollup: rolled.get(&n.id).copied(),
             stale: marks.get(&n.id).is_some_and(|m| m == "stale"),
             owner_checked: marks.get(&n.id).is_some_and(|m| m == "✓owner"),
@@ -125,8 +186,8 @@ pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectD
             estimate_min: n.estimate_min,
             depends_on: n.depends_on,
             depth: n.depth,
-        })
-        .collect();
+        });
+    }
     let mut stmt = conn.prepare(
         "SELECT ts, json_extract(data, '$.reason'), COALESCE(json_extract(data, '$.op_count'), 0),
                 session_id

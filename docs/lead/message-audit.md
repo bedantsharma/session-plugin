@@ -46,6 +46,13 @@ which is the raw event log on purpose.
 | Any tool, after an upgrade | database schema version 8 is newer than this bridge-screen supports (7); upgrade bridge-screen | bridge-screen was updated while this session was open. Start a new Claude session to keep using it (data format 8; this session's copy understands up to 7). |
 | watch, needs-you tag | verify / leftovers | check / unsaved |
 | Scope summary (project drill) | +20 min at 10:02 · +15 min at 10:02 · +10 min at 10:02 | 3 additions, +45 min at 10:02 |
+| Session light word and chip (all screens; SP8) | — | Waiting (amber), and "· waiting on 2.4 Login form" on the session line |
+| Branch groups (dashboard, status, watch; SP8) | — | feat/auth · 2 repos · 45% (each repo's % in the tooltip); "no tasks on this branch yet" |
+| Project drill, per task (SP8) | — | from sp7 plan, task 3 · drafted at setup · after api:2.4 · ready/waiting · the branch |
+| Session drill, waits (SP8) | — | "Waiting on" list: target — reason · waiting 40m / done @abc1234 / cleared by hand / now a plan link; buttons Clear and Make it a plan link |
+| Owner CLI `wait clear` / `wait promote` (SP8) | — | Cleared W2: ab12cd no longer waits on the design doc. / 1.1 now depends on api:2.4; the wait W1 is closed. |
+| `bridge-screen import` (SP8) | — | Imported sp7-x: added 6 tasks and steps; 2 ticked steps recorded as claimed (not checked) · Noted … as already planned by hand (not imported) · Skipped …: no "### Task N:" headings · No new or changed plan files. |
+| `bridge-screen init` (SP8) | — | the repo's evidence, then "Next steps (for the agent)", or "First: run `bridge-screen import`", or "… already has a plan; nothing to set up" |
 
 Reviewed and kept (already plain, or a glossary term): "far off its task (40 min)",
 "asked you a question", "waits on a permission prompt", "waits on your input", "answer in

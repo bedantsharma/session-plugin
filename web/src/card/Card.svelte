@@ -12,7 +12,7 @@
   import { changed } from '$lib/changed'
   import { hhmm } from '$lib/format'
   import { motion } from '$lib/motion.svelte'
-  import { milestoneHill, rollupWord, sessionWord } from '$lib/words'
+  import { milestoneHill, rollupWord, sessionWord, waitingText } from '$lib/words'
   import type { ActionSpec, Glance, NeedsYou } from '$lib/types'
   import { applyTheme, type CardHost, type ToolResult } from './host'
 
@@ -336,7 +336,9 @@
                 ? `${s.detour.label} ${s.detour.reason}`
                 : s.task
                   ? `${s.task.id} ${s.task.title}`
-                  : ''}</span
+                  : ''}{#if waitingText(s.waiting)}<span class="text-warn"
+                  >{` · ${waitingText(s.waiting)}`}</span
+                >{/if}</span
             >
             <span class="shrink-0 text-xs text-muted tabular-nums">{s.active_min} min</span>
           </li>

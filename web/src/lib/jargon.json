@@ -21,6 +21,14 @@
     "not_configured",
     "in_progress",
     "needs_attention",
-    "unestimated"
+    "unestimated",
+    "waiting_on",
+    "wait_cleared",
+    "plan_imported",
+    "plan_file_seen",
+    "init_plan",
+    "target_done",
+    "clear_wait",
+    "promote_wait"
   ]
 }

@@ -49,6 +49,14 @@ describe('owner-facing words', () => {
     expect(w('idle', 'amber')).toMatchObject({ icon: '◆', text: 'Idle', tone: 'warn' })
     expect(w('done', 'green')).toMatchObject({ icon: '✓', text: 'Done', tone: 'ok' })
     expect(w('needs you', 'red')).toMatchObject({ icon: '■', text: 'Needs you', tone: 'bad' })
+    // Waiting on a task or something outside: amber, unless it is working or needs you.
+    expect(w('idle', 'amber', 'waiting')).toMatchObject({
+      icon: '◷',
+      text: 'Waiting',
+      tone: 'warn',
+    })
+    expect(w('working', 'amber', 'waiting')).toMatchObject({ text: 'Working · waiting' })
+    expect(w('needs you', 'red', 'needs you')).toMatchObject({ text: 'Needs you' })
   })
 
   it('reads durations and file counts as words', () => {

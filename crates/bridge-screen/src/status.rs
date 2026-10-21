@@ -118,6 +118,14 @@ pub fn render(g: &Glance, opts: &Options) -> String {
         for p in shown {
             project(&mut out, g, p, c);
         }
+        for grp in &g.branch_groups {
+            let _ = writeln!(
+                out,
+                "branch group  {}  ({})",
+                crate::words::branch_group(grp),
+                crate::words::branch_group_repos(grp)
+            );
+        }
     }
     if let Some(url) = &opts.dashboard {
         let _ = writeln!(out, "dashboard: {url} (`bridge-screen ui` prints the link)");
@@ -239,6 +247,9 @@ fn session_line(s: &SessionRow, c: bool) -> String {
                 let _ = write!(nav, " · {}: {}", f.kind.text(), f.tasks.join(", "));
             }
         }
+    }
+    if let Some(w) = crate::words::waiting(&s.waiting) {
+        let _ = write!(nav, " · {}", paint(c, Role::Amber, &w));
     }
     if s.asked_question {
         let _ = write!(nav, " · {}", paint(c, Role::Red, "asked you a question"));

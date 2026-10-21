@@ -3,11 +3,13 @@
 //! the model, the API and the agent's tool inputs keep `uphill`/`downhill` and
 //! `on_task`/`detour`/`drift`.
 
+use std::fmt::Write as _;
+
 use bridge_screen_core::handoff::ReadbackState;
 use bridge_screen_core::plan::{Hill, Rollup};
 use bridge_screen_core::tangent::{Label, LabelSource};
 use bridge_screen_core::verify::level_words;
-use bridge_screen_core::view::MilestoneRow;
+use bridge_screen_core::view::{BranchGroup, MilestoneRow, WaitRef};
 
 /// A milestone's hill as an icon and a word, or `None` when there is none or the
 /// milestone is finished.
@@ -97,6 +99,38 @@ pub fn readback(state: ReadbackState) -> &'static str {
 
 /// The raw codes in `text` an owner should never see, from the list shared with the web
 /// tests (`web/src/lib/jargon.json`) plus L0–L4, `snake_case` tokens and session UUIDs.
+/// `waiting on 2.4 Login form` (and `+N more`) for a session's open waits, or `None`.
+pub fn waiting(waits: &[WaitRef]) -> Option<String> {
+    let first = waits.first()?;
+    let mut text = format!("waiting on {}", first.target);
+    if waits.len() > 1 {
+        let _ = write!(text, " (+{} more)", waits.len() - 1);
+    }
+    Some(text)
+}
+
+/// A branch group in one line: `feat/auth · 2 repos · 45%`, or `… · no tasks on this
+/// branch yet`.
+pub fn branch_group(g: &BranchGroup) -> String {
+    let pct = match g.done_pct {
+        Some(p) => format!("{p}%"),
+        None => "no tasks on this branch yet".to_string(),
+    };
+    format!("{} · {} repos · {pct}", g.branch, g.repos.len())
+}
+
+/// Each repo of a group: `api 20% · web no tasks on this branch yet`.
+pub fn branch_group_repos(g: &BranchGroup) -> String {
+    g.repos
+        .iter()
+        .map(|r| match r.done_pct {
+            Some(p) => format!("{} {p}%", r.name),
+            None => format!("{} no tasks on this branch yet", r.name),
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
 #[cfg(test)]
 pub fn jargon_in(text: &str) -> Vec<String> {
     let list: serde_json::Value =

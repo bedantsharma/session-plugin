@@ -69,11 +69,46 @@ const drill: SessionDrill = {
     text: '$0.09',
     summary: '$0.09 spent · 12k tokens',
   },
+  waits: [
+    {
+      wait_id: 'W1',
+      target: 'api:2.4 Login endpoint',
+      reason: 'the page calls it',
+      open: true,
+      state_text: 'waiting 40m',
+      actions: [
+        {
+          label: 'Clear',
+          action: { kind: 'clear_wait', wait_id: 'W1' },
+          inputs: [],
+          tone: 'neutral',
+        },
+        {
+          label: 'Make it a plan link',
+          action: { kind: 'promote_wait', wait_id: 'W1' },
+          inputs: [],
+          tone: 'primary',
+        },
+      ],
+    },
+    {
+      wait_id: 'W2',
+      target: "Sam's API key",
+      reason: 'staging',
+      open: false,
+      state_text: 'cleared by hand',
+      actions: [],
+    },
+  ],
 }
 
+const acted: unknown[] = []
 const client: Client = {
   get: async <T>() => drill as T,
-  act: async () => ({ ok: true, reply: '' }),
+  act: async (a) => {
+    acted.push(a)
+    return { ok: true, reply: 'Cleared W1.' }
+  },
 }
 
 describe('Session drill', () => {
@@ -113,5 +148,19 @@ describe('Session drill', () => {
       (e) => e.textContent,
     )
     expect(tokens).toEqual(['12k', '—'])
+  })
+
+  it('lists open and cleared waits, with the owner buttons on open ones', async () => {
+    render(Session, { client, id: 's1aaaa', version: 1 })
+    const waits = await screen.findByTestId('waits')
+    expect(waits).toHaveTextContent('api:2.4 Login endpoint — the page calls it')
+    expect(waits).toHaveTextContent('waiting 40m')
+    expect(waits).toHaveTextContent("Sam's API key — staging")
+    expect(waits).toHaveTextContent('cleared by hand')
+    const buttons = [...waits.querySelectorAll('button')].map((b) => b.textContent?.trim())
+    expect(buttons).toEqual(['Clear', 'Make it a plan link'])
+    ;(waits.querySelector('button') as HTMLButtonElement).click()
+    expect(await screen.findByRole('status')).toHaveTextContent('Cleared W1.')
+    expect(acted).toEqual([{ kind: 'clear_wait', wait_id: 'W1' }])
   })
 })

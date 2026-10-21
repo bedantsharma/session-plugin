@@ -32,6 +32,9 @@ const drill = (scope: ProjectDrill['scope']): ProjectDrill => ({
       estimate_min: null,
       actual_min: 0,
       depends_on: [],
+      external_deps: [],
+      source_text: null,
+      branch: null,
       decisions: 0,
       depth: 0,
     },
@@ -106,5 +109,42 @@ describe('Project drill', () => {
     render(Project, props(drill([])))
     const btn = await screen.findByRole('button', { name: /show intent/i })
     expect(btn).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('a task shows where it came from, its branch and its links to other repos', async () => {
+    const d = drill([])
+    d.tree.push({
+      ...d.tree[0],
+      id: '1',
+      parent_id: 'G',
+      kind: 'task',
+      title: 'Login page',
+      intent: null,
+      rollup: null,
+      estimate_min: 30,
+      source_text: 'from sp7-telemetry plan, task 3',
+      branch: 'feat/auth',
+      external_deps: [
+        { label: 'api:2.4', title: 'Login endpoint', ready: true },
+        { label: 'api:2.5', title: 'Logout', ready: false },
+      ],
+      depth: 1,
+    })
+    const { container } = render(Project, props(d))
+    const task = await vi.waitFor(() => {
+      const el = container.querySelector('[data-node="1"]')
+      if (!el) throw new Error('not yet')
+      return el
+    })
+    expect(task.querySelector('[data-testid="source"]')).toHaveTextContent(
+      'from sp7-telemetry plan, task 3',
+    )
+    expect(task).toHaveTextContent('feat/auth')
+    const deps = [...task.querySelectorAll('[data-testid="external-dep"]')].map(
+      (e) => e.textContent,
+    )
+    expect(deps).toEqual(['after api:2.4 · ready', 'after api:2.5 · waiting'])
+    // A node added by hand says nothing about where it came from.
+    expect(container.querySelector('[data-node="G"] [data-testid="source"]')).toBeNull()
   })
 })
