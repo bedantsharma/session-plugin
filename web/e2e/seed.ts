@@ -7,7 +7,9 @@ import { DatabaseSync } from 'node:sqlite'
 export interface Seed {
   repo: string
   name: string
-  sessions: { id: string; red?: boolean }[]
+  sessions: { id: string; red?: boolean; working?: boolean; units?: number; task?: string }[]
+  /** Milestones with hills under the goal (for the screenshot step). */
+  milestones?: { id: string; title: string; hill?: 'uphill' | 'downhill' }[]
 }
 
 let n = 0
@@ -52,6 +54,25 @@ export function seed(bin: string, home: string, repos: Seed[]) {
       estimate_min: 30,
       expected_files: [],
     })
+    for (const m of r.milestones ?? []) {
+      add(r.repo, 'owner', ago(59), 'node_added', {
+        id: m.id,
+        parent_id: 'G',
+        kind: 'milestone',
+        title: m.title,
+        estimate_min: null,
+        expected_files: [],
+      })
+      add(r.repo, 'owner', ago(59), 'node_added', {
+        id: `${m.id}.1`,
+        parent_id: m.id,
+        kind: 'task',
+        title: `First step of ${m.title.toLowerCase()}`,
+        estimate_min: 45,
+        expected_files: [],
+      })
+      if (m.hill) add(r.repo, 'owner', ago(58), 'hill_moved', { id: m.id, hill: m.hill })
+    }
     for (const s of r.sessions) {
       add(r.repo, s.id, ago(50), 'session_started', {
         cwd: `/wt/${s.id}`,
@@ -59,7 +80,26 @@ export function seed(bin: string, home: string, repos: Seed[]) {
         worktree: `/wt/${s.id}`,
         branch: 'feat',
       })
-      add(r.repo, s.id, ago(45), 'prompt', { chars: 5 })
+      if (s.task)
+        add(r.repo, s.id, ago(49), 'task_claimed', {
+          task_id: s.task,
+          mode: 'confirmed',
+          confidence: 1,
+        })
+      // Earlier finished units with mixed labels (the session drill's timeline).
+      const labels = ['on_task', 'on_task', 'detour', 'on_task', 'drift', 'on_task']
+      const sources = ['agent', 'heuristic', 'declared', 'owner', 'heuristic', 'agent']
+      for (let u = 0; u < (s.units ?? 0); u++) {
+        add(r.repo, s.id, ago(49 - u * 6), 'prompt', { chars: 5 })
+        add(r.repo, s.id, ago(45 - u * 6), 'unit_stopped', {})
+        add(r.repo, s.id, ago(45 - u * 6), 'unit_labeled', {
+          unit_no: u + 1,
+          label: labels[u % labels.length],
+          source: sources[u % sources.length],
+        })
+      }
+      add(r.repo, s.id, ago(s.units ? 8 : 45), 'prompt', { chars: 5 })
+      if (s.working) continue
       if (s.red) {
         add(r.repo, s.id, ago(45), 'detour_opened', {
           detour_id: `D-${s.id}`,

@@ -54,7 +54,7 @@ describe('desktop card', () => {
     const host = new FakeHost()
     render(Card, { host })
     host.push(result())
-    expect(await screen.findByText('S s1aaaa is far off its task')).toBeInTheDocument()
+    expect(await screen.findByText('s1aaaa · far off its task (40 min)')).toBeInTheDocument()
     expect(screen.getByTestId('pill')).toHaveTextContent('1 need you')
     expect(screen.getByText(/as of/)).toBeInTheDocument()
     await waitFor(() => expect(host.sizes.length).toBeGreaterThan(0))
@@ -93,6 +93,28 @@ describe('desktop card', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Stop' }))
     expect(await screen.findByText('already resolved: x')).toBeInTheDocument()
     expect(host.calls).toHaveLength(1)
+  })
+
+  it('keeps milestones behind "show milestones", with the hill in words', async () => {
+    const host = new FakeHost()
+    const { container } = render(Card, { host })
+    host.push(result())
+    const toggle = await screen.findByRole('button', { name: 'show milestones' })
+    expect(container.querySelector('[data-milestone]')).toBeNull()
+    await userEvent.click(toggle)
+    expect(container.querySelector('[data-milestone="1"]')).toHaveTextContent('exploring')
+    expect(container.querySelector('[data-milestone="2"]')).toHaveTextContent('executing')
+    expect(container.textContent).not.toMatch(/uphill|downhill/)
+  })
+
+  it('has its own Motion switch', async () => {
+    const host = new FakeHost()
+    render(Card, { host })
+    host.push(result())
+    const btn = await screen.findByRole('button', { name: 'Motion' })
+    const before = btn.getAttribute('aria-pressed')
+    await userEvent.click(btn)
+    expect(btn.getAttribute('aria-pressed')).not.toBe(before)
   })
 
   it('Refresh re-calls show_progress', async () => {

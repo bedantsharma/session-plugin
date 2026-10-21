@@ -42,6 +42,12 @@
     allProjects ? (glance?.projects ?? []) : (glance?.projects ?? []).slice(0, MAX_PROJECTS),
   )
 
+  const projectRow = $derived(
+    screen.kind === 'project'
+      ? glance?.projects.find((p) => p.repo_id === (screen as { repo: string }).repo)
+      : undefined,
+  )
+
   $effect(() => applyBadge(glance?.needs_you_count ?? 0, conn.connected && glance !== null))
 
   async function act(action: OwnerAction) {
@@ -87,10 +93,10 @@
   })
 </script>
 
-<main class="mx-auto flex h-dvh max-w-6xl flex-col gap-3 overflow-hidden p-4">
-  <Header {glance} {conn} onShowAll={() => (showAll = true)} />
+<Header {glance} {conn} {version} onShowAll={() => (showAll = true)} />
+<main class="mx-auto flex w-full max-w-[1280px] flex-col gap-8 px-4 py-8 lg:px-6 xl:px-8">
   {#if conn.unauthorized}
-    <section class="rounded-lg border border-warn p-4 text-sm" role="alert">
+    <section class="rounded-xl border border-warn bg-surface p-5 text-row" role="alert">
       <p class="font-medium text-warn">Token missing or refused.</p>
       <p class="mt-1">
         Open the URL that <code class="font-mono">bridge-screen ui</code> printed (it carries the
@@ -99,19 +105,20 @@
       </p>
     </section>
   {:else if screen.kind !== 'glance'}
-    <nav>
+    <nav class="-mt-4 -mb-4">
       <button
         type="button"
-        class="text-sm text-muted hover:underline"
-        onclick={() => (screen = { kind: 'glance' })}>← glance</button
+        class="-ml-2 inline-flex h-9 items-center rounded-lg px-2 text-sm font-medium text-muted hover:bg-hover hover:text-fg"
+        onclick={() => (screen = { kind: 'glance' })}>← Glance</button
       >
     </nav>
-    <div class="min-h-0 flex-1 overflow-auto">
+    <div class="flex flex-col gap-8">
       {#if screen.kind === 'project'}
         <ProjectView
           {client}
           repo={screen.repo}
           {version}
+          row={projectRow}
           onOpenTask={(repo, id) => (screen = { kind: 'task', repo, id })}
           onOpenHistory={(repo) => (screen = { kind: 'history', repo })}
           onOpenTuning={(repo) => (screen = { kind: 'tuning', repo })}
@@ -134,36 +141,51 @@
       bind:showAll
       onOpenSession={(id) => (screen = { kind: 'session', id })}
     />
-    <section aria-label="Projects">
-      <ul class="flex flex-col">
-        {#each shownProjects as p (p.repo_id)}
-          <ProjectRowView project={p} onOpen={(repo) => (screen = { kind: 'project', repo })} />
-        {/each}
-      </ul>
-      {#if glance.projects.length > MAX_PROJECTS && !allProjects}
-        <button
-          type="button"
-          class="px-2 text-xs text-muted hover:underline"
-          onclick={() => (allProjects = true)}>{glance.projects.length - MAX_PROJECTS} more</button
-        >
-      {/if}
-    </section>
-    <section aria-label="Live sessions" class="border-t border-line pt-2">
-      <ul class="flex flex-col">
-        {#each shownSessions as s (s.session_id)}
-          <SessionRowView session={s} onOpen={(id) => (screen = { kind: 'session', id })} />
-        {/each}
-      </ul>
-      {#if sessions.length > MAX_SESSIONS && !allSessions}
-        <button
-          type="button"
-          class="px-2 text-xs text-muted hover:underline"
-          onclick={() => (allSessions = true)}>{sessions.length - MAX_SESSIONS} more</button
-        >
-      {/if}
-      {#if sessions.length === 0}
-        <p class="px-2 text-sm text-muted">No live sessions.</p>
-      {/if}
-    </section>
+    <div class="grid grid-cols-1 gap-8 xl:grid-cols-[minmax(0,1fr)_400px]">
+      <section aria-label="Projects" class="flex flex-col gap-3">
+        <h2 class="text-base font-semibold">Projects</h2>
+        <ul class="flex flex-col gap-4">
+          {#each shownProjects as p (p.repo_id)}
+            <ProjectRowView project={p} onOpen={(repo) => (screen = { kind: 'project', repo })} />
+          {/each}
+        </ul>
+        {#if glance.projects.length === 0}
+          <p class="text-row text-muted">
+            No projects yet. Start a Claude Code session in a repository to track it here.
+          </p>
+        {/if}
+        {#if glance.projects.length > MAX_PROJECTS && !allProjects}
+          <button
+            type="button"
+            class="self-start rounded-lg px-2 py-1 text-sm font-medium text-muted hover:bg-hover hover:text-fg"
+            onclick={() => (allProjects = true)}
+            >{glance.projects.length - MAX_PROJECTS} more</button
+          >
+        {/if}
+      </section>
+      <section aria-label="Live sessions" class="order-first flex flex-col gap-3 lg:order-none">
+        <h2 class="flex items-baseline gap-2 text-base font-semibold">
+          Sessions
+          <span class="text-meta font-normal text-muted tabular-nums">{sessions.length}</span>
+        </h2>
+        <div class="rounded-xl border border-line bg-surface p-2">
+          <ul class="flex flex-col gap-1">
+            {#each shownSessions as s (s.session_id)}
+              <SessionRowView session={s} onOpen={(id) => (screen = { kind: 'session', id })} />
+            {/each}
+          </ul>
+          {#if sessions.length > MAX_SESSIONS && !allSessions}
+            <button
+              type="button"
+              class="mt-1 rounded-lg px-3 py-1 text-sm font-medium text-muted hover:bg-hover hover:text-fg"
+              onclick={() => (allSessions = true)}>{sessions.length - MAX_SESSIONS} more</button
+            >
+          {/if}
+          {#if sessions.length === 0}
+            <p class="px-3 py-3 text-row text-muted">No live sessions.</p>
+          {/if}
+        </div>
+      </section>
+    </div>
   {/if}
 </main>

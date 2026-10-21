@@ -128,7 +128,41 @@
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
+  /* Cards are 12 px; inner rows and buttons 8 px (rounded-lg). */
+  --radius-xl: 0.75rem;
+  --color-hover: var(--hover);
+  --color-tint-bad: var(--tint-bad);
+  --color-tint-ok: var(--tint-ok);
+  --color-tint-warn: var(--tint-warn);
+  --color-tint-working: var(--tint-working);
+}
+
+/*
+ * Type scale (plan §2): rows 15/22, metadata 13/20, chips 12/16 — the only 12 px text.
+ * Page title text-xl (20/28), section headings text-base (16/24), buttons text-sm (14/20).
+ */
+@theme {
+  --text-row: 0.9375rem;
+  --text-row--line-height: 1.375rem;
+  --text-meta: 0.8125rem;
+  --text-meta--line-height: 1.25rem;
+  --text-chip: 0.75rem;
+  --text-chip--line-height: 1rem;
+}
+
+/*
+ * Tints: mixes of palette tokens over the card surface (never new hues). Every
+ * text-on-tint pair is checked in tests/contrast.test.ts.
+ */
+:root {
+  /* tints */
+  --hover: color-mix(in oklab, var(--fg) 4%, var(--surface));
+  --tint-bad: color-mix(in oklab, var(--bad) 10%, var(--surface));
+  --tint-ok: color-mix(in oklab, var(--ok) 10%, var(--surface));
+  --tint-warn: color-mix(in oklab, var(--warn) 10%, var(--surface));
+  --tint-working: color-mix(in oklab, var(--ok) 6%, var(--surface));
+  --tint-flash: color-mix(in oklab, var(--clay) 14%, var(--surface));
+  /* end */
 }
 
 @layer base {
@@ -148,41 +182,343 @@
   background-image: repeating-linear-gradient(135deg, var(--clay) 0 3px, transparent 3px 6px);
 }
 
+/* Live and working dots, the spinner: their still look. Motion is added below. */
+.live-dot {
+  display: block;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 9999px;
+  background: var(--ok);
+}
+
+.working-dot {
+  position: relative;
+  display: block;
+  flex-shrink: 0;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 9999px;
+  background: var(--ok);
+  /* The still ring (Motion off, reduced motion): 2 px at 30%. */
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--ok) 30%, transparent);
+}
+
+.working-dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: color-mix(in oklab, var(--ok) 45%, transparent);
+  opacity: 0;
+}
+
+.spinner {
+  display: inline-block;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 9999px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  opacity: 0.8;
+}
+
+.sheen {
+  position: relative;
+}
+
+.sheen::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.12), transparent);
+  transform: translateX(-100%);
+  pointer-events: none;
+}
+
+.pulse-3 {
+  position: relative;
+}
+
+.pulse-3::after,
+.arrive::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: inherit;
+  border: 2px solid var(--bad);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.arrive {
+  position: relative;
+}
+
 /*
- * Motion (WCAG 2.2.2): everything that moves stops within 5 s; under reduced motion,
- * a single fade at most.
+ * Motion (plan §5, WCAG 2.2.2). It means something or it doesn't run, and only
+ * transform, opacity and background colour move (bar widths excepted).
+ *
+ * Loops run only here: with no reduced-motion preference AND the header's Motion switch
+ * on (`data-motion` on <html>). Nothing outside this block may loop (tests/motion.test.ts).
  */
+@keyframes ring {
+  from {
+    transform: scale(1);
+    opacity: 0.5;
+  }
+  to {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@keyframes breathe-soft {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@keyframes sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  60%,
+  100% {
+    transform: translateX(250%);
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @keyframes pulse-ring {
   0%,
   100% {
-    box-shadow: 0 0 0 0 transparent;
+    opacity: 0;
   }
   50% {
-    box-shadow: 0 0 0 4px var(--bad);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-motion='off']) .working-dot::after {
+    animation: ring 2s cubic-bezier(0, 0, 0.2, 1) infinite;
+  }
+  :root:not([data-motion='off']) .live-dot {
+    animation: breathe 2.4s ease-in-out infinite;
+  }
+  /* A 2.4 s sweep, then a 1.6 s pause. */
+  :root:not([data-motion='off']) .sheen::after {
+    animation: sweep 4s linear infinite;
+  }
+  :root:not([data-motion='off']) .spinner {
+    animation: spin 0.8s linear infinite;
+  }
+  /* The escalated pill: 3 pulses (3.6 s), then still. */
+  :root:not([data-motion='off']) .pulse-3::after {
+    animation: pulse-ring 1.2s ease-in-out 3;
+  }
+  :root:not([data-motion='off']) .bar-fill {
+    transition: width 600ms cubic-bezier(0.2, 0, 0, 1);
+  }
+  /* The desktop card: the working dot breathes (opacity only, no ring). */
+  :root:not([data-motion='off']) .card-root .working-dot {
+    animation: breathe-soft 2.4s ease-in-out infinite;
+  }
+}
+
+/* One-off changes: a heartbeat, a flash, a number settling, an arrival, a bump. */
+@keyframes beat {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.5);
+  }
+}
+
+@keyframes beat-fade {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@keyframes flash {
+  from {
+    background-color: var(--tint-flash);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+@keyframes num-in {
+  from {
+    opacity: 0.4;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
   }
 }
 
 @keyframes fade-in {
   from {
-    opacity: 0.3;
+    opacity: 0;
   }
   to {
     opacity: 1;
   }
 }
 
-.pulse-3 {
-  animation: pulse-ring 1.2s ease-in-out 3;
+@keyframes arrive {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
+@keyframes ring-out {
+  from {
+    opacity: 0.35;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes bump {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.08);
+  }
+}
+
+.beat {
+  animation: beat 300ms cubic-bezier(0.2, 0, 0, 1) 1;
+}
+
+:root:not([data-motion='off']) .flash {
+  animation: flash 1.2s ease-out 1;
+}
+
+.num {
+  display: inline-block;
+  animation: num-in 150ms cubic-bezier(0.2, 0, 0, 1) 1;
+}
+
+.arrive {
+  animation: arrive 240ms cubic-bezier(0.2, 0, 0, 1) 1;
+}
+
+.arrive::after {
+  animation: ring-out 1.2s ease-out 1;
+}
+
+/*
+ * The desktop card keeps only the breathing dot and a shorter row flash (plan §5): no
+ * ring, no bar transitions, no sheen, no number or pill cues.
+ */
+.card-root .working-dot::after,
+.card-root .sheen::after {
+  display: none;
+}
+
+.card-root .bar-fill {
+  transition: none !important;
+}
+
+:root:not([data-motion='off']) .card-root .flash {
+  animation-duration: 600ms;
+}
+
+/* With Motion off the spinner gives way to the label's "…". */
+:root[data-motion='off'] .spinner {
+  display: none;
+}
+
+.bump {
+  display: inline-block;
+  animation: bump 200ms cubic-bezier(0.2, 0, 0, 1) 1;
+}
+
+/*
+ * Reduced motion means reduce, not remove: nothing loops or travels; fades and colour
+ * changes stay (hover colours, the heartbeat as a flash, arrivals as a fade).
+ */
 @media (prefers-reduced-motion: reduce) {
-  *:not(.pulse-3),
+  *,
   *::before,
   *::after {
     animation: none !important;
-    transition: none !important;
+    transition-property: color, background-color, border-color, outline-color, opacity !important;
+  }
+  .beat {
+    animation: beat-fade 300ms ease-out 1 !important;
+  }
+  :root:not([data-motion='off']) .flash {
+    animation: flash 600ms ease-out 1 !important;
+  }
+  .num {
+    animation: fade-in 150ms ease-out 1 !important;
+  }
+  .arrive {
+    animation: fade-in 240ms ease-out 1 !important;
+  }
+  .spinner {
+    display: none;
   }
   .pulse-3 {
-    animation: fade-in 0.4s ease-out 1;
+    animation: fade-in 0.4s ease-out 1 !important;
   }
+}
+
+/* The scope chart (LayerChart): axis ticks at the chip size, the legend at metadata size. */
+.scope-chart .lc-axis-tick-label,
+.scope-chart .lc-axis-label {
+  font-size: var(--text-chip);
+  fill: var(--muted);
+}
+
+.scope-chart .lc-legend-swatch-label {
+  font-size: var(--text-meta);
+  line-height: var(--text-meta--line-height);
+  color: var(--muted);
+}
+
+.scope-chart .lc-legend-swatch {
+  width: 0.75rem;
+  height: 0.75rem;
 }

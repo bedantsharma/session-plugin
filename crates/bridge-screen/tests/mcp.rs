@@ -968,6 +968,39 @@ mod reports {
     }
 
     #[test]
+    fn the_report_names_the_hill_exploring_or_executing() {
+        let (env, mut mcp) = setup();
+        let out = env.run(
+            &["plan", "edit"],
+            r#"[{"op":"set_hill","id":"1","hill":"uphill"}]"#,
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let (err, text) = call_as(&mut mcp, &env, "s1", "progress_report", &json!({}));
+        assert!(!err, "{text}");
+        let path = text
+            .strip_prefix("Wrote ")
+            .and_then(|t| t.split_once(". It is"))
+            .unwrap()
+            .0
+            .to_string();
+        let html = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(html.contains("? exploring"), "{html}");
+        assert!(
+            html.contains("Unknowns remain — this % may still change"),
+            "{html}"
+        );
+        assert!(
+            !html.contains("uphill") && !html.contains("downhill"),
+            "{html}"
+        );
+    }
+
+    #[test]
     fn never_refuses_and_ask_allows() {
         let (env, mut mcp) = setup();
         let out = env.run(&["config", "set", "publish-reports", "never"], "");

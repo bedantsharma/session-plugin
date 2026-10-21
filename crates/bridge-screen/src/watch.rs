@@ -496,11 +496,9 @@ fn project_lines(app: &App, row: usize, width: usize, narrow: bool) -> Vec<Line<
         (format!(" {pct}{claimed}"), sel),
     ];
     for m in &p.milestones {
-        let hill = match m.hill {
-            Some(bridge_screen_core::plan::Hill::Uphill) => " ▲uphill",
-            Some(bridge_screen_core::plan::Hill::Downhill) => " ▼downhill",
-            None => "",
-        };
+        let hill = crate::words::hill(m.hill, m.done_pct)
+            .map(|(icon, word)| format!(" {icon} {word}"))
+            .unwrap_or_default();
         spans.push((
             format!("  {} {}%{hill}", m.id, m.done_pct),
             role(c, Color::Yellow),
@@ -557,6 +555,9 @@ fn session_line(
         width,
     )
 }
+
+/// Units listed under an expanded session.
+const UNITS_SHOWN: usize = 5;
 
 const LEGEND: &str = "↑↓/jk move · Enter expand · a act · ? help · q quit";
 
@@ -729,12 +730,22 @@ impl Actor for StoreActor {
                 match view::drill::session(s.conn(), id, now) {
                     Ok(Some(d)) => {
                         let mut out = vec![format!(
-                            "{} units · on task {}m · drift {}m · read-back {}",
+                            "{} units · on task {} · drift {} · read-back {}",
                             d.units.len(),
-                            d.split.on_task_s / 60,
-                            d.split.drift_s / 60,
+                            crate::words::mins(d.split.on_task_s),
+                            crate::words::mins(d.split.drift_s),
                             d.readback.as_str()
                         )];
+                        // The last few units with their labels in words.
+                        let skip = d.units.len().saturating_sub(UNITS_SHOWN);
+                        out.extend(d.units.iter().skip(skip).map(|u| {
+                            format!(
+                                "#{} {:>7}  {}",
+                                u.unit_no,
+                                crate::words::mins(u.active_s),
+                                crate::words::unit_label(u.label, u.label_source)
+                            )
+                        }));
                         out.extend(
                             d.split
                                 .detours

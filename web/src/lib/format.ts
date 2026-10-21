@@ -32,5 +32,5 @@ export function flagText(f: { kind: string; age_s: number | null; tasks?: string
   }
   const tasks = f.tasks?.length ? `: ${f.tasks.join(', ')}` : ''
   const a = f.age_s === null ? '' : ` · ${age(f.age_s)}`
-  return `${words[f.kind] ?? f.kind}${tasks}${a}`
+  return `${words[f.kind] ?? f.kind.replaceAll('_', ' ')}${tasks}${a}`
 }

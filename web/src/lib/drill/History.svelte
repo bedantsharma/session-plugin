@@ -1,5 +1,6 @@
 <script lang="ts">
-  // The raw event stream with filters (spec §10.2), newest first, a page at a time.
+  // The raw event stream with filters (spec §10.2), newest first, a page at a time,
+  // grouped by day (plan §2).
   import { Input } from '$lib/components/ui/input'
   import type { Client } from '$lib/api'
   import { hhmm } from '$lib/format'
@@ -33,31 +34,64 @@
     }
   }
 
+  // Grouped by local day, newest first.
+  const days = $derived.by(() => {
+    const out: [string, HistoryPage['events']][] = []
+    for (const e of rows) {
+      const day = new Date(e.ts).toLocaleDateString(undefined, {
+        weekday: 'long',
+        day: 'numeric',
+        month: 'long',
+      })
+      const last = out.at(-1)
+      if (last && last[0] === day) last[1].push(e)
+      else out.push([day, [e]])
+    }
+    return out
+  })
+
   $effect(() => {
     void [kind, session, task]
     void load(null)
   })
 </script>
 
-<h2 class="text-lg font-medium">History</h2>
-<div class="mt-2 flex gap-2">
-  <Input class="h-8 w-40" placeholder="kind" aria-label="kind" bind:value={kind} />
-  <Input class="h-8 w-40" placeholder="session" aria-label="session" bind:value={session} />
-  <Input class="h-8 w-40" placeholder="task" aria-label="task" bind:value={task} />
+<h2 class="text-xl font-semibold">History</h2>
+<div class="flex flex-wrap gap-2">
+  <Input class="h-9 w-48 text-sm" placeholder="kind" aria-label="kind" bind:value={kind} />
+  <Input class="h-9 w-48 text-sm" placeholder="session" aria-label="session" bind:value={session} />
+  <Input class="h-9 w-48 text-sm" placeholder="task" aria-label="task" bind:value={task} />
 </div>
-{#if error}<p class="text-warn">{error}</p>{/if}
-<ol class="mt-2 font-mono text-xs">
-  {#each rows as e (e.pos)}
-    <li class="truncate">
-      <span class="text-muted">{hhmm(e.ts)}</span>
-      {e.kind}
-      <span class="text-muted">{e.session_id.slice(0, 6)} {e.task_id ?? ''}</span>
-      {JSON.stringify(e.data)}
-    </li>
+{#if error}<p class="text-row text-warn">{error}</p>{/if}
+<div class="flex flex-col">
+  {#each days as [day, events] (day)}
+    <section class="flex flex-col gap-3 pt-6 first:pt-0">
+      <h3 class="text-base font-semibold">{day}</h3>
+      <ol class="flex flex-col divide-y divide-line border-y border-line">
+        {#each events as e (e.pos)}
+          <li
+            class="grid h-9 grid-cols-[3.5rem_12rem_6rem_minmax(0,1fr)] items-center gap-3 text-meta"
+          >
+            <span class="text-muted tabular-nums">{hhmm(e.ts)}</span>
+            <span class="truncate">{e.kind.replaceAll('_', ' ')}</span>
+            <span class="truncate font-mono text-muted"
+              >{e.session_id.slice(0, 6)} {e.task_id ?? ''}</span
+            >
+            <span class="truncate font-mono text-muted" title={JSON.stringify(e.data)}
+              >{JSON.stringify(e.data)}</span
+            >
+          </li>
+        {/each}
+      </ol>
+    </section>
+  {:else}
+    {#if !error}<p class="text-row text-muted">No events match.</p>{/if}
   {/each}
-</ol>
+</div>
 {#if next !== null}
-  <button type="button" class="mt-2 text-xs text-muted hover:underline" onclick={() => load(next)}
-    >older</button
+  <button
+    type="button"
+    class="inline-flex h-9 items-center self-start rounded-lg border border-edge px-4 text-sm font-medium hover:bg-hover"
+    onclick={() => load(next)}>Older</button
   >
 {/if}

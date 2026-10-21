@@ -1,12 +1,18 @@
 <script lang="ts">
   // The desktop card (spec §10.5): the glance from show_progress's structured content —
   // at most 4 needs-you items with their buttons, project bars with text percentages,
-  // session lights with words. No polling (a card sits in the transcript): it says
+  // session lights with words; milestones behind "show milestones" (plan §2, desktop
+  // card). No polling (a card sits in the transcript): it says
   // "as of HH:MM" and has a Refresh button. Clicks go back as owner_action calls with the
   // nonce show_progress gave it.
   import { onMount, tick } from 'svelte'
+  import ActionButton from '$lib/glance/ActionButton.svelte'
   import ProgressBar from '$lib/glance/ProgressBar.svelte'
+  import Chip from '$lib/ui/Chip.svelte'
+  import { changed } from '$lib/changed'
   import { hhmm } from '$lib/format'
+  import { motion } from '$lib/motion.svelte'
+  import { hillWord, sessionWord } from '$lib/words'
   import type { ActionSpec, Glance, NeedsYou } from '$lib/types'
   import { applyTheme, type CardHost, type ToolResult } from './host'
 
@@ -22,6 +28,7 @@
   let inputs = $state<Record<string, string>>({})
   let refreshing = $state(false)
   let root = $state<HTMLElement | null>(null)
+  let openMilestones = $state<Record<string, boolean>>({})
 
   function take(r: ToolResult) {
     if (r.structuredContent && typeof r.structuredContent === 'object') {
@@ -75,69 +82,95 @@
 
   // Tell the host how big the card is after each render.
   $effect(() => {
-    void [glance, messages, pending]
+    void [glance, messages, pending, openMilestones]
     void tick().then(() => {
       if (root) host.sizeChanged(Math.ceil(root.scrollWidth), Math.ceil(root.scrollHeight))
     })
   })
 
   const sessions = $derived(glance?.projects.flatMap((p) => p.sessions) ?? [])
-  const shape: Record<string, string> = { green: '●', amber: '◆', red: '■' }
-  const colour: Record<string, string> = { green: 'text-ok', amber: 'text-warn', red: 'text-bad' }
 </script>
 
-<div bind:this={root} class="flex flex-col gap-2 bg-bg p-3 text-sm text-fg">
+<div bind:this={root} class="card-root flex flex-col gap-3 bg-bg p-4 text-sm text-fg">
   {#if !glance}
     <p class="text-muted">Loading progress…</p>
   {:else}
-    <header class="flex items-center gap-2">
+    <header class="flex h-8 items-center gap-2">
       <span class="text-clay" aria-hidden="true">✱</span>
-      <span class="font-medium">bridge-screen</span>
-      <span class="text-xs text-muted">as of {hhmm(glance.as_of)}</span>
+      <span class="font-semibold">bridge-screen</span>
+      <span class="text-xs text-muted tabular-nums">as of {hhmm(glance.as_of)}</span>
       <span class="ml-auto">
         {#if glance.needs_you_count > 0}
           <span
-            class="rounded-full border-2 border-bad px-2 text-xs font-medium text-bad"
+            class="inline-flex h-7 items-center rounded-full border-[1.5px] border-bad bg-tint-bad px-3 text-xs font-medium text-bad"
             data-testid="pill">■ {glance.needs_you_count} need you</span
           >
         {:else}
-          <span class="rounded-full border border-ok px-2 text-xs text-ok">● All clear</span>
+          <span
+            class="inline-flex h-7 items-center rounded-full border-[1.5px] border-ok px-3 text-xs font-medium text-ok"
+            >● All clear</span
+          >
         {/if}
       </span>
       <button
         type="button"
-        class="rounded border border-edge px-2 text-xs"
+        class="grid size-8 place-items-center rounded-lg border border-edge text-muted hover:bg-hover hover:text-fg"
+        aria-pressed={motion.on}
+        aria-label="Motion"
+        title={motion.on ? 'Motion on — click to pause animations' : 'Motion off — click to resume'}
+        onclick={() => motion.toggle()}
+      >
+        <svg viewBox="0 0 16 16" class="size-4" aria-hidden="true" fill="currentColor">
+          {#if motion.on}
+            <rect x="4" y="3" width="2.5" height="10" rx="0.5" />
+            <rect x="9.5" y="3" width="2.5" height="10" rx="0.5" />
+          {:else}
+            <path
+              d="M5 3.2v9.6a.5.5 0 0 0 .77.42l7.2-4.8a.5.5 0 0 0 0-.84l-7.2-4.8A.5.5 0 0 0 5 3.2z"
+            />
+          {/if}
+        </svg>
+      </button>
+      <button
+        type="button"
+        class="inline-flex h-8 items-center rounded-lg border border-edge px-3 text-sm font-medium hover:bg-hover disabled:opacity-50"
         disabled={refreshing}
         onclick={refresh}>{refreshing ? 'Refreshing…' : 'Refresh'}</button
       >
     </header>
     {#if glance.needs_you.length}
-      <ul class="flex flex-col gap-1 rounded-md border-2 border-bad p-2" aria-label="Needs you">
+      <ul class="flex flex-col gap-2" aria-label="Needs you">
         {#each glance.needs_you.slice(0, URGENT) as item (item.id)}
-          <li class="flex flex-col gap-1" data-item={item.id}>
-            <div>{item.title} <span class="text-xs text-muted">· {item.repo_name}</span></div>
-            <div class="text-xs text-muted">{item.detail}</div>
+          <li
+            class="flex flex-col gap-2 rounded-xl border border-l-[3px] border-line border-l-bad bg-surface p-4"
+            data-item={item.id}
+          >
+            <div class="flex flex-col gap-0.5">
+              <div class="flex items-center gap-2">
+                <span class="min-w-0 flex-1 truncate font-medium">{item.title}</span>
+                <span class="shrink-0 text-xs text-muted">{item.repo_name}</span>
+              </div>
+              <div class="line-clamp-2 text-xs text-muted">{item.detail}</div>
+            </div>
             {#if item.actions.length}
-              <div class="flex flex-wrap items-center gap-1">
+              <div class="flex flex-wrap items-center gap-2">
                 {#each item.actions as spec (spec.label)}
                   {#each spec.inputs as inp (inp.name)}
                     <input
-                      class="h-7 w-32 rounded border border-edge bg-surface px-1 text-xs"
+                      class="h-8 w-40 rounded-lg border border-edge bg-surface px-2 text-sm"
                       placeholder={inp.label}
                       aria-label={`${spec.label}: ${inp.label}`}
                       bind:value={inputs[`${item.id}:${inp.name}`]}
                     />
                   {/each}
-                  <button
-                    type="button"
-                    class={[
-                      'h-7 rounded border px-2 text-xs',
-                      spec.tone === 'danger' ? 'border-bad text-bad' : 'border-edge',
-                    ]}
+                  <ActionButton
+                    label={spec.label}
+                    tone={spec.tone}
+                    compact
                     disabled={!!pending[item.id] || missing(item, spec)}
+                    pending={pending[item.id] === spec.label}
                     onclick={() => click(item, spec)}
-                    >{pending[item.id] === spec.label ? `${spec.label}…` : spec.label}</button
-                  >
+                  />
                 {/each}
               </div>
             {:else if item.respond_in}
@@ -167,27 +200,89 @@
         </p>
       {/if}
     {/if}
-    <ul class="flex flex-col gap-1">
+    <ul class="flex flex-col rounded-xl border border-line bg-surface px-4" aria-label="Projects">
       {#each glance.projects as p (p.repo_id)}
-        <li>
-          <div class="flex justify-between text-xs">
-            <span class="font-medium">{p.name}</span>
-            <span
-              >{p.done_pct}% done{#if p.claimed_pct > 0}&nbsp;· +{p.claimed_pct}% claimed{/if}</span
+        <li class="border-b border-line py-1 last:border-b-0" data-project={p.repo_id}>
+          <div
+            class="grid min-h-10 grid-cols-[minmax(0,10rem)_minmax(0,1fr)_auto] items-center gap-3"
+          >
+            <span class="truncate font-medium">{p.name}</span>
+            <ProgressBar done={p.done_pct} claimed={p.claimed_pct} size="card" />
+            <span class="text-right tabular-nums"
+              >{p.done_pct}% done{#if p.claimed_pct > 0}<span class="text-xs text-muted"
+                  >&nbsp;· +{p.claimed_pct}% claimed</span
+                >{/if}</span
             >
           </div>
-          <ProgressBar done={p.done_pct} claimed={p.claimed_pct} />
+          {#if p.milestones.length}
+            <button
+              type="button"
+              class="mb-1 rounded-md px-1 text-xs text-muted hover:bg-hover hover:text-fg"
+              aria-expanded={!!openMilestones[p.repo_id]}
+              onclick={() => (openMilestones[p.repo_id] = !openMilestones[p.repo_id])}
+              >{openMilestones[p.repo_id] ? 'hide milestones' : 'show milestones'}</button
+            >
+            {#if openMilestones[p.repo_id]}
+              <ul class="grid grid-cols-[2rem_minmax(0,1fr)_5rem_2.5rem_auto] gap-x-2 pb-2">
+                {#each p.milestones as m (m.id)}
+                  {@const hill = hillWord(m.hill, m.done_pct)}
+                  <li
+                    class="col-span-5 grid min-h-8 grid-cols-subgrid items-center text-xs"
+                    data-milestone={m.id}
+                  >
+                    <span class="font-mono text-muted">{m.id}</span>
+                    <span class="truncate text-sm">{m.title}</span>
+                    <ProgressBar
+                      done={m.done_pct}
+                      claimed={m.claimed_pct}
+                      size="mini"
+                      labelled={false}
+                    />
+                    <span class={['text-right tabular-nums', m.hill === 'uphill' && 'text-muted']}
+                      >{m.done_pct}%</span
+                    >
+                    <span class="flex gap-1">
+                      {#if hill}<Chip
+                          tone={hill.tone}
+                          icon={hill.icon}
+                          text={hill.text}
+                          tip={hill.tip}
+                        />{/if}
+                      {#if m.stuck}<Chip tone="warn" icon="!" text="stuck" />{/if}
+                    </span>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          {/if}
         </li>
       {/each}
     </ul>
-    <ul class="flex flex-col">
-      {#each sessions as s (s.session_id)}
-        <li class="flex gap-2 text-xs">
-          <span class={['w-20', colour[s.light]]}>{shape[s.light]} {s.light_word}</span>
-          <span class="font-mono">S {s.short}</span>
-          <span class="truncate">{s.task ? `${s.task.id} ${s.task.title}` : ''}</span>
-        </li>
-      {/each}
-    </ul>
+    {#if sessions.length}
+      <ul class="flex flex-col rounded-xl border border-line bg-surface px-2" aria-label="Sessions">
+        {#each sessions as s (s.session_id)}
+          {@const w = sessionWord(s)}
+          <li
+            class={[
+              'flex min-h-10 items-center gap-2 rounded-lg border-l-2 px-2',
+              s.state_label === 'working' ? 'border-l-ok bg-tint-working' : 'border-l-transparent',
+            ]}
+            data-session={s.session_id}
+            use:changed={{ value: [s.state_label, s.light_word, s.task?.id, s.detour] }}
+          >
+            <Chip tone={w.tone} icon={w.icon} text={w.text} live={s.state_label === 'working'} />
+            <span class="font-mono text-xs">S {s.short}</span>
+            <span class="min-w-0 flex-1 truncate"
+              >{s.detour
+                ? `${s.detour.label} ${s.detour.reason}`
+                : s.task
+                  ? `${s.task.id} ${s.task.title}`
+                  : ''}</span
+            >
+            <span class="shrink-0 text-xs text-muted tabular-nums">{s.active_min} min</span>
+          </li>
+        {/each}
+      </ul>
+    {/if}
   {/if}
 </div>

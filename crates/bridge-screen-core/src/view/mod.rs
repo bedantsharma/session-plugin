@@ -545,6 +545,15 @@ fn facts(conn: &Connection, s: &Session) -> Result<Facts> {
     })
 }
 
+/// A drift-red item's title: "b1 · far off its task (40 min)", the time away when known.
+fn far_off_title(short: &str, away_secs: i64) -> String {
+    if away_secs >= 60 {
+        format!("{short} · far off its task ({} min)", away_secs / 60)
+    } else {
+        format!("{short} · far off its task")
+    }
+}
+
 /// The queue items a session raises: drift red, a question or a blocking wait.
 fn session_items(
     conn: &Connection,
@@ -587,7 +596,7 @@ fn session_items(
             .optional()?;
         let mut red = item(
             NeedsKind::DriftRed,
-            format!("S {} is far off its task", short(&s.session_id)),
+            far_off_title(&short(&s.session_id), s.away_secs),
             format!("{}{on_task}", f.nav),
             since.as_deref(),
         );

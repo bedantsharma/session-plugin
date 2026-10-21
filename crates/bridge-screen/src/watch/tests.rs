@@ -148,7 +148,7 @@ fn renders_the_glance_at_100x30() {
     assert!(lines[0].contains("■ 1 need you"), "{all}");
     assert!(all.contains("Needs you"), "{all}");
     assert!(
-        all.contains("■ drift     S red000 is far off its task"),
+        all.contains("■ drift     red000 · far off its task"),
         "{all}"
     );
     assert!(all.contains("shop"), "{all}");
