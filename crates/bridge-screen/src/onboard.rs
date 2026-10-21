@@ -49,6 +49,15 @@ pub fn import(dir: &Path, file: Option<&Path>, into: Option<&str>, dry_run: bool
         )?,
     };
     print!("{}", render(&outcomes, dry_run));
+    if file.is_none() {
+        // Files still waiting for a link, from earlier scans.
+        for s in import::sources(store.conn(), &repo.id)? {
+            let said = outcomes.iter().any(|o| o.path() == s.path);
+            if s.needs_link && !said {
+                println!("{}", import::needs_link_line(&s.path));
+            }
+        }
+    }
     Ok(())
 }
 

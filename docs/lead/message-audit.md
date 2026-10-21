@@ -52,6 +52,7 @@ which is the raw event log on purpose.
 | Session drill, waits (SP8) | — | "Waiting on" list: target — reason · waiting 40m / done @abc1234 / cleared by hand / now a plan link; buttons Clear and Make it a plan link |
 | Owner CLI `wait clear` / `wait promote` (SP8) | — | Cleared W2: ab12cd no longer waits on the design doc. / 1.1 now depends on api:2.4; the wait W1 is closed. |
 | `bridge-screen import` (SP8) | — | Imported sp7-x: added 6 tasks and steps; 2 ticked steps recorded as claimed (not checked) · Noted … as already planned by hand (not imported) · Skipped …: no "### Task N:" headings · No new or changed plan files. |
+| `bridge-screen import` and the session briefing (SP8 review) | — | sp7 changed but isn't linked to a milestone, so nothing was imported; run `bridge-screen import --into <milestone> <file>` to link it. (Briefing: once; CLI: until linked.) |
 | `bridge-screen init` (SP8) | — | the repo's evidence, then "Next steps (for the agent)", or "First: run `bridge-screen import`", or "… already has a plan; nothing to set up" |
 
 Reviewed and kept (already plain, or a glossary term): "far off its task (40 min)",

@@ -93,6 +93,12 @@ pub enum ImportOutcome {
         path: String,
         why: String,
     },
+    /// A file first seen as already planned by hand has changed, and no goal or milestone
+    /// has its title: nothing was created (it would duplicate the hand-made plan). It
+    /// waits for `bridge-screen import --into <milestone> <file>`.
+    NeedsLink {
+        path: String,
+    },
     /// Something went wrong importing this file; nothing of it was written.
     Failed {
         path: String,
@@ -107,6 +113,7 @@ impl ImportOutcome {
             | Self::Unchanged { path }
             | Self::Baseline { path }
             | Self::Skipped { path, .. }
+            | Self::NeedsLink { path }
             | Self::Failed { path, .. } => path,
         }
     }
@@ -161,12 +168,22 @@ impl ImportOutcome {
                 short_name(path)
             )),
             Self::Skipped { path, why } => Some(format!("Skipped {}: {why}", short_name(path))),
+            Self::NeedsLink { path } => Some(needs_link_line(path)),
             Self::Failed { path, error } => {
                 Some(format!("Could not import {}: {error}", short_name(path)))
             }
             Self::Unchanged { .. } => None,
         }
     }
+}
+
+/// What to tell the owner about a changed plan file that matches no milestone.
+pub fn needs_link_line(path: &str) -> String {
+    format!(
+        "{} changed but isn't linked to a milestone, so nothing was imported; run \
+         `bridge-screen import --into <milestone> {path}` to link it.",
+        short_name(path)
+    )
 }
 
 /// `docs/superpowers/plans/2026-10-21-sp8-x.md` → `2026-10-21-sp8-x`.
@@ -185,12 +202,16 @@ pub struct PlanSource {
     pub node_id: Option<String>,
     pub baseline: bool,
     pub imported_at: String,
+    /// Changed since it was baselined and matches no milestone (see
+    /// [`ImportOutcome::NeedsLink`]).
+    pub needs_link: bool,
 }
 
 /// Every plan file this repo has imported or seen, by path.
 pub fn sources(conn: &Connection, repo_id: &str) -> Result<Vec<PlanSource>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT path, hash, size, mtime, node_id, baseline, imported_at FROM plan_sources
+        "SELECT path, hash, size, mtime, node_id, baseline, imported_at, needs_link
+         FROM plan_sources
          WHERE repo_id = ?1 ORDER BY path",
     )?;
     let rows = stmt.query_map([repo_id], |r| {
@@ -202,6 +223,7 @@ pub fn sources(conn: &Connection, repo_id: &str) -> Result<Vec<PlanSource>> {
             node_id: r.get(4)?,
             baseline: r.get(5)?,
             imported_at: r.get(6)?,
+            needs_link: r.get(7)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -462,12 +484,17 @@ fn import_in(
     let bytes = std::fs::read(path)?;
     let hash = sha256_hex(&bytes);
     let prev = source(tx, repo_id, &rel)?;
+    // A file planned by hand and never linked stays a baseline file until it is linked.
+    let hand_planned = prev
+        .as_ref()
+        .is_some_and(|p| p.baseline && p.node_id.is_none());
     let seen = |baseline: bool, hash: &str| PlanFileSeen {
         path: rel.clone(),
         hash: hash.to_string(),
         size: f.size,
         mtime: f.mtime,
         baseline,
+        needs_link: false,
     };
     if into.is_none()
         && let Some(p) = &prev
@@ -483,7 +510,7 @@ fn import_in(
         }
     }
     let Ok(text) = String::from_utf8(bytes) else {
-        append_in(tx, seen_draft(repo_id, ctx, &seen(false, &hash))?)?;
+        append_in(tx, seen_draft(repo_id, ctx, &seen(hand_planned, &hash))?)?;
         return Ok(ImportOutcome::Skipped {
             path: rel,
             why: "not a text file".into(),
@@ -491,11 +518,27 @@ fn import_in(
     };
     let parsed = parse(&text);
     if parsed.tasks.is_empty() {
-        append_in(tx, seen_draft(repo_id, ctx, &seen(false, &hash))?)?;
+        append_in(tx, seen_draft(repo_id, ctx, &seen(hand_planned, &hash))?)?;
         return Ok(ImportOutcome::Skipped {
             path: rel,
             why: "no \"### Task N:\" headings".into(),
         });
+    }
+    if hand_planned
+        && into.is_none()
+        && container_titled(
+            tx,
+            repo_id,
+            &parsed.title.clone().unwrap_or_else(|| file_stem(&rel)),
+        )?
+        .is_none()
+    {
+        // Edited since the hand-made plan was baselined, and no milestone has its title:
+        // importing would add a duplicate milestone. Record it as needing a link.
+        let mut d = seen(true, &hash);
+        d.needs_link = true;
+        append_in(tx, seen_draft(repo_id, ctx, &d)?)?;
+        return Ok(ImportOutcome::NeedsLink { path: rel });
     }
     let linked = prev.as_ref().and_then(|p| p.node_id.clone());
     let file = ReadFile {
@@ -821,6 +864,7 @@ fn baseline(
             size: f.size,
             mtime: f.mtime,
             baseline: true,
+            needs_link: false,
         };
         append_in(tx, seen_draft(repo_id, ctx, &seen)?)?;
         out.push(ImportOutcome::Baseline { path: f.rel });

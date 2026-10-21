@@ -53,6 +53,10 @@ pub struct PlanFileSeen {
     pub mtime: i64,
     #[serde(default)]
     pub baseline: bool,
+    /// A baseline file that changed and matches no milestone: nothing was created; it
+    /// waits for `bridge-screen import --into <milestone> <file>`.
+    #[serde(default)]
+    pub needs_link: bool,
 }
 
 fn payload<T: serde::de::DeserializeOwned>(event: &Event) -> Result<T> {
@@ -88,7 +92,8 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)
                  ON CONFLICT(repo_id, path) DO UPDATE SET
                      hash = excluded.hash, size = excluded.size, mtime = excluded.mtime,
-                     node_id = excluded.node_id, baseline = 0, imported_at = excluded.imported_at",
+                     node_id = excluded.node_id, baseline = 0, needs_link = 0,
+                     imported_at = excluded.imported_at",
                 params![
                     repo,
                     d.path,
@@ -132,11 +137,11 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
             let d: PlanFileSeen = payload(event)?;
             tx.execute(
                 "INSERT INTO plan_sources (repo_id, path, hash, size, mtime, node_id, baseline,
-                                           imported_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7)
+                                           imported_at, needs_link)
+                 VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)
                  ON CONFLICT(repo_id, path) DO UPDATE SET
                      hash = excluded.hash, size = excluded.size, mtime = excluded.mtime,
-                     baseline = excluded.baseline",
+                     baseline = excluded.baseline, needs_link = excluded.needs_link",
                 params![
                     repo,
                     d.path,
@@ -144,7 +149,8 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
                     i64_of(d.size),
                     d.mtime,
                     d.baseline,
-                    event.ts
+                    event.ts,
+                    d.needs_link
                 ],
             )?;
         }

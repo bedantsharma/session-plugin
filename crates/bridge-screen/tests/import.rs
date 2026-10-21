@@ -162,3 +162,49 @@ fn cli_import_dry_run_then_for_real() {
     );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), PLAN);
 }
+
+#[test]
+fn changed_hand_planned_file_says_it_needs_a_link_once() {
+    let env = Env::new();
+    let ops = r#"[{"op":"add_node","kind":"goal","title":"Ship","intent":"it ships"},
+                  {"op":"add_node","parent":"G","kind":"milestone","title":"SP7 Telemetry and forecast","intent":"cost"}]"#;
+    assert!(env.run(&["plan", "edit"], ops).status.success());
+    let file = plans_dir(&env).join("2026-10-20-sp7.md");
+    let old = "# Sub-project 7: Telemetry and Forecast Implementation Plan\n\n### Task 1: Reader\n- [ ] a\n";
+    std::fs::write(&file, old).unwrap();
+    // First sight: a baseline, nothing imported, nothing said.
+    let first = context(&env.hook("session-start", "s1"));
+    assert!(!first.contains("isn't linked"), "{first}");
+    let before = titles(&env);
+    assert_eq!(before.len(), 2, "{before:?}");
+    // The old plan file is edited. Its title matches no milestone.
+    let edited = format!("{old}\n### Task 2: Forecast\n- [ ] b\n");
+    std::fs::write(&file, &edited).unwrap();
+    let text = context(&env.hook("session-start", "s2"));
+    let want = "2026-10-20-sp7 changed but isn't linked to a milestone, so nothing was imported; run `bridge-screen import --into <milestone> docs/superpowers/plans/2026-10-20-sp7.md` to link it.";
+    assert!(text.lines().any(|l| l == want), "{text}");
+    assert_eq!(titles(&env), before, "no duplicate milestone");
+    // Said once in a briefing; the CLI keeps saying it until it is linked.
+    let again = context(&env.hook("session-start", "s3"));
+    assert!(!again.contains("isn't linked"), "{again}");
+    let out = String::from_utf8(env.run(&["import"], "").stdout).unwrap();
+    assert!(out.contains(want), "{out}");
+    let out = env.run(
+        &[
+            "import",
+            "docs/superpowers/plans/2026-10-20-sp7.md",
+            "--into",
+            "1",
+        ],
+        "",
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(env.run(&["import"], "").stdout).unwrap();
+    assert!(!out.contains("isn't linked"), "{out}");
+    assert!(titles(&env).contains(&"1.2 Forecast".to_string()));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), edited);
+}

@@ -247,7 +247,8 @@ fn import_plans(store: &mut Store, input: &HookInput, repo_id: &str) -> Vec<Stri
                     );
                     None
                 }
-                import::ImportOutcome::Imported { .. } => o.summary(),
+                import::ImportOutcome::Imported { .. }
+                | import::ImportOutcome::NeedsLink { .. } => o.summary(),
                 _ => None,
             })
             .collect(),

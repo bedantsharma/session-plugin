@@ -443,6 +443,7 @@ CREATE TABLE plan_sources (
     node_id     TEXT,
     baseline    INTEGER NOT NULL DEFAULT 0,
     imported_at TEXT NOT NULL,
+    needs_link  INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (repo_id, path)
 );
 

@@ -544,6 +544,75 @@ fn existing_plan_gets_a_baseline() {
 }
 
 #[test]
+fn changed_baseline_file_without_a_match_needs_a_link() {
+    let mut r = Repo::new();
+    let ectx = EditContext {
+        repo_id: "r".into(),
+        session_id: "owner".into(),
+        actor: Actor::default(),
+        reason: None,
+        replan: false,
+    };
+    plan_edit(
+        &mut r.store,
+        &ectx,
+        &[
+            PlanOp::AddNode {
+                parent: None,
+                kind: NodeKind::Goal,
+                title: "Hand".into(),
+                intent: Some("why".into()),
+                estimate_min: None,
+                expected_files: vec![],
+            },
+            PlanOp::AddNode {
+                parent: Some("G".into()),
+                kind: NodeKind::Milestone,
+                title: "SP7 Telemetry and forecast".into(),
+                intent: Some("why".into()),
+                estimate_min: None,
+                expected_files: vec![],
+            },
+        ],
+    )
+    .unwrap();
+    let a = r.write(
+        "sp7.md",
+        &plan_text("Sub-project 7: Telemetry", &[("A", &[])]),
+    );
+    assert!(matches!(r.scan()[0], ImportOutcome::Baseline { .. }));
+    let kinds_before = r.kinds().len();
+    // The old plan file is edited: no milestone has its title, so nothing is created.
+    let edited = plan_text("Sub-project 7: Telemetry", &[("A", &[]), ("B", &[])]);
+    std::fs::write(&a, &edited).unwrap();
+    let out = r.scan();
+    assert!(
+        matches!(&out[0], ImportOutcome::NeedsLink { path } if path.ends_with("sp7.md")),
+        "{out:?}"
+    );
+    let line = out[0].summary().unwrap();
+    assert!(
+        line.contains("isn't linked to a milestone") && line.contains("--into <milestone>"),
+        "{line}"
+    );
+    assert_eq!(r.tree().len(), 2, "no duplicate milestone, no tasks");
+    assert!(!r.kinds().contains(&"plan_imported".to_string()));
+    assert_eq!(r.kinds().len(), kinds_before + 1, "one plan_file_seen");
+    // Said once: the same file isn't reported or read again.
+    assert_eq!(r.scan(), vec![]);
+    let src = super::sources(r.store.conn(), "r").unwrap();
+    assert!(src[0].needs_link && src[0].baseline);
+    r.store.rebuild().unwrap();
+    assert_eq!(super::sources(r.store.conn(), "r").unwrap(), src);
+    // Linking by hand imports it into the milestone and clears the flag.
+    let out = r.import(&a, Some("1"));
+    assert!(matches!(out, ImportOutcome::Imported { .. }), "{out:?}");
+    assert!(!super::sources(r.store.conn(), "r").unwrap()[0].needs_link);
+    assert_eq!(r.tree().len(), 4);
+    unchanged_on_disk(&a, edited.as_bytes());
+}
+
+#[test]
 fn into_links_a_file_to_a_milestone() {
     let mut r = Repo::new();
     let ectx = EditContext {
