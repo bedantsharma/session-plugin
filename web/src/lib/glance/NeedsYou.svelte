@@ -124,7 +124,12 @@
         >
           <div class="flex flex-col gap-1">
             <div class="flex items-center gap-3">
-              <Chip tone="bad" icon="■" text={kindWord[item.kind] ?? item.kind} upper />
+              <Chip
+                tone="bad"
+                icon="■"
+                text={kindWord[item.kind] ?? item.kind.replaceAll('_', ' ')}
+                upper
+              />
               <div class="min-w-0 flex-1 truncate text-row font-medium">
                 {#if item.session_id && onOpenSession}
                   <button

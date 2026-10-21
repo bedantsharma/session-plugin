@@ -6,7 +6,15 @@
   import Chip from '$lib/ui/Chip.svelte'
   import type { Client } from '$lib/api'
   import { hhmm } from '$lib/format'
-  import { filesWord, mins, unitWord, type ChipTone } from '$lib/words'
+  import {
+    answerWord,
+    filesWord,
+    leftoverWord,
+    mins,
+    readbackWord,
+    unitWord,
+    type ChipTone,
+  } from '$lib/words'
   import type { SessionDrill } from '$lib/types'
   import { useModel } from './useModel.svelte'
 
@@ -41,7 +49,11 @@
   <p class="text-row text-warn">{m.error}</p>
 {:else if m.data}
   {@const d = m.data}
-  {@const st = states[d.state] ?? { icon: '', text: d.state, tone: 'muted' as ChipTone }}
+  {@const st = states[d.state] ?? {
+    icon: '·',
+    text: d.state.replaceAll('_', ' '),
+    tone: 'muted' as ChipTone,
+  }}
   <header class="flex flex-col gap-2">
     <div class="flex flex-wrap items-center gap-3">
       <h2 class="font-mono text-xl font-semibold">S {d.short}</h2>
@@ -151,7 +163,7 @@
         {#each d.owner_answers as a (a.ts)}
           <li class="flex min-h-11 items-center gap-3 text-row">
             <span class="w-14 shrink-0 text-meta text-muted tabular-nums">{hhmm(a.ts)}</span>
-            <span class="text-clay">{a.answer}</span>
+            <span class="text-clay">{answerWord(a.answer)}</span>
             {#if a.reason}<span class="text-muted">“{a.reason}”</span>{/if}
           </li>
         {/each}
@@ -195,9 +207,7 @@
         {#each d.leftovers as l (l.leftover_id)}
           <li class="flex min-h-11 items-center gap-3 py-2 text-row">
             <span class="min-w-0 truncate font-mono text-meta">{l.path}</span>
-            <span class="ml-auto shrink-0 text-meta text-muted"
-              >{l.resolution ?? `${l.state} (suggested ${l.suggested})`}</span
-            >
+            <span class="ml-auto shrink-0 text-meta text-muted">{leftoverWord(l)}</span>
           </li>
         {/each}
       </ul>
@@ -218,7 +228,7 @@
     </section>
   {/if}
 
-  <p class="text-meta text-muted">Read-back: {d.readback}</p>
+  <p class="text-meta text-muted" data-testid="readback">Read-back: {readbackWord(d.readback)}</p>
 {:else}
   <p class="text-row text-muted">Loading…</p>
 {/if}

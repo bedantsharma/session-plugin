@@ -73,7 +73,7 @@
             class="grid h-9 grid-cols-[3.5rem_12rem_6rem_minmax(0,1fr)] items-center gap-3 text-meta"
           >
             <span class="text-muted tabular-nums">{hhmm(e.ts)}</span>
-            <span class="truncate font-mono">{e.kind}</span>
+            <span class="truncate">{e.kind.replaceAll('_', ' ')}</span>
             <span class="truncate font-mono text-muted"
               >{e.session_id.slice(0, 6)} {e.task_id ?? ''}</span
             >

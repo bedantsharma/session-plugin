@@ -4,6 +4,7 @@
   import type { Client } from '$lib/api'
   import { hhmm } from '$lib/format'
   import type { TaskDrill } from '$lib/types'
+  import { statusWord } from '$lib/words'
   import { useModel } from './useModel.svelte'
 
   let { client, repo, id, version }: { client: Client; repo: string; id: string; version: number } =
@@ -29,7 +30,7 @@
       class="grid max-w-2xl grid-cols-[10rem_minmax(0,1fr)] gap-x-6 gap-y-2 rounded-xl border border-line bg-surface p-5"
     >
       <dt class="text-meta text-muted">Status</dt>
-      <dd class="text-row">{t.status ?? '—'}</dd>
+      <dd class="text-row">{t.status ? statusWord(t.status).word : '—'}</dd>
       <dt class="text-meta text-muted">Time</dt>
       <dd class="text-row tabular-nums">{t.actual_min} of {t.estimate_min ?? '?'} min</dd>
       <dt class="text-meta text-muted">Retries</dt>

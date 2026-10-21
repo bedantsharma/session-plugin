@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { filesWord, hillWord, mins, sessionWord, unitWord } from '../src/lib/words'
+import {
+  answerWord,
+  filesWord,
+  hillWord,
+  leftoverWord,
+  mins,
+  readbackWord,
+  sessionWord,
+  statusWord,
+  unitWord,
+} from '../src/lib/words'
 
 describe('owner-facing words', () => {
   it('names the hill exploring/executing, never uphill/downhill, and hides it at 100%', () => {
@@ -44,5 +54,23 @@ describe('owner-facing words', () => {
     expect(filesWord(0)).toBe('no files')
     expect(filesWord(1)).toBe('1 file')
     expect(filesWord(4)).toBe('4 files')
+  })
+
+  it('puts read-back, leftover, answer and status codes into words', () => {
+    expect(['not_needed', 'pending', 'ok', 'mismatch'].map(readbackWord)).toEqual([
+      'not needed',
+      'pending',
+      'done',
+      'mismatch',
+    ])
+    expect(leftoverWord({ state: 'open', suggested: 'adopt', resolution: null })).toBe(
+      'open (suggested: adopt)',
+    )
+    expect(leftoverWord({ state: 'resolved', suggested: 'adopt', resolution: 'undo' })).toBe(
+      'undone',
+    )
+    expect(answerWord('make_task')).toBe('make it a task')
+    expect(statusWord('l2').word).toBe('L2 tests pass')
+    expect(statusWord('some_new').word).toBe('some new')
   })
 })

@@ -43,10 +43,20 @@ const drill: SessionDrill = {
   split: { on_task_s: 360, drift_s: 0, unlabeled_s: 30, detours: [] },
   suspended: [],
   checkpoints: [],
-  leftovers: [],
+  leftovers: [
+    {
+      leftover_id: 'L1',
+      path: 'src/a.ts',
+      task_id: null,
+      suggested: 'resume',
+      state: 'report_only',
+      resolution: null,
+    },
+  ],
   handoff_note: null,
-  readback: 'not needed',
-  owner_answers: [],
+  // The API's codes, as the server sends them.
+  readback: 'not_needed',
+  owner_answers: [{ ts: '2026-10-14T09:30:00Z', answer: 'make_task', reason: null }],
 }
 
 const client: Client = {
@@ -70,5 +80,13 @@ describe('Session drill', () => {
     // Labels never wrap.
     expect(u1.querySelector('[data-chip]')!.className).toContain('whitespace-nowrap')
     expect(screen.getByRole('img')).toHaveAccessibleName(/On task 6 min/)
+  })
+
+  it('never shows the snake_case codes the API sends', async () => {
+    const { container } = render(Session, { client, id: 's1aaaa', version: 1 })
+    expect(await screen.findByTestId('readback')).toHaveTextContent('Read-back: not needed')
+    expect(screen.getByText('make it a task')).toBeInTheDocument()
+    expect(screen.getByText('report only (suggested: resume)')).toBeInTheDocument()
+    expect(container.textContent).not.toMatch(/[a-z]_[a-z]/)
   })
 })

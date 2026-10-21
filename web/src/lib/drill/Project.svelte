@@ -11,7 +11,7 @@
   import type { Client } from '$lib/api'
   import { changed } from '$lib/changed'
   import { hhmm } from '$lib/format'
-  import { hillWord } from '$lib/words'
+  import { hillWord, statusWord } from '$lib/words'
   import type { ProjectDrill, ProjectRow, TreeNode } from '$lib/types'
   import { useModel } from './useModel.svelte'
 
@@ -80,18 +80,6 @@
     if (['l2', 'l3', 'l4'].includes(n.status)) return { done: 100, claimed: 0 }
     if (['claimed', 'l1'].includes(n.status)) return { done: 0, claimed: 100 }
     return { done: 0, claimed: 0 }
-  }
-
-  const statusLook: Record<string, { icon: string; word: string; cls: string }> = {
-    todo: { icon: '○', word: 'to do', cls: 'text-muted' },
-    active: { icon: '◔', word: 'active', cls: 'text-clay' },
-    claimed: { icon: '◑', word: 'claimed', cls: 'text-clay' },
-    l1: { icon: '◕', word: 'L1 code exists', cls: 'text-clay' },
-    l2: { icon: '✓', word: 'L2 tests pass', cls: 'text-ok' },
-    l3: { icon: '✓', word: 'L3 checked', cls: 'text-ok' },
-    l4: { icon: '✓', word: 'L4 owner-checked', cls: 'text-ok' },
-    failed: { icon: '✗', word: 'failed', cls: 'text-bad' },
-    dropped: { icon: '–', word: 'dropped', cls: 'text-muted' },
   }
 </script>
 
@@ -174,7 +162,7 @@
     <ul class="flex flex-col border-y border-line" aria-label="Plan tree">
       {#each m.data.tree as n (n.id)}
         {#if !hidden(n)}
-          {@const look = statusLook[n.status] ?? { icon: '·', word: n.status, cls: 'text-muted' }}
+          {@const look = statusWord(n.status)}
           {@const p = progress(n)}
           {@const hill = n.kind === 'milestone' ? hillWord(n.hill, p.done) : null}
           {@const parent = parents.has(n.id)}
