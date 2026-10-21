@@ -248,6 +248,141 @@ fn every_flagged_unit_is_asked_about() {
     assert!(u.flagged && u.label.is_none(), "{u:?}");
 }
 
+const EARLIER_REQUEST: &str = "bridge-screen: unit 1 was cut short by a new message and still needs a label — on-task, detour, drift, or requested (the owner asked for this in this session). Label it with label_unit (one call).";
+
+/// A unit cut short by a new message: a prompt and edits to `files`, with no Stop.
+fn interrupted(env: &Env, session: &str, files: &[&str]) {
+    env.hook("user-prompt-submit", session);
+    for f in files {
+        let path = format!("{}/{f}", env.repo_path());
+        hook_with(env, "post-tool-use", session, |p| {
+            p["tool_input"]["file_path"] = json!(path);
+        });
+    }
+}
+
+#[test]
+fn interrupted_unit_off_task_is_labelled_drift() {
+    let env = setup();
+    interrupted(
+        &env,
+        "s1",
+        &["docker/Dockerfile", ".github/workflows/ci.yml"],
+    );
+    // The next prompt closes the unit with no Stop: it is scored from its files alone.
+    assert_eq!(env.hook("user-prompt-submit", "s1"), "");
+    let u = &units(&env, "s1")[0];
+    assert!(u.flagged && u.drift_score.unwrap() > 0.7, "{u:?}");
+    assert_eq!(
+        (u.label, u.label_source),
+        (Some(Label::Drift), Some(LabelSource::Heuristic))
+    );
+    let flagged = events(&env)
+        .into_iter()
+        .find(|e| e.kind == "drift_flagged")
+        .unwrap();
+    assert_eq!(flagged.data["unit_no"], 1);
+    assert!(!kinds(&env).contains(&"note_sent".to_string()));
+    assert_eq!(env.log(), "");
+}
+
+#[test]
+fn interrupted_unit_on_task_stays_on_task() {
+    let env = setup();
+    interrupted(&env, "s1", &["src/login.rs"]);
+    env.hook("user-prompt-submit", "s1");
+    let u = &units(&env, "s1")[0];
+    assert!(u.drift_score.unwrap() < 0.3, "{u:?}");
+    assert_eq!(
+        (u.label, u.label_source),
+        (Some(Label::OnTask), Some(LabelSource::Heuristic))
+    );
+    // Nothing to ask about at the next Stop.
+    assert_eq!(stop(&env, "s1", ON_TASK, false), "");
+    assert!(!kinds(&env).contains(&"note_sent".to_string()));
+}
+
+#[test]
+fn interrupted_unit_in_the_middle_is_asked_at_the_next_stop() {
+    let env = setup();
+    interrupted(&env, "s1", &["src/login.rs", "tools/gen.py"]);
+    assert_eq!(env.hook("user-prompt-submit", "s1"), "");
+    let u = &units(&env, "s1")[0];
+    let score = u.drift_score.unwrap();
+    assert!((0.3..=0.7).contains(&score), "{score}");
+    assert_eq!(u.label, None, "waits for the next Stop");
+
+    // Unit 2 is on-task and labelled at once, so its Stop asks about unit 1.
+    let path = format!("{}/src/login.rs", env.repo_path());
+    hook_with(&env, "post-tool-use", "s1", |p| {
+        p["tool_input"]["file_path"] = json!(path);
+    });
+    assert_eq!(
+        context_of(&stop(&env, "s1", ON_TASK, false), "Stop"),
+        EARLIER_REQUEST
+    );
+    let us = units(&env, "s1");
+    assert_eq!(us[0].label, None);
+    assert_eq!(us[1].label, Some(Label::OnTask));
+    // The continuation turn's Stops say nothing more.
+    assert_eq!(stop(&env, "s1", ON_TASK, false), "");
+    assert_eq!(stop(&env, "s1", ON_TASK, true), "");
+    let notes = kinds(&env).iter().filter(|k| *k == "note_sent").count();
+    assert_eq!(notes, 1);
+
+    // The agent's answer goes to unit 1, the one still waiting.
+    {
+        let mut db = Store::open(&env.db_path()).unwrap();
+        let th = bridge_screen_core::tangent::Thresholds::from_config(
+            &bridge_screen_core::config::Config::default(),
+        );
+        let n = bridge_screen_core::tangent::label_unit(
+            &mut db,
+            &bridge_screen_core::tangent::LabelRequest {
+                session_id: "s1".into(),
+                unit_no: None,
+                label: Label::Requested,
+                source: LabelSource::Agent,
+                why: Some("the owner asked for it".into()),
+            },
+            &th,
+            &bridge_screen_core::store::Actor::default(),
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+    }
+    assert_eq!(units(&env, "s1")[0].label, Some(Label::Requested));
+}
+
+#[test]
+fn interrupted_unit_unasked_falls_back_to_the_heuristic() {
+    let env = setup();
+    interrupted(&env, "s1", &["src/login.rs", "tools/gen.py"]);
+    env.hook("user-prompt-submit", "s1");
+    // `stop_hook_active`: no continuation, so the heuristic labels unit 1 now.
+    let path = format!("{}/src/login.rs", env.repo_path());
+    hook_with(&env, "post-tool-use", "s1", |p| {
+        p["tool_input"]["file_path"] = json!(path);
+    });
+    assert_eq!(stop(&env, "s1", ON_TASK, true), "");
+    let u = &units(&env, "s1")[0];
+    assert_eq!(
+        (u.label, u.label_source),
+        (Some(Label::OnTask), Some(LabelSource::Heuristic))
+    );
+    assert!(!kinds(&env).contains(&"note_sent".to_string()));
+
+    // Two interruptions in a row: the older one is labelled by the heuristic at the next
+    // prompt, the newer one waits for its Stop.
+    let env = setup();
+    interrupted(&env, "s1", &["src/login.rs", "tools/gen.py"]);
+    interrupted(&env, "s1", &["src/login.rs", "scripts/x.sh"]);
+    env.hook("user-prompt-submit", "s1");
+    let us = units(&env, "s1");
+    assert_eq!(us[0].label, Some(Label::OnTask));
+    assert_eq!(us[1].label, None);
+}
+
 #[test]
 fn summary_text_is_not_stored() {
     let env = setup();

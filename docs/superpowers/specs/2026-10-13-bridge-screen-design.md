@@ -288,6 +288,8 @@ Every unit gets exactly one label: **on-task**, **detour** (not the task, but it
 
 No LLM is called from hooks. Judgement comes from the agent itself, through `label_unit`.
 
+*Units cut short* (2026-10-21): a new user message mid-turn sends no Stop, so the next prompt closes the open unit. That prompt scores the unit like a Stop does but **from its files alone** (there is no last message; missing text never counts as drift — with no task files to compare with, the area alone scores at most 0.4, a question rather than drift). Above the upper cut-off it is `drift_flagged` and labelled drift at once (the agent or owner can relabel); below the lower one, on-task; in between, the **next Stop** asks the agent about that unit ("unit N was cut short… label it") when the stopped unit itself needs no question — the same limits apply: never blocking, one note per unit, never when `stop_hook_active`. Unasked, the heuristic labels it on-task at the following prompt.
+
 ### 7.3 Tolerance band
 
 - **Away time** is consecutive unit time that is not on-task in the session.

@@ -109,7 +109,7 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
   owner-run, never a hook), `bridge-screen forecast [-C DIR]`; prices under `[prices."<model>"]`
   in `config.toml` (`bridge-screen config` shows them and which are defaults)
 - Plugin check: `claude plugin validate ./plugin` (read-only)
-- Hook latency (release, on demand; PostToolUse, the Stop scoring path, Stop and SubagentStop with a 512 KiB transcript backlog (Stop also finishing 512 KiB of a subagent's), UserPromptSubmit with verification and dependency notes, UserPromptSubmit with 20 open waits and 5 links into another repo, and — budget 150 ms — PostToolUse after `git commit` with a checkpoint pending, SessionStart's staleness scan over 50 verifications, and SessionStart with 20 unchanged plan files or one changed 300 KiB plan file): `cargo test --release -p bridge-screen --test hooks -- --ignored hook_latency --nocapture`
+- Hook latency (release, on demand; PostToolUse, the Stop scoring path, a prompt scoring a unit cut short, Stop and SubagentStop with a 512 KiB transcript backlog (Stop also finishing 512 KiB of a subagent's), UserPromptSubmit with verification and dependency notes, UserPromptSubmit with 20 open waits and 5 links into another repo, and — budget 150 ms — PostToolUse after `git commit` with a checkpoint pending, SessionStart's staleness scan over 50 verifications, and SessionStart with 20 unchanged plan files or one changed 300 KiB plan file): `cargo test --release -p bridge-screen --test hooks -- --ignored hook_latency --nocapture`
 - Releases: see `docs/RELEASING.md` (`dist plan` to preview); keep `plugin/.claude-plugin/plugin.json`'s `version` equal to the workspace version (a test checks it)
 
 ## Rules

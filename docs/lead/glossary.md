@@ -4,7 +4,7 @@
 - **Session:** one Claude Code conversation working in one folder of a repo.
 - **Sub-project (SP1–SP9):** the nine build stages in the design spec; each is a milestone in the plan.
 - **Goal / milestone / task / subtask:** the plan tree, top to bottom. Progress is counted on the smallest pieces.
-- **Unit (of work):** one round of an agent's work, from your prompt to the agent stopping.
+- **Unit (of work):** one round of an agent's work, from your prompt to the agent stopping. A unit **cut short** is one ended by your next message before the agent stopped; it is checked for drift from the files it touched.
 - **Active time:** time an agent actually worked, minus time waiting on you or on permission prompts.
 - **On task / detour / drift:** what a unit was. On task advances the task; a detour isn't the task but blocks it; drift does neither.
 - **Asked for (code: `requested`):** a unit or detour that isn't the task but that you asked for in the session ("also add a licence"). Never counted as drift or time away; the agent declares it, and you can relabel any unit.
