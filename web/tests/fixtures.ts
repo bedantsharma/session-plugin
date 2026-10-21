@@ -8,7 +8,7 @@ export function item(over: Partial<NeedsYou> = {}): NeedsYou {
     repo_name: 'shop',
     session_id: 's1aaaa',
     task: { id: '1.1', title: 'Login form' },
-    title: 'S s1aaaa is far off its task',
+    title: 's1aaaa · far off its task (40 min)',
     detail: 'detour 40m · D1 "CI cache" · on 1.1 Login form',
     actions: [
       {

@@ -54,7 +54,7 @@ describe('desktop card', () => {
     const host = new FakeHost()
     render(Card, { host })
     host.push(result())
-    expect(await screen.findByText('S s1aaaa is far off its task')).toBeInTheDocument()
+    expect(await screen.findByText('s1aaaa · far off its task (40 min)')).toBeInTheDocument()
     expect(screen.getByTestId('pill')).toHaveTextContent('1 need you')
     expect(screen.getByText(/as of/)).toBeInTheDocument()
     await waitFor(() => expect(host.sizes.length).toBeGreaterThan(0))

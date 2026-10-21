@@ -9,7 +9,7 @@ test('a needs-you item leaves the queue after Continue', async ({ page }) => {
   try {
     await page.goto(s.url)
     const queue = page.getByRole('region', { name: 'Needs you' })
-    await expect(queue.getByText('S red000 is far off its task')).toBeVisible()
+    await expect(queue.getByText('red000 · far off its task (40 min)')).toBeVisible()
     await expect(page.getByTestId('pill')).toHaveText(/1 need you/)
     await expect(page).toHaveTitle('(1) bridge-screen')
     // The token left the address bar.

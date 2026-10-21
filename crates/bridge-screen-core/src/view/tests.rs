@@ -642,3 +642,9 @@ fn a_question_is_a_needs_you_rest() {
     ev(&mut s, "ask00001", 400, "prompt", json!({}));
     assert_eq!(glance_at(&s, 401).needs_you, vec![]);
 }
+
+#[test]
+fn far_off_title_names_the_session_and_the_time_away() {
+    assert_eq!(far_off_title("b1", 2400), "b1 · far off its task (40 min)");
+    assert_eq!(far_off_title("b1", 30), "b1 · far off its task");
+}
