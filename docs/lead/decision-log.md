@@ -138,3 +138,8 @@ Choices someone will later ask "why?" about. Newest last. Entries are never dele
 **Decision:** The repo is named by its folder name (or its id). A name two registered repos share is refused, listing both folders, so you pick by id.
 **Consequences:** Short to write; two checkouts with the same folder name need the id.
 
+## #28 A plan file is read up to 1000 tasks and steps (100 steps in one task) — Accepted, provisional, owner to confirm — 2026-10-22
+**Context:** Reviewing the import, a 1 MB file of nothing but checkboxes made `bridge-screen import` run for more than two minutes, and the same would have frozen the start of a Claude session.
+**Decision:** bridge-screen imports at most 1000 tasks and steps from one plan file, and at most 100 steps in one task; the rest is left out. Real plans have a few dozen. Also: plan files beyond the 20 read at one session start are picked up by the next one (they used to be skipped for good).
+**Consequences:** A very long plan file is imported in part, silently at session start. Say if you want it to flag this in the briefing.
+
