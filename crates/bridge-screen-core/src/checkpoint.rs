@@ -76,6 +76,70 @@ fn evidence_list(items: &[String], norm: impl Fn(&str) -> String) -> Vec<String>
     out
 }
 
+/// Who records a `claimed_done`.
+#[derive(Debug, Clone, Copy)]
+pub struct ClaimSource<'a> {
+    pub repo_id: &'a str,
+    /// A live session, or [`crate::store::OWNER_SESSION`] for the owner's CLI.
+    pub session_id: &'a str,
+    pub actor: &'a Actor,
+    /// Recorded from a plan file or at setup, not just finished in this session: no
+    /// decision capture follows.
+    pub inferred: bool,
+}
+
+/// What shows a task is done.
+#[derive(Debug, Clone, Copy)]
+pub struct ClaimEvidence<'a> {
+    pub evidence: &'a str,
+    pub files: &'a [String],
+    pub symbols: &'a [String],
+}
+
+/// The `claimed_done` event for `task`, validated (a live task or subtask, evidence given)
+/// with its evidence trimmed. Shared by `claim_done`, imports and `init_plan`; only
+/// `claim_done` adds the checkpoint request and the decision ask.
+pub fn claimed_done_draft(
+    conn: &Connection,
+    by: &ClaimSource,
+    task: &str,
+    ev: &ClaimEvidence,
+) -> Result<EventDraft> {
+    let node = get_node(conn, by.repo_id, task)?
+        .ok_or_else(|| err(format!("no task {task} in this plan")))?;
+    if node.status == NodeStatus::Dropped {
+        return Err(err(format!("{task} was dropped")));
+    }
+    if matches!(node.kind, NodeKind::Goal | NodeKind::Milestone) {
+        return Err(err(format!(
+            "{task} is a {}; claim a task or subtask done",
+            node.kind.as_str()
+        )));
+    }
+    let evidence = ev.evidence.trim();
+    if evidence.is_empty() {
+        return Err(err("evidence is required: what shows the task is done"));
+    }
+    let worktree = session::get(conn, by.session_id)?.and_then(|s| s.worktree);
+    let data = ClaimedDone {
+        task_id: task.to_string(),
+        evidence: evidence.chars().take(500).collect(),
+        files: evidence_list(ev.files, |f| {
+            crate::verify::l1::normalize(f, worktree.as_deref().map(Path::new))
+        }),
+        symbols: evidence_list(ev.symbols, |s| s.trim().to_string()),
+        inferred: by.inferred,
+    };
+    Ok(EventDraft::new(
+        by.repo_id,
+        by.session_id,
+        "claimed_done",
+        serde_json::to_value(data)?,
+    )
+    .actor(by.actor.clone())
+    .task(task))
+}
+
 /// The agent says a task is done (L0, spec §8.5): `claimed_done` plus `checkpoint_due`,
 /// in one transaction. Returns the task id.
 pub fn claim_done(store: &mut Store, req: &ClaimDoneRequest) -> Result<String> {
@@ -93,40 +157,22 @@ fn claim_done_in(tx: &Transaction, req: &ClaimDoneRequest) -> Result<String> {
         .clone()
         .or_else(|| session.active_task.clone())
         .ok_or_else(|| err("no active task; give the id of the task you finished"))?;
-    let node = get_node(tx, &session.repo_id, &task)?
-        .ok_or_else(|| err(format!("no task {task} in this plan")))?;
-    if node.status == NodeStatus::Dropped {
-        return Err(err(format!("{task} was dropped")));
-    }
-    if matches!(node.kind, NodeKind::Goal | NodeKind::Milestone) {
-        return Err(err(format!(
-            "{task} is a {}; claim a task or subtask done",
-            node.kind.as_str()
-        )));
-    }
-    let evidence = req.evidence.trim();
-    if evidence.is_empty() {
-        return Err(err("evidence is required: what shows the task is done"));
-    }
-    let data = ClaimedDone {
-        task_id: task.clone(),
-        evidence: evidence.chars().take(500).collect(),
-        files: evidence_list(&req.files, |f| {
-            crate::verify::l1::normalize(f, session.worktree.as_deref().map(Path::new))
-        }),
-        symbols: evidence_list(&req.symbols, |s| s.trim().to_string()),
-    };
-    append_in(
+    let draft = claimed_done_draft(
         tx,
-        EventDraft::new(
-            &session.repo_id,
-            &session.session_id,
-            "claimed_done",
-            serde_json::to_value(data)?,
-        )
-        .actor(req.actor.clone())
-        .task(&task),
+        &ClaimSource {
+            repo_id: &session.repo_id,
+            session_id: &session.session_id,
+            actor: &req.actor,
+            inferred: false,
+        },
+        &task,
+        &ClaimEvidence {
+            evidence: &req.evidence,
+            files: &req.files,
+            symbols: &req.symbols,
+        },
     )?;
+    append_in(tx, draft)?;
     append_in(
         tx,
         due_draft(&session, CheckpointReason::ClaimedDone, &req.actor)?,

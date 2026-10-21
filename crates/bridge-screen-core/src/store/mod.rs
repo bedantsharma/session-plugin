@@ -58,6 +58,17 @@ impl Store {
         Ok(out)
     }
 
+    /// Run `f` inside one `BEGIN IMMEDIATE` transaction and roll it back: a dry run sees
+    /// what `f` would write, and nothing is kept.
+    pub fn dry_run<T>(&mut self, f: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let out = f(&tx)?;
+        tx.rollback()?;
+        Ok(out)
+    }
+
     /// Append one event (and update its views) in its own transaction.
     pub fn append(&mut self, draft: EventDraft) -> Result<Event> {
         self.write(|tx| append_in(tx, draft))

@@ -1,3 +1,5 @@
+#![allow(clippy::many_single_char_names)] // short names for repos and files in tests
+
 use std::fmt::Write as _;
 
 use super::parse::{MAX_TEXT_CHARS, parse};
@@ -146,4 +148,545 @@ fn odd_plan_files_are_skipped() {
     // Lossy text from a binary file never panics.
     let binary = String::from_utf8_lossy(&[0xff, 0xfe, 0, 1, 2, b'#', b' ', 0xc3]).to_string();
     assert_eq!(parse(&binary).tasks.len(), 0);
+}
+
+// ---- import and diff -------------------------------------------------------------------
+
+use std::path::{Path, PathBuf};
+
+use super::{ImportCtx, ImportOutcome, ScanBudget, import_path, scan};
+use crate::plan::{
+    EditContext, NodeKind, NodeSource, NodeStatus, PlanOp, get_node, load_tree, plan_edit,
+};
+use crate::store::{Actor, EventDraft, Store, read_all};
+
+struct Repo {
+    _dir: tempfile::TempDir,
+    root: PathBuf,
+    store: Store,
+}
+
+impl Repo {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::fs::create_dir_all(root.join(super::PLANS_DIR)).unwrap();
+        Self {
+            _dir: dir,
+            root,
+            store: Store::open_in_memory().unwrap(),
+        }
+    }
+
+    fn write(&self, name: &str, text: &str) -> PathBuf {
+        let p = self.root.join(super::PLANS_DIR).join(name);
+        std::fs::write(&p, text).unwrap();
+        p
+    }
+
+    fn scan(&mut self) -> Vec<ImportOutcome> {
+        scan(
+            &mut self.store,
+            "r",
+            &self.root,
+            &ctx(),
+            ScanBudget::SESSION_START,
+        )
+        .unwrap()
+    }
+
+    fn import(&mut self, path: &Path, into: Option<&str>) -> ImportOutcome {
+        import_path(&mut self.store, "r", &self.root, path, &ctx(), into).unwrap()
+    }
+
+    fn kinds(&self) -> Vec<String> {
+        read_all(self.store.conn(), Some("r"))
+            .unwrap()
+            .into_iter()
+            .map(|e| e.kind)
+            .collect()
+    }
+
+    fn tree(&self) -> Vec<(String, String, NodeStatus)> {
+        load_tree(self.store.conn(), "r", false)
+            .unwrap()
+            .into_iter()
+            .map(|n| (n.id, n.title, n.status))
+            .collect()
+    }
+}
+
+fn ctx() -> ImportCtx {
+    ImportCtx {
+        session_id: "owner".into(),
+        actor: Actor::default(),
+        dry_run: false,
+    }
+}
+
+fn plan_text(title: &str, tasks: &[(&str, &[(&str, bool)])]) -> String {
+    let mut out = format!("# {title} Implementation Plan\n\n**Goal:** {title} works.\n\n");
+    for (i, (t, steps)) in tasks.iter().enumerate() {
+        let _ = write!(out, "### Task {}: {t}\n\n", i + 1);
+        for (s, checked) in *steps {
+            let _ = writeln!(out, "- [{}] {s}", if *checked { "x" } else { " " });
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// The file's bytes must not change: imports only read.
+fn unchanged_on_disk(path: &Path, before: &[u8]) {
+    assert_eq!(std::fs::read(path).unwrap(), before);
+}
+
+#[test]
+fn first_import_creates_goal_then_milestones() {
+    let mut r = Repo::new();
+    let a_text = plan_text(
+        "Login",
+        &[
+            ("Endpoint", &[("test", false), ("code", false)]),
+            ("Form", &[]),
+        ],
+    );
+    let a = r.write("a.md", &a_text);
+    let out = r.scan();
+    assert!(
+        matches!(out[0], ImportOutcome::Imported { added: 4, .. }),
+        "{out:?}"
+    );
+    let g = get_node(r.store.conn(), "r", "G").unwrap().unwrap();
+    assert_eq!(
+        (g.title.as_str(), g.intent.as_deref()),
+        ("Login", Some("Login works."))
+    );
+    let t = get_node(r.store.conn(), "r", "1").unwrap().unwrap();
+    assert_eq!((t.kind, t.title.as_str()), (NodeKind::Task, "Endpoint"));
+    assert_eq!(
+        t.source,
+        NodeSource::File {
+            file: "docs/superpowers/plans/a.md".into(),
+            task: 1,
+            step: None
+        }
+    );
+    let b_text = plan_text("Signup", &[("Page", &[])]);
+    let b = r.write("b.md", &b_text);
+    r.scan();
+    let m = get_node(r.store.conn(), "r", "3").unwrap().unwrap();
+    assert_eq!((m.kind, m.title.as_str()), (NodeKind::Milestone, "Signup"));
+    assert_eq!(
+        get_node(r.store.conn(), "r", "3.1").unwrap().unwrap().title,
+        "Page"
+    );
+    unchanged_on_disk(&a, a_text.as_bytes());
+    unchanged_on_disk(&b, b_text.as_bytes());
+}
+
+#[test]
+fn reimport_is_a_no_op() {
+    let mut r = Repo::new();
+    let text = plan_text("Login", &[("Endpoint", &[("test", true)])]);
+    let a = r.write("a.md", &text);
+    r.scan();
+    let before = r.kinds().len();
+    // Same file again, by hand and by scan: nothing.
+    assert!(matches!(
+        r.import(&a, None),
+        ImportOutcome::Unchanged { .. }
+    ));
+    assert_eq!(r.scan(), vec![]);
+    // Same content with a new mtime: read again, but still nothing written.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(&a, &text).unwrap();
+    let out = r.scan();
+    assert!(matches!(out[0], ImportOutcome::Unchanged { .. }), "{out:?}");
+    assert_eq!(r.kinds().len(), before);
+    unchanged_on_disk(&a, text.as_bytes());
+}
+
+#[test]
+fn edits_become_plan_events() {
+    let mut r = Repo::new();
+    let a = r.write(
+        "a.md",
+        &plan_text("Login", &[("Endpoint", &[("test", false)]), ("Form", &[])]),
+    );
+    r.scan();
+    let before = r.kinds().len();
+    let text = plan_text(
+        "Login",
+        &[
+            ("Endpoint API", &[("test", true), ("docs", false)]),
+            ("Form", &[]),
+            ("Logout", &[]),
+        ],
+    );
+    std::fs::write(&a, &text).unwrap();
+    let out = r.scan();
+    assert!(
+        matches!(
+            out[0],
+            ImportOutcome::Imported {
+                claimed: 1,
+                replan: true,
+                ..
+            }
+        ),
+        "{out:?}"
+    );
+    let new: Vec<String> = r.kinds().split_off(before);
+    assert!(new.contains(&"node_edited".to_string()), "{new:?}");
+    assert_eq!(
+        new.iter().filter(|k| *k == "node_added").count(),
+        2,
+        "{new:?}"
+    );
+    assert!(new.contains(&"claimed_done".to_string()));
+    assert!(!new.contains(&"verified".to_string()));
+    assert!(!new.contains(&"checkpoint_due".to_string()));
+    assert!(!new.contains(&"decision_asked".to_string()));
+    assert_eq!(
+        get_node(r.store.conn(), "r", "1").unwrap().unwrap().title,
+        "Endpoint API"
+    );
+    assert_eq!(
+        get_node(r.store.conn(), "r", "1.1")
+            .unwrap()
+            .unwrap()
+            .status,
+        NodeStatus::Claimed
+    );
+    assert_eq!(
+        get_node(r.store.conn(), "r", "1.2").unwrap().unwrap().title,
+        "docs"
+    );
+    assert_eq!(
+        get_node(r.store.conn(), "r", "3").unwrap().unwrap().title,
+        "Logout"
+    );
+    unchanged_on_disk(&a, text.as_bytes());
+}
+
+#[test]
+fn big_change_is_a_replan() {
+    let mut r = Repo::new();
+    let names: Vec<String> = (1..=10).map(|i| format!("Task {i}")).collect();
+    let tasks: Vec<(&str, &[(&str, bool)])> = names.iter().map(|n| (n.as_str(), &[][..])).collect();
+    let a = r.write("a.md", &plan_text("Big", &tasks));
+    r.scan();
+    let before = r.kinds().len();
+    let mut changed = names.clone();
+    for n in changed.iter_mut().take(4) {
+        n.push_str(" renamed");
+    }
+    let tasks: Vec<(&str, &[(&str, bool)])> =
+        changed.iter().map(|n| (n.as_str(), &[][..])).collect();
+    std::fs::write(&a, plan_text("Big", &tasks)).unwrap();
+    r.scan();
+    let new = r.kinds().split_off(before);
+    assert_eq!(new.iter().filter(|k| *k == "replan").count(), 1, "{new:?}");
+    assert_eq!(new[0], "replan");
+    // Three of ten is under the line: no replan.
+    let mut r2 = Repo::new();
+    let tasks: Vec<(&str, &[(&str, bool)])> = names.iter().map(|n| (n.as_str(), &[][..])).collect();
+    let b = r2.write("b.md", &plan_text("Big", &tasks));
+    r2.scan();
+    let mut changed = names.clone();
+    for n in changed.iter_mut().take(3) {
+        n.push_str(" renamed");
+    }
+    let tasks: Vec<(&str, &[(&str, bool)])> =
+        changed.iter().map(|n| (n.as_str(), &[][..])).collect();
+    std::fs::write(&b, plan_text("Big", &tasks)).unwrap();
+    r2.scan();
+    assert!(!r2.kinds().contains(&"replan".to_string()));
+}
+
+#[test]
+fn import_keeps_tasks_in_progress() {
+    let mut r = Repo::new();
+    let a = r.write(
+        "a.md",
+        &plan_text("P", &[("Busy", &[]), ("Idle", &[]), ("Done", &[])]),
+    );
+    r.scan();
+    r.store
+        .append(EventDraft::new(
+            "r",
+            "s1",
+            "session_started",
+            serde_json::json!({"cwd": "/x", "source": "startup"}),
+        ))
+        .unwrap();
+    r.store
+        .append(
+            EventDraft::new(
+                "r",
+                "s1",
+                "task_claimed",
+                serde_json::json!({"task_id": "1", "mode": "confirmed", "confidence": 1.0}),
+            )
+            .task("1"),
+        )
+        .unwrap();
+    r.store
+        .append(
+            EventDraft::new(
+                "r",
+                "s1",
+                "claimed_done",
+                serde_json::json!({"task_id": "3", "evidence": "x"}),
+            )
+            .task("3"),
+        )
+        .unwrap();
+    // Tasks 1–3 are gone from the file; task 4 is new.
+    std::fs::write(&a, "# P\n\n### Task 4: Other\n").unwrap();
+    let out = r.scan();
+    assert!(
+        matches!(
+            out[0],
+            ImportOutcome::Imported {
+                removed: 1,
+                kept: 2,
+                ..
+            }
+        ),
+        "{out:?}"
+    );
+    let tree = r.tree();
+    let ids: Vec<&str> = tree.iter().map(|(id, _, _)| id.as_str()).collect();
+    assert_eq!(ids, vec!["G", "1", "3", "4"]);
+    assert_eq!(
+        get_node(r.store.conn(), "r", "1").unwrap().unwrap().title,
+        "Busy"
+    );
+    // The keep is recorded with a reason, and the file no longer lists those tasks.
+    let edits: Vec<serde_json::Value> = read_all(r.store.conn(), Some("r"))
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "node_edited")
+        .map(|e| e.data)
+        .collect();
+    assert_eq!(edits.len(), 2);
+    assert!(
+        edits[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("no longer in")
+    );
+    assert_eq!(edits[0]["title"], serde_json::Value::Null);
+    let items = super::source_items(r.store.conn(), "r", "docs/superpowers/plans/a.md").unwrap();
+    assert_eq!(items.len(), 1);
+}
+
+#[test]
+fn existing_plan_gets_a_baseline() {
+    let mut r = Repo::new();
+    let ectx = EditContext {
+        repo_id: "r".into(),
+        session_id: "owner".into(),
+        actor: Actor::default(),
+        reason: None,
+        replan: false,
+    };
+    plan_edit(
+        &mut r.store,
+        &ectx,
+        &[
+            PlanOp::AddNode {
+                parent: None,
+                kind: NodeKind::Goal,
+                title: "Hand".into(),
+                intent: Some("why".into()),
+                estimate_min: None,
+                expected_files: vec![],
+            },
+            PlanOp::AddNode {
+                parent: Some("G".into()),
+                kind: NodeKind::Milestone,
+                title: "SP1".into(),
+                intent: Some("why".into()),
+                estimate_min: None,
+                expected_files: vec![],
+            },
+        ],
+    )
+    .unwrap();
+    let old = plan_text("Old", &[("A", &[]), ("B", &[])]);
+    let a = r.write("a.md", &old);
+    let out = r.scan();
+    assert!(matches!(out[0], ImportOutcome::Baseline { .. }), "{out:?}");
+    assert_eq!(r.tree().len(), 2, "no nodes from a baseline");
+    assert_eq!(r.scan(), vec![]);
+    // A file added afterwards is imported.
+    r.write("b.md", &plan_text("New", &[("C", &[])]));
+    let out = r.scan();
+    assert!(matches!(out[0], ImportOutcome::Imported { .. }), "{out:?}");
+    assert_eq!(
+        get_node(r.store.conn(), "r", "2").unwrap().unwrap().title,
+        "New"
+    );
+    // A baseline file whose title is an existing milestone's joins it when it changes.
+    std::fs::write(&a, plan_text("SP1", &[("A", &[]), ("B", &[])])).unwrap();
+    let out = r.scan();
+    assert!(
+        matches!(&out[0], ImportOutcome::Imported { node_id, .. } if node_id == "1"),
+        "{out:?}"
+    );
+    unchanged_on_disk(
+        &r.root.join(super::PLANS_DIR).join("b.md"),
+        plan_text("New", &[("C", &[])]).as_bytes(),
+    );
+}
+
+#[test]
+fn into_links_a_file_to_a_milestone() {
+    let mut r = Repo::new();
+    let ectx = EditContext {
+        repo_id: "r".into(),
+        session_id: "owner".into(),
+        actor: Actor::default(),
+        reason: None,
+        replan: false,
+    };
+    plan_edit(
+        &mut r.store,
+        &ectx,
+        &[
+            PlanOp::AddNode {
+                parent: None,
+                kind: NodeKind::Goal,
+                title: "Hand".into(),
+                intent: Some("why".into()),
+                estimate_min: None,
+                expected_files: vec![],
+            },
+            PlanOp::AddNode {
+                parent: Some("G".into()),
+                kind: NodeKind::Milestone,
+                title: "SP7".into(),
+                intent: Some("why".into()),
+                estimate_min: None,
+                expected_files: vec![],
+            },
+            PlanOp::AddNode {
+                parent: Some("1".into()),
+                kind: NodeKind::Task,
+                title: "words".into(),
+                intent: None,
+                estimate_min: None,
+                expected_files: vec![],
+            },
+        ],
+    )
+    .unwrap();
+    let a = r.write(
+        "sp7.md",
+        &plan_text("Polish", &[("Words", &[]), ("Screens", &[])]),
+    );
+    let out = r.import(&a, Some("1"));
+    assert!(
+        matches!(out, ImportOutcome::Imported { added: 1, .. }),
+        "{out:?}"
+    );
+    let t = get_node(r.store.conn(), "r", "1.1").unwrap().unwrap();
+    assert_eq!(t.title, "words", "matched by title, not renamed");
+    assert!(matches!(t.source, NodeSource::File { task: 1, .. }));
+    assert_eq!(
+        get_node(r.store.conn(), "r", "1.2").unwrap().unwrap().title,
+        "Screens"
+    );
+    // The milestone's own intent is left alone on a hand link.
+    assert_eq!(
+        get_node(r.store.conn(), "r", "1")
+            .unwrap()
+            .unwrap()
+            .intent
+            .as_deref(),
+        Some("why")
+    );
+    // And a later scan sees it as linked and unchanged.
+    assert_eq!(r.scan(), vec![]);
+}
+
+#[test]
+fn dry_run_writes_nothing() {
+    let mut r = Repo::new();
+    let a = r.write("a.md", &plan_text("Login", &[("Endpoint", &[])]));
+    let mut c = ctx();
+    c.dry_run = true;
+    let out = import_path(&mut r.store, "r", &r.root, &a, &c, None).unwrap();
+    assert!(
+        matches!(&out, ImportOutcome::Imported { changes, .. } if changes.len() == 2),
+        "{out:?}"
+    );
+    assert_eq!(r.kinds(), Vec::<String>::new());
+}
+
+#[test]
+fn odd_files_in_the_folder_import_nothing() {
+    let mut r = Repo::new();
+    r.write("empty.md", "");
+    r.write("notes.md", "# Notes\n\nnothing here\n");
+    std::fs::write(
+        r.root.join(super::PLANS_DIR).join("bin.md"),
+        [0xff, 0xfe, 0, 1],
+    )
+    .unwrap();
+    r.write("dup.md", "### Task 1: A\n### Task 1: B\n");
+    let big = "x".repeat(5 << 20);
+    r.write("huge.md", &big);
+    let out = r.scan();
+    assert_eq!(
+        r.tree().len(),
+        2,
+        "only dup.md's first task and its goal: {out:?}"
+    );
+    assert!(
+        out.iter()
+            .all(|o| !matches!(o, ImportOutcome::Failed { .. })),
+        "{out:?}"
+    );
+    // A missing folder is nothing at all.
+    std::fs::remove_dir_all(r.root.join("docs")).unwrap();
+    assert_eq!(r.scan(), vec![]);
+}
+
+#[test]
+fn rebuild_keeps_import_views() {
+    let mut r = Repo::new();
+    let a = r.write(
+        "a.md",
+        &plan_text("Login", &[("Endpoint", &[("t", true)]), ("Form", &[])]),
+    );
+    r.scan();
+    std::fs::write(
+        &a,
+        plan_text("Login", &[("Endpoint", &[("t", true), ("u", false)])]),
+    )
+    .unwrap();
+    r.scan();
+    let dump = |s: &Store| -> Vec<String> {
+        let mut out = Vec::new();
+        for q in [
+            "SELECT repo_id||path||hash||size||mtime||coalesce(node_id,'')||baseline||imported_at FROM plan_sources ORDER BY path",
+            "SELECT path||task_no||step_no||node_id||title FROM plan_source_items ORDER BY 1",
+            "SELECT id||status||source FROM plan_nodes ORDER BY id",
+        ] {
+            let mut st = s.conn().prepare(q).unwrap();
+            out.extend(
+                st.query_map([], |r| r.get::<_, String>(0))
+                    .unwrap()
+                    .map(Result::unwrap),
+            );
+        }
+        out
+    };
+    let before = dump(&r.store);
+    r.store.rebuild().unwrap();
+    assert_eq!(dump(&r.store), before);
 }

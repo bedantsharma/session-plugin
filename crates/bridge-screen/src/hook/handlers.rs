@@ -7,6 +7,7 @@ use bridge_screen_core::binding;
 use bridge_screen_core::config::Config;
 use bridge_screen_core::error::Error;
 use bridge_screen_core::handoff::EndKind;
+use bridge_screen_core::import;
 use bridge_screen_core::repo;
 use bridge_screen_core::session::{
     self, FileEvent, NeedsOwner, NeedsOwnerKind, OwnerQuestion, Prompt, QuestionSource, Session,
@@ -152,11 +153,11 @@ pub fn handle(
         HookEvent::PreToolUse => handoff::before_pr(store, input)?,
         _ => None,
     };
-    if event == HookEvent::SessionStart {
-        start_steps(store, config, input, &ctx.repo_id)?;
-    }
     let context = match event {
-        HookEvent::SessionStart => handoff::start_context(store, input)?,
+        HookEvent::SessionStart => {
+            let imported = start_steps(store, config, input, &ctx.repo_id)?;
+            handoff::start_context(store, input)?.map(|text| with_imports(&text, &imported))
+        }
         HookEvent::UserPromptSubmit => {
             let session = stored_session(store, input)?;
             let unit_no =
@@ -184,10 +185,19 @@ pub fn handle(
     }))
 }
 
-/// SessionStart's work before the briefing: recovery and staleness (not after a
-/// compaction), then drift tuning when due.
-fn start_steps(store: &mut Store, config: &Config, input: &HookInput, repo_id: &str) -> Result<()> {
+/// SessionStart's work before the briefing: new or changed plan files, recovery and
+/// staleness (not after a compaction), then drift tuning when due. Returns a line for
+/// each plan file imported now.
+fn start_steps(
+    store: &mut Store,
+    config: &Config,
+    input: &HookInput,
+    repo_id: &str,
+) -> Result<Vec<String>> {
+    let mut imported = Vec::new();
     if input.source.as_deref() != Some("compact") {
+        // Plan files (spec §12.1): file reads only; a bad file never stops the briefing.
+        imported = import_plans(store, input, repo_id);
         // Recovery (spec §8.3): crashed sessions, then leftovers of dead ones.
         handoff::recover(store, config, repo_id, &input.session_id)?;
         // Verifications whose files changed since drop a level (spec §8.5).
@@ -197,7 +207,68 @@ fn start_steps(store: &mut Store, config: &Config, input: &HookInput, repo_id: &
         // Enough new drift samples: tune this repo's thresholds (spec §7.6).
         store.write(|tx| tuning::run(tx, repo_id, config))?;
     }
-    Ok(())
+    Ok(imported)
+}
+
+/// Scan the repo's plan folder within the SessionStart budget. Problems go to the hook
+/// log; the lines say what was imported.
+fn import_plans(store: &mut Store, input: &HookInput, repo_id: &str) -> Vec<String> {
+    let root = match import::registered_root(store.conn(), repo_id) {
+        Ok(Some(root)) => root,
+        Ok(None) => return Vec::new(),
+        Err(e) => {
+            log(HookEvent::SessionStart, &format!("plan import: {e}"));
+            return Vec::new();
+        }
+    };
+    let ctx = import::ImportCtx {
+        session_id: input.session_id.clone(),
+        actor: Actor {
+            agent_id: input.agent_id.clone(),
+            agent_type: input.agent_type.clone(),
+            model: input.model.clone(),
+        },
+        dry_run: false,
+    };
+    match import::scan(
+        store,
+        repo_id,
+        &root,
+        &ctx,
+        import::ScanBudget::SESSION_START,
+    ) {
+        Ok(outcomes) => outcomes
+            .iter()
+            .filter_map(|o| match o {
+                import::ImportOutcome::Failed { .. } => {
+                    log(
+                        HookEvent::SessionStart,
+                        &format!("plan import: {}", o.summary().unwrap_or_default()),
+                    );
+                    None
+                }
+                import::ImportOutcome::Imported { .. } => o.summary(),
+                _ => None,
+            })
+            .collect(),
+        Err(e) => {
+            log(HookEvent::SessionStart, &format!("plan import: {e}"));
+            Vec::new()
+        }
+    }
+}
+
+/// The briefing with the import lines after its goal line.
+fn with_imports(text: &str, imported: &[String]) -> String {
+    if imported.is_empty() {
+        return text.to_string();
+    }
+    let mut lines: Vec<&str> = text.lines().collect();
+    let at = lines.len().min(2);
+    for (i, line) in imported.iter().enumerate() {
+        lines.insert(at + i, line);
+    }
+    lines.join("\n")
 }
 
 /// Append the hook's events, then the checkpoint and navigator steps, in one transaction.

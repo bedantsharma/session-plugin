@@ -135,6 +135,21 @@ pub enum Command {
         #[arg(short = 'C', long = "dir", default_value = ".")]
         dir: PathBuf,
     },
+    /// Import the repo's superpowers plan files (docs/superpowers/plans/*.md) into the plan.
+    /// Files are only read. With no FILE, every new or changed file is imported.
+    Import {
+        /// One plan file to import.
+        file: Option<PathBuf>,
+        /// Link FILE to this existing goal or milestone (its tasks are matched by title).
+        #[arg(long, requires = "file", value_name = "NODE")]
+        into: Option<String>,
+        /// Show what would change; write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Any directory inside the repo.
+        #[arg(short = 'C', long = "dir", default_value = ".")]
+        dir: PathBuf,
+    },
     /// Rebuild all views from the event log.
     Rebuild,
     /// Print the effective configuration (and this repo's tuned drift thresholds).

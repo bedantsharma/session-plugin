@@ -146,6 +146,7 @@ fn project_node_added(tx: &Transaction, repo: &str, d: &NodeAdded) -> Result<()>
             params![repo, parent],
         )?;
     }
+    crate::import::project::node_added(tx, repo, d)?;
     Ok(())
 }
 

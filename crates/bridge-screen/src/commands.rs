@@ -64,6 +64,12 @@ pub fn run(cli: Cli) -> Result<()> {
             catch_up,
         } => crate::usage::run(&dir, session.as_deref(), task.as_deref(), by, catch_up),
         Command::Forecast { dir } => crate::usage::forecast(&dir),
+        Command::Import {
+            file,
+            into,
+            dry_run,
+            dir,
+        } => crate::onboard::import(&dir, file.as_deref(), into.as_deref(), dry_run),
         Command::Rebuild => rebuild(),
         Command::Config { action: None, dir } => config(&dir),
         Command::Config {
