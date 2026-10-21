@@ -76,3 +76,13 @@ Choices someone will later ask "why?" about. Newest last. Entries are never dele
 **Context:** The owner leads the project but doesn't read the code, and found this shape easiest to follow.
 **Decision:** Every report from Claude or a subagent leads with the effect, separates checked from believed, and puts technical details last; five living docs in `docs/lead/` are kept current. bridge-screen's own messages will follow the same shape next.
 **Consequences:** Rules in `CLAUDE.md`; subagent prompts must carry them.
+
+## #16 No forecast dates below 3 finished tasks — Accepted — 2026-10-21
+**Context:** The spec asked for a "wide default distribution" when there is little history; that would put invented dates on screen.
+**Decision:** With fewer than 3 verified tasks (or no recent activity) screens show the reason instead of dates ("need 2 more"). From 3 to 5 the forecast uses every model's history together; a model gets its own from 6.
+**Consequences:** New projects show no dates for a while; the dates that do appear rest on real finished work.
+
+## #17 Cost is computed when you look, from config prices — Accepted — 2026-10-21
+**Context:** Prices change and defaults can be wrong; stored dollar amounts would freeze mistakes.
+**Decision:** Only token counts are recorded; every screen prices them from `config.toml` at read time. Defaults come from the claude-api pricing reference (taken 2026-10-21); a model with no price shows "unknown", never $0. Haiku 5.5 is left out (its price changes above 100K-token prompts) and fast mode isn't priced separately.
+**Consequences:** Fixing a price fixes all past costs. Costs for unpriced models stay "unknown" until you add a price.

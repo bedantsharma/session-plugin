@@ -28,6 +28,12 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
     derivation and done%/claimed% (`mod.rs`), schema v5 views (`project.rs`)
   - `decision/` — decisions with supersede chains, duplicate merging and the capture ask
     (§8.6)
+  - `telemetry/` — transcript usage (§9.2): the bounded reader (`read.rs`: cursor, whole
+    lines, 512 KiB per hook, dedupe by message id), the `usage` projector (`project.rs`:
+    `usage_replies` attributed by timestamp to unit/task/detour/agent, `transcript_cursors`),
+    totals per scope and cost at read time from `config.toml` prices (`mod.rs`)
+  - `forecast/` — calibration ratios, the seeded Monte Carlo (`rng.rs`, no `rand`), hours/day
+    and dates, refusal below 3 finished tasks, `forecast_ran` history (`project.rs`) (§9.3)
 - `crates/bridge-screen/` — the single binary: CLI, `hook`, `mcp`, `status`, `ui`, `watch`
   - `src/ui/` — `bridge-screen ui`: lock/token/single instance (`mod.rs`), axum router with
     the JSON API and embedded SPA (`api.rs`); `build.rs` embeds `web/dist` and
@@ -79,8 +85,12 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
   `bridge-screen config unset test-command|test-timeout|publish-reports [-C DIR]` (owner only)
 - Verification and decisions: `bridge-screen verify <task> [--broken "<note>"] [--level N] [-C DIR]`
   (the owner's verdict), `bridge-screen decisions [-C DIR] [--task ID] [--all]`
+- Cost and forecast: `bridge-screen usage [-C DIR] [--session PREFIX] [--task ID] [--by model|task|session|agent]`,
+  `bridge-screen usage --catch-up [-C DIR]` (reads every known transcript of the repo to the end;
+  owner-run, never a hook), `bridge-screen forecast [-C DIR]`; prices under `[prices."<model>"]`
+  in `config.toml` (`bridge-screen config` shows them and which are defaults)
 - Plugin check: `claude plugin validate ./plugin` (read-only)
-- Hook latency (release, on demand; PostToolUse, the Stop scoring path, UserPromptSubmit with verification and dependency notes, and — budget 150 ms — PostToolUse after `git commit` with a checkpoint pending and SessionStart's staleness scan over 50 verifications): `cargo test --release -p bridge-screen --test hooks -- --ignored hook_latency --nocapture`
+- Hook latency (release, on demand; PostToolUse, the Stop scoring path, Stop and SubagentStop with a 512 KiB transcript backlog, UserPromptSubmit with verification and dependency notes, and — budget 150 ms — PostToolUse after `git commit` with a checkpoint pending and SessionStart's staleness scan over 50 verifications): `cargo test --release -p bridge-screen --test hooks -- --ignored hook_latency --nocapture`
 - Releases: see `docs/RELEASING.md` (`dist plan` to preview); keep `plugin/.claude-plugin/plugin.json`'s `version` equal to the workspace version (a test checks it)
 
 ## Rules
@@ -89,6 +99,11 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
 - The pre-commit hook runs fmt/clippy/web lint; pre-push runs all tests and the web build. Don't bypass them with `--no-verify`.
 - Never write bridge-screen state inside a repo; runtime data lives in `~/.bridge-screen/` (spec §6).
 - Hooks must stay fast (≤ 50 ms p95) and must never fail a Claude session: log errors and exit 0. A known session's hooks run `git` only when a checkpoint is pending (Stop), after a Bash `git commit`, at SessionStart/SessionEnd, and before `gh pr create`.
+- Transcripts: read only ids, model names, token counts and timestamps — never message
+  text, tool inputs/outputs or prompts; at most 512 KiB per file per hook. Money is never
+  stored, only computed from prices when read; an unpriced model's cost is "unknown", never $0.
+- No fake forecasts: no dates below 3 finished tasks or without recent activity (say why);
+  the forecast runs after a verification at L2+ (MCP `verify`, owner verdict), never in a hook.
 - Never run tests from a hook: the L2 re-run happens only in the `verify` MCP call. Only the
   owner sets the test command (CLI); every verification is tied to a commit SHA.
 - Tangents are never blocked. Stop continuations (checkpoint request first, then the label request) go out at most once per unit, never when `stop_hook_active`.

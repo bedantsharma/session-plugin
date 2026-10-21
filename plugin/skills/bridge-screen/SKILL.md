@@ -107,8 +107,8 @@ only be waiting for its owner (for 24 h): leave them alone.
 ## 7. Check where things stand
 
 `status` shows your task with its ladder level and next step, unverified claims,
-decisions, a pending checkpoint, the read-back state, open leftovers, detours and
-suspended items, and the next tasks. When the owner asks how things stand, call
+decisions, cost so far, a pending checkpoint, the read-back state, open leftovers,
+detours and suspended items, the project forecast and the next tasks. When the owner asks how things stand, call
 `show_progress` (its buttons are the owner's: never call `owner_action`). Reports only
 on the owner's explicit request: `progress_report`, show its summary, publish with the
 Artifact tool after they confirm, then `report_published {"url": "…", "scope": "repo"}`.

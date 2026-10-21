@@ -34,6 +34,16 @@ bridge-screen is one program on the owner's computer that sits next to Claude Co
 - **Does:** all the rules: the plan tree, sessions and active time, drift scoring, checkpoints and recovery, the verification ladder, decisions, and the read models the screens show.
 - **Lives in:** `crates/bridge-screen-core/`
 
+### Telemetry (cost tracking)
+- **Does:** at each stop, reads only the new lines of the agent's transcript and records each model reply's token counts once (never the text), against the task, detour and agent at that moment; prices them when a screen asks.
+- **Talks to:** Claude Code's transcript files (read-only), the database, the price table in `config.toml`.
+- **Lives in:** `crates/bridge-screen-core/src/telemetry/`
+
+### Forecast
+- **Does:** turns how long verified tasks took against their estimates into a finish range (P50/P90 dates) for each project; refuses to give dates on too little data; keeps a history after each verified task.
+- **Talks to:** the database only.
+- **Lives in:** `crates/bridge-screen-core/src/forecast/`
+
 ### The event log and views (also called the store)
 - **Does:** an append-only record of everything that happened; the current picture (views) is rebuilt from it and can always be regenerated.
 - **Holds:** all bridge-screen data, in `~/.bridge-screen/`.
@@ -57,4 +67,5 @@ bridge-screen is one program on the owner's computer that sits next to Claude Co
 ## Deliberately absent
 - No server or cloud; nothing runs when no session or screen is open.
 - No AI model calls from bridge-screen.
-- Not yet built: token/cost tracking and finish-date forecasts (sub-project 7), automatic plan import and onboarding of existing repos (8), archiving old projects (9).
+- Not yet built: automatic plan import and onboarding of existing repos (8), archiving old projects (9).
+- No live price lookups: prices come from the config file (defaults taken 2026-10-21).
