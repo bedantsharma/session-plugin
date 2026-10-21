@@ -51,6 +51,14 @@
     }
     return out
   })
+  // A line needs at least two distinct times a minute or more apart; otherwise every point
+  // lands on one x and the chart collapses to a vertical line, so show the numbers instead.
+  const chartable = $derived.by(() => {
+    const times = (m.data?.scope ?? []).map((p) => new Date(p.ts).getTime())
+    if (new Set(times).size < 2) return false
+    return Math.max(...times) - Math.min(...times) >= 60_000
+  })
+  const latest = $derived(m.data?.scope.at(-1))
   const added = $derived(
     (m.data?.scope ?? []).flatMap((p, i, all) =>
       i > 0 && p.total_min > all[i - 1].total_min
@@ -61,6 +69,8 @@
 
   // The tree: chevrons fold a node's children away.
   let folded = $state<Record<string, boolean>>({})
+  // Intents start collapsed; each has its own labelled show/hide control.
+  let intentOpen = $state<Record<string, boolean>>({})
   const parents = $derived(new Set((m.data?.tree ?? []).map((n) => n.parent_id).filter(Boolean)))
   const byId = $derived(new Map((m.data?.tree ?? []).map((n) => [n.id, n])))
   function hidden(n: TreeNode): boolean {
@@ -133,21 +143,36 @@
     </section>
   {/if}
 
-  {#if points.length > 1}
+  {#if latest}
     <section class="flex flex-col gap-3" aria-labelledby="scope">
       <h3 id="scope" class="text-base font-semibold">Scope over time</h3>
       <div class="rounded-xl border border-line bg-surface p-5">
-        <div class="h-56" aria-label="Scope line: total live estimate and done, over time">
-          <LineChart
-            data={points}
-            x="date"
-            series={[
-              { key: 'total', label: 'scope (min)', color: 'var(--muted)' },
-              { key: 'done', label: 'done (min)', color: 'var(--clay)' },
-            ]}
-            legend
-          />
-        </div>
+        {#if chartable}
+          <div
+            class="scope-chart h-56"
+            aria-label="Scope line: total live estimate and done, over time"
+          >
+            <LineChart
+              data={points}
+              x="date"
+              series={[
+                { key: 'total', label: 'scope (min)', color: 'var(--muted)' },
+                { key: 'done', label: 'done (min)', color: 'var(--clay)' },
+              ]}
+              legend
+            />
+          </div>
+        {:else}
+          <p
+            class="flex flex-wrap items-baseline gap-x-3 text-row tabular-nums"
+            data-testid="scope-summary"
+          >
+            <span>Scope {latest.total_min} min · done {latest.done_min} min</span>
+            <span class="text-meta text-muted"
+              >a chart appears once the scope changes over time</span
+            >
+          </p>
+        {/if}
         {#if added.length}
           <p class="mt-3 text-meta text-muted">
             Scope added: {added.map((a) => `+${a.by} min at ${hhmm(a.ts)}`).join(' · ')}
@@ -167,7 +192,7 @@
           {@const hill = n.kind === 'milestone' ? hillWord(n.hill, p.done) : null}
           {@const parent = parents.has(n.id)}
           <li class="border-b border-line last:border-b-0" data-node={n.id}>
-            <Collapsible.Root>
+            <Collapsible.Root bind:open={() => !!intentOpen[n.id], (v) => (intentOpen[n.id] = v)}>
               <div class="flex min-h-10 items-center gap-2 py-1.5">
                 <!-- Indent guides: one 20 px step per level. -->
                 {#each Array.from({ length: n.depth }, (_, i) => i) as i (i)}
@@ -228,8 +253,19 @@
                   {#if n.owner_checked}<Chip tone="clay" icon="✓" text="owner" />{/if}
                   {#if n.intent}
                     <Collapsible.Trigger
-                      class="rounded-md px-1.5 text-meta text-muted hover:bg-hover hover:text-fg"
-                      >intent</Collapsible.Trigger
+                      class="inline-flex h-6 items-center gap-1 rounded-md border border-edge px-2 text-meta text-muted hover:bg-hover hover:text-fg"
+                      aria-label={`${intentOpen[n.id] ? 'Hide' : 'Show'} intent of ${n.title}`}
+                      ><svg
+                        viewBox="0 0 16 16"
+                        class={[
+                          'size-3 transition-transform duration-150',
+                          intentOpen[n.id] && 'rotate-90',
+                        ]}
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        aria-hidden="true"><path d="M6 4l4 4-4 4" /></svg
+                      >{intentOpen[n.id] ? 'Hide intent' : 'Show intent'}</Collapsible.Trigger
                     >
                   {/if}
                 </span>

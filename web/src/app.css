@@ -504,3 +504,21 @@
     animation: fade-in 0.4s ease-out 1 !important;
   }
 }
+
+/* The scope chart (LayerChart): axis ticks at the chip size, the legend at metadata size. */
+.scope-chart .lc-axis-tick-label,
+.scope-chart .lc-axis-label {
+  font-size: var(--text-chip);
+  fill: var(--muted);
+}
+
+.scope-chart .lc-legend-swatch-label {
+  font-size: var(--text-meta);
+  line-height: var(--text-meta--line-height);
+  color: var(--muted);
+}
+
+.scope-chart .lc-legend-swatch {
+  width: 0.75rem;
+  height: 0.75rem;
+}
