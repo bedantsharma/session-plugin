@@ -1,6 +1,8 @@
 <script lang="ts">
-  // Task drill-down (spec §10.2, plan §2): the title, details as a definition list,
-  // decisions with superseded-by chains, and verification evidence.
+  // Task drill-down (spec §9.2, §10.2, plan §2): the title, details as a definition list
+  // (status, estimate vs actual and the ratio once done, retries, steps, who worked on
+  // it), tokens and cost by model and by agent, decisions with superseded-by chains, and
+  // verification evidence.
   import type { Client } from '$lib/api'
   import { hhmm } from '$lib/format'
   import type { TaskDrill } from '$lib/types'
@@ -32,9 +34,34 @@
       <dt class="text-meta text-muted">Status</dt>
       <dd class="text-row">{t.status ? statusWord(t.status).word : '—'}</dd>
       <dt class="text-meta text-muted">Time</dt>
-      <dd class="text-row tabular-nums">{t.actual_min} of {t.estimate_min ?? '?'} min</dd>
+      <dd class="text-row tabular-nums" data-testid="task-time">
+        {t.actual_min} of {t.estimate_min ?? '?'} min{#if t.ratio !== null}<span class="text-muted"
+            >{` · took ${Number(t.ratio.toFixed(1))}× its estimate`}</span
+          >{/if}
+      </dd>
       <dt class="text-meta text-muted">Retries</dt>
-      <dd class="text-row tabular-nums">{t.retries}</dd>
+      <dd class="text-row tabular-nums" title="Units of work after a failed verification">
+        {t.retries}
+      </dd>
+      {#if t.steps.length}
+        <dt class="text-meta text-muted">Steps</dt>
+        <dd class="text-row" data-testid="steps">
+          <ol class="flex flex-col gap-0.5">
+            {#each t.steps as st (st.id)}
+              <li class={[st.current ? 'font-medium' : 'text-muted']} data-step={st.id}>
+                <span class="font-mono">{st.id}</span>
+                {st.title} · {statusWord(st.status).word}{#if st.current}<span class="text-clay"
+                    >&nbsp;· current</span
+                  >{/if}
+              </li>
+            {/each}
+          </ol>
+        </dd>
+      {/if}
+      <dt class="text-meta text-muted">Cost</dt>
+      <dd class="text-row tabular-nums" data-testid="task-cost">
+        {t.usage ? t.usage.total.summary : 'no tokens recorded yet'}
+      </dd>
       {#if t.actors.length}
         <dt class="text-meta text-muted">Worked on by</dt>
         <dd class="text-row">
@@ -43,6 +70,36 @@
       {/if}
     </dl>
   </header>
+
+  {#if t.usage}
+    <section class="flex flex-col gap-3" aria-labelledby="tokens">
+      <h3 id="tokens" class="text-base font-semibold">Tokens and cost</h3>
+      <div class="grid max-w-3xl grid-cols-1 gap-6 md:grid-cols-2">
+        {#each [{ name: 'By model', rows: t.usage.by_model }, { name: 'By agent', rows: t.usage.by_agent }] as part (part.name)}
+          <table class="w-full text-row tabular-nums" aria-label={part.name}>
+            <thead class="text-meta text-muted">
+              <tr>
+                <th class="py-1 text-left font-normal">{part.name}</th>
+                <th class="text-right font-normal">Tokens</th>
+                <th class="text-right font-normal">Cost</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-line border-y border-line">
+              {#each part.rows as r (r.label)}
+                <tr>
+                  <td class="py-1.5">{r.label}</td>
+                  <td class="text-right">{r.tokens_text}</td>
+                  <td class={['text-right', r.cost_text === 'cost unknown' && 'text-warn']}
+                    >{r.cost_text}</td
+                  >
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {/each}
+      </div>
+    </section>
+  {/if}
 
   <section class="flex flex-col gap-3">
     <h3 class="text-base font-semibold">Decisions</h3>

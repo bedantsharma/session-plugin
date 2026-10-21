@@ -1,8 +1,8 @@
 <script lang="ts">
-  // One project card (spec §10.1, §5.6; plan §2): name, goal and the big done %, a
-  // captioned bar with claimed% apart, one row per milestone with its own mini bar, hill
-  // and stuck chips, and the leftovers/unestimated footer. The whole card opens the
-  // project drill-down.
+  // One project card (spec §10.1, §5.6; plan §2): name, goal and the big done %, the
+  // forecast range under it (or the reason there is none), a captioned bar with claimed%
+  // apart, one row per milestone with its own mini bar, hill and stuck chips, and the
+  // cost/leftovers/unestimated footer. The whole card opens the project drill-down.
   import MilestoneList from './MilestoneList.svelte'
   import { changed } from '$lib/changed'
   import ProgressBar from './ProgressBar.svelte'
@@ -40,6 +40,17 @@
     </div>
   </div>
 
+  {#if project.forecast}
+    <p class="-mt-3 self-end text-right text-meta" data-testid="forecast">
+      {#if project.forecast.compact}
+        <span title={project.forecast.help}>{project.forecast.text}</span>
+        <span class="sr-only">{` (${project.forecast.help})`}</span>
+      {:else}
+        <span class="text-muted">{project.forecast.text}</span>
+      {/if}
+    </p>
+  {/if}
+
   <div class="flex flex-col gap-2">
     <p class="text-meta text-muted tabular-nums" data-testid="progress-caption">
       Done {project.done_pct}% · {complete} of {project.milestones.length}
@@ -50,8 +61,10 @@
 
   <MilestoneList {project} />
 
-  {#if project.leftovers.open > 0 || project.unestimated > 0}
+  {#if project.cost || project.leftovers.open > 0 || project.unestimated > 0}
     <div class="flex flex-wrap gap-x-4 border-t border-line pt-3 text-meta text-muted">
+      {#if project.cost}<span class="tabular-nums" data-testid="cost">{project.cost.summary}</span
+        >{/if}
       {#if project.leftovers.open > 0}
         <span
           >{project.leftovers.open}

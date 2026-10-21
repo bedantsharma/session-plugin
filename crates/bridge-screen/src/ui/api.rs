@@ -70,6 +70,7 @@ pub fn router(state: AppState) -> Router {
         .route("/task/{repo}/{id}", get(task))
         .route("/history/{repo}", get(history))
         .route("/tuning/{repo}", get(tuning))
+        .route("/calibration/{repo}", get(calibration))
         .route("/action", post(action))
         .fallback(|| async { error(StatusCode::NOT_FOUND, "no such API route") })
         .layer(middleware::from_fn_with_state(state.clone(), require_token));
@@ -211,15 +212,18 @@ async fn project(State(st): State<AppState>, Path(repo): Path<String>) -> Respon
 }
 
 async fn session(State(st): State<AppState>, Path(id): Path<String>) -> Response {
-    with_store(&st, move |s, _| {
-        view::drill::session(s.conn(), &id, jiff::Timestamp::now())?
+    with_store(&st, move |s, st| {
+        view::drill::session(s.conn(), &id, &st.cfg, jiff::Timestamp::now())?
             .ok_or_else(|| Error::NotFound(format!("no session {id}")))
     })
     .await
 }
 
 async fn task(State(st): State<AppState>, Path((repo, id)): Path<(String, String)>) -> Response {
-    with_store(&st, move |s, _| view::drill::task(s.conn(), &repo, &id)).await
+    with_store(&st, move |s, st| {
+        view::drill::task(s.conn(), &repo, &id, &st.cfg)
+    })
+    .await
 }
 
 /// `/api/history/{repo}` filters.
@@ -254,6 +258,13 @@ async fn history(
 async fn tuning(State(st): State<AppState>, Path(repo): Path<String>) -> Response {
     with_store(&st, move |s, st| {
         view::drill::tuning(s.conn(), &repo, &st.cfg)
+    })
+    .await
+}
+
+async fn calibration(State(st): State<AppState>, Path(repo): Path<String>) -> Response {
+    with_store(&st, move |s, st| {
+        view::drill::calibration(s.conn(), &repo, &st.cfg, jiff::Timestamp::now())
     })
     .await
 }

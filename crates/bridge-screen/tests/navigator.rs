@@ -542,7 +542,7 @@ mod tuning {
         assert_eq!(context_of(&out, "Stop"), LABEL_REQUEST);
         let status = String::from_utf8(env.run(&["status"], "").stdout).unwrap();
         assert!(
-            status.contains("goal: Ship  · done 0% · claimed 0% · 1 unestimated  · tuned drift .10–.70, tolerance 20%"),
+            status.contains("goal: Ship  · done 0% · claimed 0% · 1 unestimated · forecast needs 3 more finished tasks  · tuned drift .10–.70, tolerance 20%"),
             "{status}"
         );
     }

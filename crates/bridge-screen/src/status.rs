@@ -126,26 +126,40 @@ pub fn render(g: &Glance, opts: &Options) -> String {
 }
 
 fn project(out: &mut String, g: &Glance, p: &ProjectRow, c: bool) {
-    match &p.goal {
-        Some(goal) => {
-            let mut progress = format!(
-                "  · {} · claimed {}%",
-                paint(c, Role::Clay, &format!("done {}%", p.done_pct)),
-                p.claimed_pct
-            );
-            if p.unestimated > 0 {
-                let _ = write!(progress, " · {} unestimated", p.unestimated);
-            }
-            let tuned = p
-                .tuned
-                .as_ref()
-                .map(|t| format!("  · {t}"))
-                .unwrap_or_default();
-            let _ = writeln!(out, "{}  goal: {}{progress}{tuned}", p.name, goal.title);
+    if let Some(goal) = &p.goal {
+        let mut progress = format!(
+            "  · {} · claimed {}%",
+            paint(c, Role::Clay, &format!("done {}%", p.done_pct)),
+            p.claimed_pct
+        );
+        if p.unestimated > 0 {
+            let _ = write!(progress, " · {} unestimated", p.unestimated);
         }
-        None => {
-            let _ = writeln!(out, "{}  no plan yet", p.name);
+        if let Some(f) = &p.forecast {
+            let _ = write!(progress, " · {}", f.short);
         }
+        if let Some(cost) = &p.cost {
+            let _ = write!(progress, " · {}", cost.text);
+        }
+        let tuned = p
+            .tuned
+            .as_ref()
+            .map(|t| format!("  · {t}"))
+            .unwrap_or_default();
+        let _ = writeln!(out, "{}  goal: {}{progress}{tuned}", p.name, goal.title);
+    } else {
+        let cost = p
+            .cost
+            .as_ref()
+            .map(|c| format!(" · {}", c.text))
+            .unwrap_or_default();
+        let _ = writeln!(out, "{}  no plan yet{cost}", p.name);
+    }
+    for model in p.cost.iter().flat_map(|c| &c.unpriced_models) {
+        let _ = writeln!(
+            out,
+            "  no price for {model}: add one under [prices] in config.toml"
+        );
     }
     if p.leftovers.open > 0 {
         let _ = writeln!(

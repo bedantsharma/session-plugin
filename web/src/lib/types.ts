@@ -56,6 +56,43 @@ export interface SessionFlag {
 export type Rest =
   { kind: 'needs_you'; why: NeedsKind } | { kind: 'done'; task: NodeRef } | { kind: 'idle' }
 
+/** Tokens and money, computed by the server from the configured prices. */
+export interface CostRow {
+  tokens: number
+  tokens_text: string
+  /** USD of the priced models; null when nothing is priced (unknown, never $0). */
+  usd: number | null
+  unpriced_models: string[]
+  /** `$12.40`, `≥ $12.40 (some models unpriced)` or `cost unknown`. */
+  text: string
+  /** `$12.40 spent · 3.1M tokens`. */
+  summary: string
+}
+
+export interface Forecast {
+  p50_hours: number
+  p90_hours: number
+  p50_date: string | null
+  p90_date: string | null
+  remaining_min: number
+  unestimated: number
+  points: number
+  hours_per_day: number | null
+  reason: string | null
+  median_ratio?: number | null
+}
+
+/** A project's forecast with its words (dates only when `compact` is set). */
+export interface ForecastRow extends Forecast {
+  /** `likely by Oct 30 · could take until Nov 8`, or the reason there are no dates. */
+  text: string
+  compact: string | null
+  short: string
+  /** What the two dates mean, for the tooltip and screen readers. */
+  help: string
+  basis: string
+}
+
 export interface SessionRow {
   session_id: string
   short: string
@@ -73,6 +110,7 @@ export interface SessionRow {
   asked_question: boolean
   branch: string | null
   worktree: string | null
+  cost: CostRow | null
   rank: number
 }
 
@@ -96,7 +134,8 @@ export interface ProjectRow {
   milestones: MilestoneRow[]
   leftovers: { open: number; report_only: number }
   tuned: string | null
-  forecast: unknown | null
+  forecast: ForecastRow | null
+  cost: CostRow | null
   needs_you: number
   sessions: SessionRow[]
 }
@@ -148,6 +187,8 @@ export interface UnitRow {
   detour: string | null
   files: number
   disagreement: boolean
+  tokens: number
+  tokens_text: string | null
 }
 
 export interface SessionDrill {
@@ -178,6 +219,7 @@ export interface SessionDrill {
   handoff_note: { in_flight: string; if_then: string[]; ts: string } | null
   readback: string
   owner_answers: { ts: string; answer: string; reason: string | null }[]
+  cost: CostRow | null
 }
 
 export interface Decision {
@@ -210,7 +252,63 @@ export interface TaskDrill {
   }[]
   actors: { agent_type: string | null; model: string | null }[]
   retries: number
-  usage: unknown | null
+  usage: TaskUsage | null
+  steps: { id: string; title: string; status: string; current: boolean }[]
+  /** Actual ÷ estimate, once done. */
+  ratio: number | null
+}
+
+export interface CostSplit {
+  label: string
+  tokens: number
+  tokens_text: string
+  cost_text: string
+}
+
+export interface TaskUsage {
+  total: CostRow
+  by_model: CostSplit[]
+  by_agent: CostSplit[]
+}
+
+export interface CalibrationPoint {
+  task_id: string
+  title: string
+  estimate_min: number
+  actual_min: number
+  ratio: number
+  model: string
+  completed_at: string
+}
+
+export interface Price {
+  input: number
+  output: number
+  cache_read: number
+  cache_write_5m: number
+  cache_write_1h: number
+}
+
+export interface CalibrationDrill {
+  repo_id: string
+  name: string
+  min_points: number
+  model_points: number
+  models: {
+    model: string
+    name: string
+    points: CalibrationPoint[]
+    median_ratio: number
+    text: string
+    own: boolean
+  }[]
+  pooled: CalibrationPoint[]
+  pooled_text: string | null
+  forecast: ForecastRow
+  history: (Forecast & { ts: string })[]
+  prices: { model: string; name: string; price: Price; source: string }[]
+  unpriced_models: string[]
+  notes: string[]
 }
 
 export interface HistoryPage {

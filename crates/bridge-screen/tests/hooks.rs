@@ -1126,3 +1126,99 @@ mod questions {
         assert_eq!(queue(&env), vec![]);
     }
 }
+
+/// About `bytes` of new transcript: model replies (each written twice, as Claude Code
+/// does) between user lines, with ids unique to `batch`.
+fn transcript_slice(batch: usize, bytes: usize) -> String {
+    let ts = jiff::Timestamp::now().to_string();
+    let mut out = String::with_capacity(bytes + 2048);
+    let mut n = 0;
+    while out.len() < bytes {
+        let id = format!("msg_{batch}_{n}");
+        let line = format!(
+            r#"{{"parentUuid":"p","isSidechain":false,"type":"assistant","requestId":"req_{id}","timestamp":"{ts}","message":{{"id":"{id}","model":"claude-opus-5-5","role":"assistant","content":[{{"type":"text","text":"{pad}"}}],"usage":{{"input_tokens":3,"cache_creation_input_tokens":300,"cache_read_input_tokens":90000,"output_tokens":120,"cache_creation":{{"ephemeral_1h_input_tokens":300,"ephemeral_5m_input_tokens":0}}}}}}}}"#,
+            pad = "x".repeat(400)
+        );
+        out.push_str(&line);
+        out.push('\n');
+        out.push_str(&line);
+        out.push('\n');
+        out.push_str(r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}"#);
+        out.push('\n');
+        n += 1;
+    }
+    out
+}
+
+/// Stop and SubagentStop each with 512 KiB of unread transcript (spec §9.2, §11.1): a
+/// backlog is read in bounded slices, each within the hook budget, on the large database.
+/// The subagent's transcript gets twice what its SubagentStop reads, so every Stop also
+/// finishes 512 KiB of it: the worst case, two full slices in one Stop.
+#[test]
+#[ignore = "perf check: run on demand with --release"]
+fn hook_latency_stop_and_subagent_stop_with_a_transcript_backlog() {
+    use bridge_screen_core::store::{EventDraft, append_in};
+    use bridge_screen_core::telemetry::MAX_HOOK_BYTES;
+    use std::io::Write as _;
+    use std::time::Instant;
+
+    let env = Env::new();
+    let repo = big_database(&env);
+    let session = "perf-session-07";
+    let dir = tempfile::tempdir().unwrap();
+    let main = dir.path().join(format!("{session}.jsonl"));
+    let sub = dir.path().join("agent-a1.jsonl");
+    std::fs::write(&main, "").unwrap();
+    std::fs::write(&sub, "").unwrap();
+    let mut store = Store::open(&env.db_path()).unwrap();
+    let append = |path: &std::path::Path, text: &str| {
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .unwrap()
+            .write_all(text.as_bytes())
+            .unwrap();
+    };
+    let slice = usize::try_from(MAX_HOOK_BYTES).unwrap();
+    assert!(env.run(&["--version"], "").status.success());
+    let mut stop_payload = common::fixture_json("stop", session, &env.repo_path());
+    stop_payload["transcript_path"] = json!(main.to_string_lossy());
+    let stop_payload = stop_payload.to_string();
+    let mut sub_payload = common::fixture_json("subagent-stop", session, &env.repo_path());
+    sub_payload["transcript_path"] = json!(main.to_string_lossy());
+    sub_payload["agent_id"] = json!("a1");
+    sub_payload["agent_transcript_path"] = json!(sub.to_string_lossy());
+    let sub_payload = sub_payload.to_string();
+    let (mut stops, mut subs) = (Vec::new(), Vec::new());
+    for i in 0..100 {
+        // A new unit, and 512 KiB more of each transcript to read.
+        store
+            .write(|tx| {
+                append_in(
+                    tx,
+                    EventDraft::new(&repo.id, session, "prompt", json!({"chars": 40})),
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        append(&sub, &transcript_slice(2 * i + 1, 2 * slice));
+        let start = Instant::now();
+        env.hook_raw("subagent-stop", &sub_payload);
+        subs.push(start.elapsed());
+        append(&main, &transcript_slice(2 * i, slice));
+        let start = Instant::now();
+        env.hook_raw("stop", &stop_payload);
+        stops.push(start.elapsed());
+    }
+    assert_eq!(env.log(), "");
+    let replies: i64 = store
+        .conn()
+        .query_row("SELECT count(*) FROM usage_replies", [], |r| r.get(0))
+        .unwrap();
+    assert!(replies > 100 * 2 * 200, "{replies} replies recorded");
+    report(
+        "hook stop (512 KiB transcript backlog + 512 KiB of a subagent's)",
+        stops,
+    );
+    report("hook subagent-stop (512 KiB transcript backlog)", subs);
+}

@@ -11,7 +11,7 @@ import {
   type HostContext,
   type ToolResult,
 } from '../src/card/host'
-import { glance, item, question } from './fixtures'
+import { COST, forecast, glance, item, project, question } from './fixtures'
 
 class FakeHost implements CardHost {
   resultCb: ((r: ToolResult) => void) | null = null
@@ -105,6 +105,29 @@ describe('desktop card', () => {
     expect(container.querySelector('[data-milestone="1"]')).toHaveTextContent('exploring')
     expect(container.querySelector('[data-milestone="2"]')).toHaveTextContent('executing')
     expect(container.textContent).not.toMatch(/uphill|downhill/)
+  })
+
+  it('shows the forecast range and cost on the project line, and no date when refused', async () => {
+    const host = new FakeHost()
+    render(Card, { host })
+    const g = glance([])
+    g.projects = [project({ forecast: forecast(), cost: COST })]
+    host.push(result(g))
+    const line = await screen.findByTestId('card-forecast')
+    expect(line.textContent?.replace(/\s+/g, ' ').trim()).toBe(
+      'likely Oct 30–Nov 8 (50% and 90% chance, based on how long 5 verified tasks actually took) · $12.40',
+    )
+    const refused = glance([])
+    refused.projects = [
+      project({ forecast: forecast('No recent activity to turn hours into dates') }),
+    ]
+    host.push(result(refused))
+    await waitFor(() =>
+      expect(screen.getByTestId('card-forecast')).toHaveTextContent(
+        'forecast needs 2 more finished tasks',
+      ),
+    )
+    expect(screen.getByTestId('card-forecast').textContent).not.toMatch(/Oct|Nov|\$/)
   })
 
   it('has its own Motion switch', async () => {

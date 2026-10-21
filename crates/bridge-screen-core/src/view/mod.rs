@@ -18,12 +18,14 @@ use serde::Serialize;
 use crate::claim::task_title;
 use crate::config::Config;
 use crate::error::Result;
+use crate::forecast::{self, Forecast};
 use crate::handoff::{self, BriefingStatus, LeftoverAction, LeftoverState, ReadbackState};
 use crate::owner::{DriftAnswer, OwnerAction};
 use crate::plan::{Hill, NodeKind, NodeStatus, PlanNode, get_node, load_tree};
 use crate::session::{self, Session, SessionState};
 use crate::store::{OWNER_SESSION, repo_name};
 use crate::tangent::{self, Label, NavState};
+use crate::telemetry;
 use crate::verify;
 
 /// More needs-you items than this escalate (spec §10.1).
@@ -79,12 +81,112 @@ pub struct ProjectRow {
     pub leftovers: LeftoverCounts,
     /// `tuned drift .35–.65, tolerance 25%` when the repo's thresholds were auto-tuned.
     pub tuned: Option<String>,
-    /// P50/P90 dates arrive with sub-project 7; always `None` for now.
-    pub forecast: Option<serde_json::Value>,
+    /// When the plan will likely be done (spec §9.3, §10.1); `None` without a plan.
+    pub forecast: Option<ForecastRow>,
+    /// Tokens and money spent on the repo so far; `None` before any usage.
+    pub cost: Option<CostRow>,
     /// Its needs-you items.
     pub needs_you: usize,
     /// Live sessions, the ones needing the owner first.
     pub sessions: Vec<SessionRow>,
+}
+
+/// A project's forecast with its words (spec §9.3, §10.1).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ForecastRow {
+    #[serde(flatten)]
+    pub forecast: Forecast,
+    /// `likely by Oct 30 · could take until Nov 8`, or the reason there are no dates.
+    pub text: String,
+    /// `Oct 30–Nov 8` for one-line screens; `None` without dates.
+    pub compact: Option<String>,
+    /// `likely Oct 30–Nov 8`, or a few words on why there are no dates.
+    pub short: String,
+    /// Tooltip and screen-reader text: what the two dates mean.
+    pub help: String,
+    /// `based on 12 finished tasks; tasks typically take 1.8× their estimate`.
+    pub basis: String,
+}
+
+/// Tokens and what they cost, computed at read time from the configured prices.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CostRow {
+    pub tokens: u64,
+    /// `3.1M`.
+    pub tokens_text: String,
+    /// USD of the priced models (`None`: nothing priced — unknown, never $0).
+    pub usd: Option<f64>,
+    /// Models with tokens and no price: `usd` is then a lower bound.
+    pub unpriced_models: Vec<String>,
+    /// `$12.40`, `≥ $12.40 (some models unpriced)` or `cost unknown`.
+    pub text: String,
+    /// `$12.40 spent · 3.1M tokens`.
+    pub summary: String,
+}
+
+/// The cost of `scope`, or `None` when nothing was spent there.
+pub fn cost_row(
+    conn: &Connection,
+    scope: &telemetry::Scope,
+    cfg: &Config,
+) -> Result<Option<CostRow>> {
+    let tokens = telemetry::totals(conn, scope)?;
+    if tokens.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(cost_of(&tokens, cfg)))
+}
+
+/// [`CostRow`] for some tokens.
+pub fn cost_of(tokens: &telemetry::Tokens, cfg: &Config) -> CostRow {
+    let cost = telemetry::cost(tokens, &cfg.prices);
+    let text = telemetry::cost_text(&cost);
+    let tokens_text = telemetry::tokens_text(tokens.sum.total());
+    let summary = match cost.usd {
+        Some(usd) if cost.complete() => {
+            format!("{} spent · {tokens_text} tokens", telemetry::usd_text(usd))
+        }
+        Some(usd) => format!(
+            "≥ {} spent (some models unpriced) · {tokens_text} tokens",
+            telemetry::usd_text(usd)
+        ),
+        None => format!("cost unknown · {tokens_text} tokens"),
+    };
+    CostRow {
+        tokens: tokens.sum.total(),
+        tokens_text,
+        usd: cost.usd,
+        unpriced_models: cost.unpriced_models,
+        text,
+        summary,
+    }
+}
+
+/// The forecast row for a repo at `now` (dates in the owner's time zone).
+pub fn forecast_row(conn: &Connection, repo_id: &str, now: Timestamp) -> Result<ForecastRow> {
+    forecast_row_in(conn, repo_id, now, &jiff::tz::TimeZone::system())
+}
+
+/// [`forecast_row`] in a given time zone.
+pub fn forecast_row_in(
+    conn: &Connection,
+    repo_id: &str,
+    now: Timestamp,
+    tz: &jiff::tz::TimeZone,
+) -> Result<ForecastRow> {
+    let f = forecast::run(conn, repo_id, now, tz)?;
+    let tasks = if f.points == 1 { "task" } else { "tasks" };
+    Ok(ForecastRow {
+        text: forecast::range_text(&f, now, tz),
+        compact: forecast::compact_range(&f, now, tz),
+        short: forecast::short_text(&f, now, tz),
+        help: format!(
+            "50% and 90% chance, based on how long {} verified {tasks} actually took",
+            f.points
+        ),
+        basis: forecast::basis_text(&f),
+        forecast: f,
+    })
 }
 
 /// A milestone's progress and hill state (spec §5.6).
@@ -199,6 +301,8 @@ pub struct SessionRow {
     pub asked_question: bool,
     pub branch: Option<String>,
     pub worktree: Option<String>,
+    /// Tokens and money the session spent so far; `None` before any usage.
+    pub cost: Option<CostRow>,
     /// Sort key: 0 red, 1 other needs-you (question, permission wait), 2 handoff trouble,
     /// 3 working, 4 resting.
     pub rank: u8,
@@ -676,6 +780,7 @@ fn looks(s: &Session, f: &Facts, rest: Option<&Rest>) -> (Light, &'static str, &
 /// One session row plus the queue items it raises.
 fn session_row(
     conn: &Connection,
+    cfg: &Config,
     s: &Session,
     repo_name: &str,
     now: Timestamp,
@@ -721,6 +826,7 @@ fn session_row(
         asked_question: asked,
         branch: s.branch.clone(),
         worktree: s.worktree.clone(),
+        cost: cost_row(conn, &telemetry::Scope::Session(s.session_id.clone()), cfg)?,
         rank,
     };
     Ok((row, items))
@@ -1156,7 +1262,7 @@ pub fn glance(conn: &Connection, cfg: &Config, now: Timestamp) -> Result<Glance>
         let mut items = Vec::new();
         // `list_live` is newest first; a stable sort keeps that within each rank.
         for s in by_repo.remove(&repo_id).unwrap_or_default() {
-            let (row, raised) = session_row(conn, &s, &name, now)?;
+            let (row, raised) = session_row(conn, cfg, &s, &name, now)?;
             rows.push(row);
             items.extend(raised);
         }
@@ -1172,6 +1278,10 @@ pub fn glance(conn: &Connection, cfg: &Config, now: Timestamp) -> Result<Glance>
             });
         let p = verify::progress(conn, &repo_id)?;
         let (open, report_only) = crate::recovery::open_counts(conn, &repo_id)?;
+        let forecast = match &goal {
+            Some(_) => Some(forecast_row(conn, &repo_id, now)?),
+            None => None,
+        };
         projects.push(ProjectRow {
             repo_id: repo_id.clone(),
             name,
@@ -1182,7 +1292,8 @@ pub fn glance(conn: &Connection, cfg: &Config, now: Timestamp) -> Result<Glance>
             milestones: milestones(conn, &repo_id, &tree)?,
             leftovers: LeftoverCounts { open, report_only },
             tuned: tuned_text(conn, &repo_id, cfg)?,
-            forecast: None,
+            forecast,
+            cost: cost_row(conn, &telemetry::Scope::Repo(repo_id.clone()), cfg)?,
             needs_you: items.len(),
             sessions: rows,
         });

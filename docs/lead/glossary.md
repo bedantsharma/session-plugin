@@ -21,6 +21,10 @@
 - **Exploring / executing (also called uphill / downhill, from hill charts):** a milestone with unknowns left (its % may change) / one where the path is clear (its % is reliable).
 - **Stuck:** a milestone whose progress hasn't moved over three sessions that worked on it.
 - **Owner action:** anything you do from a screen or the CLI (answer a drift, sign off, resolve a leftover); recorded like everything else.
+- **Tokens:** the units of text a model reads and writes; what usage is billed in. Cached reads are cheap, cache writes cost a little more than plain input.
+- **Cost (per task, session, project):** tokens times the prices in your config, worked out when you look (never stored); "unknown" when a model has no price.
+- **Forecast (P50 / P90):** the finish range. P50 = a 50% chance of being done by that date ("likely by"); P90 = a 90% chance ("could take until").
+- **Calibration:** how long finished tasks actually took against their estimates (e.g. "tasks typically take 1.8× their estimate" — the middle value, so one runaway task doesn't skew it); the forecast is built from it.
 - **Glance / drill-down:** the first dashboard screen / the detail pages behind it.
 - **Desktop card:** the inline progress view inside the Claude desktop app.
 - **Hook:** the moment Claude Code hands an event to bridge-screen. **MCP tools (agent tools):** the functions agents call on bridge-screen. **Skill:** the instructions that teach agents the protocol.

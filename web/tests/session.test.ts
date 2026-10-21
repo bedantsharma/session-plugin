@@ -25,6 +25,8 @@ const drill: SessionDrill = {
       detour: null,
       files: 1,
       disagreement: false,
+      tokens: 12_400,
+      tokens_text: '12k',
     },
     {
       unit_no: 2,
@@ -38,6 +40,8 @@ const drill: SessionDrill = {
       detour: null,
       files: 0,
       disagreement: false,
+      tokens: 0,
+      tokens_text: null,
     },
   ],
   split: { on_task_s: 360, drift_s: 0, unlabeled_s: 30, detours: [] },
@@ -57,6 +61,14 @@ const drill: SessionDrill = {
   // The API's codes, as the server sends them.
   readback: 'not_needed',
   owner_answers: [{ ts: '2026-10-14T09:30:00Z', answer: 'make_task', reason: null }],
+  cost: {
+    tokens: 12_400,
+    tokens_text: '12k',
+    usd: 0.09,
+    unpriced_models: [],
+    text: '$0.09',
+    summary: '$0.09 spent · 12k tokens',
+  },
 }
 
 const client: Client = {
@@ -88,5 +100,14 @@ describe('Session drill', () => {
     expect(screen.getByText('make it a task')).toBeInTheDocument()
     expect(screen.getByText('report only (suggested: resume)')).toBeInTheDocument()
     expect(container.textContent).not.toMatch(/[a-z]_[a-z]/)
+  })
+
+  it('shows the session cost and the tokens of each unit', async () => {
+    const { container } = render(Session, { client, id: 's1aaaa', version: 1 })
+    expect(await screen.findByTestId('session-cost')).toHaveTextContent('$0.09 spent · 12k tokens')
+    const tokens = [...container.querySelectorAll('[data-testid="unit-tokens"]')].map(
+      (e) => e.textContent,
+    )
+    expect(tokens).toEqual(['12k', '—'])
   })
 })

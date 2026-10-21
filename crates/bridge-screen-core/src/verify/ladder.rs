@@ -117,6 +117,13 @@ impl Call<'_> {
         })
     }
 
+    /// Record a verification at L2 or above, then re-run the forecast (spec §9.3).
+    fn record_done(&self, store: &mut Store, draft: EventDraft) -> Result<()> {
+        self.record(store, draft)?;
+        crate::forecast::record_now(store, &self.repo, &self.sid);
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)] // the payload, minus what the call knows
     fn verified(
         &self,
@@ -208,7 +215,7 @@ fn level3(store: &mut Store, call: Call, wt: &Path) -> Result<VerifyOutcome> {
     let files = depended_files(conn, &call.repo, &call.task)?;
     let sha = committed_head(wt, &files)?;
     let draft = call.verified(3, &sha, files, &call.evidence, By::Agent, None)?;
-    call.record(store, draft)?;
+    call.record_done(store, draft)?;
     let reply = format!(
         "{} verified L3 (end-to-end, as reported) at {}.",
         call.task,
@@ -235,7 +242,7 @@ fn level4(store: &mut Store, call: Call, wt: &Path) -> Result<VerifyOutcome> {
         super::MAX_EVIDENCE,
     );
     let draft = call.verified(4, &sha, files, &text, By::OwnerViaAgent, None)?;
-    call.record(store, draft)?;
+    call.record_done(store, draft)?;
     let reply = format!("{} verified L4 (the owner's word).", call.task);
     call.done(store, 4, &reply)
 }
@@ -351,7 +358,7 @@ fn level2(
         },
     };
     let draft = call.verified(2, &sha, files, &evidence, by, Some(rerun))?;
-    call.record(store, draft)?;
+    call.record_done(store, draft)?;
     call.done(store, 2, &reply)
 }
 
@@ -409,7 +416,7 @@ pub fn owner_verdict(
     let sha = git::head(wt)?;
     let files = depended_files(store.conn(), repo_id, task)?;
     let title = crate::claim::task_title(store.conn(), repo_id, task)?.unwrap_or_default();
-    store.write(|tx| {
+    let line = store.write(|tx| {
         // Still open? Checked here, inside the write, so a racing second click (another
         // tab, the CLI) sees the first one's verdict and records nothing.
         fresh(tx, sha.as_deref())?;
@@ -481,7 +488,12 @@ pub fn owner_verdict(
             .task(task),
         )?;
         Ok(line)
-    })
+    })?;
+    // A task done at L2 or above moves the forecast (spec §9.3).
+    if broken.is_none() && level >= 2 {
+        crate::forecast::record_now(store, repo_id, OWNER_SESSION);
+    }
+    Ok(line)
 }
 
 /// The owner sets (`Some`) or unsets (`None`) a per-repo test setting: one

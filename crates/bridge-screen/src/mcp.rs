@@ -1102,7 +1102,8 @@ impl Bridge {
         let store = self.open()?;
         let session = self.caller(&store, "status", &args.raw)?;
         args.parsed.as_ref().map_err(Clone::clone)?;
-        agent_status(&store, &session).map_err(msg)
+        let cfg = Config::load(&self.home.config_path()).unwrap_or_default();
+        agent_status(&store, &session, &cfg).map_err(msg)
     }
 }
 
@@ -1283,7 +1284,11 @@ fn ladder_step(status: NodeStatus) -> Option<&'static str> {
 }
 
 /// Compact state for the agent.
-fn agent_status(store: &Store, s: &Session) -> bridge_screen_core::error::Result<String> {
+fn agent_status(
+    store: &Store,
+    s: &Session,
+    cfg: &Config,
+) -> bridge_screen_core::error::Result<String> {
     let conn = store.conn();
     let short: String = s.session_id.chars().take(6).collect();
     let state = match s.state {
@@ -1320,6 +1325,7 @@ fn agent_status(store: &Store, s: &Session) -> bridge_screen_core::error::Result
         }
         None => out.push_str("Active task: none — claim one with claim_task.\n"),
     }
+    cost_status(conn, s, cfg, &mut out)?;
     handoff_status(conn, s, &mut out)?;
     let pending = verify::pending_claims(conn, &s.session_id, jiff::Timestamp::MAX)?;
     if !pending.is_empty() {
@@ -1352,6 +1358,12 @@ fn agent_status(store: &Store, s: &Session) -> bridge_screen_core::error::Result
     match get_node(conn, &s.repo_id, "G")?.filter(|g| g.status != NodeStatus::Dropped) {
         Some(goal) => {
             let _ = writeln!(out, "Goal: {}", goal.title);
+            let f = view::forecast_row(conn, &s.repo_id, jiff::Timestamp::now())?;
+            if f.compact.is_some() {
+                let _ = writeln!(out, "Forecast: {} ({})", f.text, f.basis);
+            } else {
+                let _ = writeln!(out, "Forecast: {}", f.text);
+            }
             let next: Vec<String> = load_tree(conn, &s.repo_id, false)?
                 .into_iter()
                 .filter(|n| {
@@ -1370,6 +1382,36 @@ fn agent_status(store: &Store, s: &Session) -> bridge_screen_core::error::Result
         None => out.push_str("No plan yet — ask the owner whether to create one."),
     }
     Ok(out)
+}
+
+/// `Cost so far: this session $1.20 (340k tokens) · task 2.3 $0.80 (200k tokens)`.
+fn cost_status(
+    conn: &rusqlite::Connection,
+    s: &Session,
+    cfg: &Config,
+    out: &mut String,
+) -> bridge_screen_core::error::Result<()> {
+    use bridge_screen_core::telemetry::Scope;
+    let mut parts = Vec::new();
+    if let Some(c) = view::cost_row(conn, &Scope::Session(s.session_id.clone()), cfg)? {
+        parts.push(format!(
+            "this session {} ({} tokens)",
+            c.text, c.tokens_text
+        ));
+    }
+    if let Some(task) = &s.active_task {
+        let scope = Scope::Task {
+            repo: s.repo_id.clone(),
+            id: task.clone(),
+        };
+        if let Some(c) = view::cost_row(conn, &scope, cfg)? {
+            parts.push(format!("task {task} {} ({} tokens)", c.text, c.tokens_text));
+        }
+    }
+    if !parts.is_empty() {
+        let _ = writeln!(out, "Cost so far: {}", parts.join(" · "));
+    }
+    Ok(())
 }
 
 /// Serve MCP over stdio until the client disconnects.

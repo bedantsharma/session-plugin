@@ -23,6 +23,7 @@
     onOpenTask,
     onOpenHistory,
     onOpenTuning,
+    onOpenCalibration,
   }: {
     client: Client
     repo: string
@@ -32,6 +33,7 @@
     onOpenTask: (repo: string, id: string) => void
     onOpenHistory: (repo: string) => void
     onOpenTuning: (repo: string) => void
+    onOpenCalibration?: (repo: string) => void
   } = $props()
 
   const m = useModel<ProjectDrill>(
@@ -112,6 +114,11 @@
           type="button"
           class="inline-flex h-9 items-center rounded-lg border border-edge px-4 text-sm font-medium transition-colors duration-150 hover:bg-hover"
           onclick={() => onOpenTuning(repo)}>Drift tuning</button
+        >
+        <button
+          type="button"
+          class="inline-flex h-9 items-center rounded-lg border border-edge px-4 text-sm font-medium transition-colors duration-150 hover:bg-hover"
+          onclick={() => onOpenCalibration?.(repo)}>Calibration</button
         >
       </div>
     </div>

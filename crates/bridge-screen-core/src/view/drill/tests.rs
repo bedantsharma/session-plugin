@@ -228,7 +228,9 @@ fn session_timeline_split_and_owner_answers() {
         Ok(())
     })
     .unwrap();
-    let d = session(s.conn(), "s1", at(500)).unwrap().unwrap();
+    let d = session(s.conn(), "s1", &Config::default(), at(500))
+        .unwrap()
+        .unwrap();
     assert_eq!(d.units.len(), 2);
     assert_eq!(d.units[0].files, 2);
     assert_eq!(d.units[0].label, Some(Label::OnTask));
@@ -254,7 +256,11 @@ fn session_timeline_split_and_owner_answers() {
             reason: Some("the CI fix unblocks the release".into())
         }]
     );
-    assert!(session(s.conn(), "nope", at(0)).unwrap().is_none());
+    assert!(
+        session(s.conn(), "nope", &Config::default(), at(0))
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -328,7 +334,7 @@ fn task_decisions_verifications_actors_and_retries() {
         "squashed",
         json!({"branch": "feat", "old_shas": ["bbb"], "new_sha": "ccc", "backup_ref": "x"}),
     );
-    let t = task(s.conn(), "r", "1.1").unwrap();
+    let t = task(s.conn(), "r", "1.1", &Config::default()).unwrap();
     assert_eq!(t.title, "T1.1");
     assert_eq!(t.decisions.len(), 1, "superseded decisions sit in a chain");
     let chain: Vec<&str> = t.decisions[0]
@@ -487,5 +493,232 @@ fn tuning_lists_changes_newest_first_with_a_revert() {
     "tone": "neutral"
   }
 }"#
+    );
+}
+
+fn reply(id: &str, model: &str, secs: i64, input: u64, output: u64) -> Value {
+    json!({"message_id": id, "model": model, "ts": at(secs).to_string(), "input": input,
+           "output": output})
+}
+
+#[test]
+fn task_drill_has_cost_by_model_and_agent_steps_and_ratio() {
+    let mut s = store();
+    for (id, parent, kind) in [("1.1.1", "1.1", "subtask"), ("1.1.2", "1.1", "subtask")] {
+        ev(
+            &mut s,
+            "owner",
+            5,
+            "node_added",
+            node(id, Some(parent), kind, Some(15)),
+        );
+    }
+    ev(
+        &mut s,
+        "s1",
+        10,
+        "session_started",
+        json!({"cwd": "/w", "source": "startup"}),
+    );
+    ev(
+        &mut s,
+        "s1",
+        10,
+        "task_claimed",
+        json!({"task_id": "1.2", "mode": "auto", "confidence": 1.0}),
+    );
+    ev(&mut s, "s1", 11, "prompt", json!({"chars": 1}));
+    ev(
+        &mut s,
+        "s1",
+        20,
+        "usage",
+        json!({"path": "/t", "offset_after": 1, "replies": [
+            reply("a", "claude-opus-5-5", 12, 1_000_000, 100_000),
+            reply("b", "mystery", 13, 0, 5_000)]}),
+    );
+    ev(
+        &mut s,
+        "s1",
+        21,
+        "usage",
+        json!({"path": "/sub", "offset_after": 1, "agent_id": "x", "agent_type": "Explore",
+               "replies": [reply("c", "claude-sonnet-5-5", 14, 500_000, 0)]}),
+    );
+    ev(&mut s, "s1", 1811, "unit_stopped", json!({}));
+    ev(
+        &mut s,
+        "s1",
+        1812,
+        "verified",
+        verified("v2", "1.2", 2, "abc"),
+    );
+    let cfg = Config::default();
+    let t = task(s.conn(), "r", "1.2", &cfg).unwrap();
+    let u = t.usage.unwrap();
+    assert_eq!(u.total.text, "≥ $7.00 (some models unpriced)");
+    let models: Vec<(&str, &str)> = u
+        .by_model
+        .iter()
+        .map(|m| (m.label.as_str(), m.cost_text.as_str()))
+        .collect();
+    assert_eq!(
+        models,
+        [
+            ("Opus 5.5", "$6.00"),
+            ("Sonnet 5.5", "$1.00"),
+            ("mystery", "cost unknown")
+        ]
+    );
+    let agents: Vec<(&str, &str)> = u
+        .by_agent
+        .iter()
+        .map(|a| (a.label.as_str(), a.cost_text.as_str()))
+        .collect();
+    assert_eq!(
+        agents,
+        [
+            ("Main agent", "≥ $6.00 (some models unpriced)"),
+            ("Explore", "$1.00")
+        ]
+    );
+    // 30 minutes against a 30-minute estimate, now done.
+    assert_eq!(t.ratio, Some(1.0));
+    assert_eq!(t.steps.len(), 0);
+    // 1.1's subtasks: the first not done is current.
+    ev(
+        &mut s,
+        "owner",
+        1900,
+        "verified",
+        verified("v3", "1.1.1", 2, "abc"),
+    );
+    let t = task(s.conn(), "r", "1.1", &cfg).unwrap();
+    let steps: Vec<(&str, bool)> = t
+        .steps
+        .iter()
+        .map(|st| (st.id.as_str(), st.current))
+        .collect();
+    assert_eq!(steps, [("1.1.1", false), ("1.1.2", true)]);
+    assert_eq!((t.usage, t.ratio), (None, None));
+}
+
+#[test]
+fn session_drill_has_tokens_per_unit_and_its_cost() {
+    let mut s = store();
+    ev(
+        &mut s,
+        "s1",
+        0,
+        "session_started",
+        json!({"cwd": "/w", "source": "startup"}),
+    );
+    ev(&mut s, "s1", 1, "prompt", json!({"chars": 1}));
+    ev(
+        &mut s,
+        "s1",
+        5,
+        "usage",
+        json!({"path": "/t", "offset_after": 1, "replies": [
+            reply("a", "claude-opus-5-5", 2, 10_000, 2_400)]}),
+    );
+    ev(&mut s, "s1", 60, "unit_stopped", json!({}));
+    ev(&mut s, "s1", 61, "prompt", json!({"chars": 1}));
+    let d = session(s.conn(), "s1", &Config::default(), at(100))
+        .unwrap()
+        .unwrap();
+    assert_eq!(d.units[0].tokens_text.as_deref(), Some("12k"));
+    assert_eq!(d.units[1].tokens_text, None);
+    assert_eq!(d.cost.unwrap().summary, "$0.09 spent · 12k tokens");
+}
+
+#[test]
+fn calibration_drill_ratios_history_and_prices() {
+    let mut s = store();
+    let mut cfg = Config::default();
+    cfg.prices.insert(
+        "my-model".into(),
+        crate::config::Price {
+            input: 1.0,
+            output: 2.0,
+            cache_read: 0.1,
+            cache_write_5m: 1.25,
+            cache_write_1h: 2.0,
+        },
+    );
+    // Empty: no points, the thin-data reason, no history.
+    let c = calibration(s.conn(), "r", &cfg, at(0)).unwrap();
+    assert_eq!((c.models.len(), c.pooled_text.as_deref()), (0, None));
+    assert_eq!(
+        c.forecast.text,
+        "Not enough finished tasks to forecast yet — 3 more are needed"
+    );
+    assert_eq!(c.history.len(), 0);
+    let mine = c.prices.iter().find(|p| p.model == "my-model").unwrap();
+    assert_eq!(mine.source, "yours");
+    let opus = c
+        .prices
+        .iter()
+        .find(|p| p.model == "claude-opus-5-5")
+        .unwrap();
+    assert_eq!(
+        (opus.name.as_str(), opus.source.as_str()),
+        ("Opus 5.5", "default")
+    );
+    // 1.1 took 60 minutes for 30, on Opus; an unpriced model also spent tokens.
+    ev(
+        &mut s,
+        "s1",
+        10,
+        "session_started",
+        json!({"cwd": "/w", "source": "startup", "model": "claude-opus-5-5"}),
+    );
+    ev(
+        &mut s,
+        "s1",
+        10,
+        "task_claimed",
+        json!({"task_id": "1.1", "mode": "auto", "confidence": 1.0}),
+    );
+    ev(&mut s, "s1", 11, "prompt", json!({"chars": 1}));
+    ev(
+        &mut s,
+        "s1",
+        20,
+        "usage",
+        json!({"path": "/t", "offset_after": 1,
+               "replies": [reply("z", "mystery", 12, 0, 10)]}),
+    );
+    ev(&mut s, "s1", 3611, "unit_stopped", json!({}));
+    ev(
+        &mut s,
+        "s1",
+        3612,
+        "verified",
+        verified("v1", "1.1", 2, "abc"),
+    );
+    ev(
+        &mut s,
+        "owner",
+        3700,
+        "forecast_ran",
+        json!({"p50_hours": 0.0, "p90_hours": 0.0, "remaining_min": 30, "unestimated": 0,
+               "points": 1, "reason": "Not enough finished tasks to forecast yet — 2 more are needed"}),
+    );
+    let c = calibration(s.conn(), "r", &cfg, at(4000)).unwrap();
+    assert_eq!(c.models.len(), 1);
+    // The task's only replies are the unpriced model's: it is the task's model.
+    assert_eq!(c.models[0].model, "mystery");
+    assert_eq!(c.models[0].text, "tasks typically take 2× their estimate");
+    assert!(!c.models[0].own);
+    assert_eq!(
+        c.pooled_text.as_deref(),
+        Some("tasks typically take 2× their estimate")
+    );
+    assert_eq!(c.history.len(), 1);
+    assert_eq!(c.unpriced_models, ["mystery"]);
+    assert_eq!(
+        c.notes,
+        ["No price for mystery: add one under [prices] in config.toml."]
     );
 }

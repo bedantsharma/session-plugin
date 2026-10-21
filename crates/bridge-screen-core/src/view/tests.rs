@@ -599,7 +599,15 @@ fn ended_sessions_are_left_out() {
         .collect();
     assert_eq!(ids, vec!["live0002"]);
     assert_eq!(g.needs_you, vec![]);
-    assert_eq!(g.projects[0].forecast, None);
+    // Nothing finished yet: no dates, the reason instead.
+    let f = g.projects[0].forecast.as_ref().unwrap();
+    assert_eq!(f.compact, None);
+    assert_eq!(
+        f.text,
+        "Not enough finished tasks to forecast yet — 3 more are needed"
+    );
+    assert_eq!(f.short, "forecast needs 3 more finished tasks");
+    assert_eq!(g.projects[0].cost, None);
     assert_eq!(
         g.projects[0].goal,
         Some(NodeRef {
@@ -647,4 +655,73 @@ fn a_question_is_a_needs_you_rest() {
 fn far_off_title_names_the_session_and_the_time_away() {
     assert_eq!(far_off_title("b1", 2400), "b1 · far off its task (40 min)");
     assert_eq!(far_off_title("b1", 30), "b1 · far off its task");
+}
+
+#[test]
+fn project_and_session_rows_carry_forecast_and_cost() {
+    let mut s = store();
+    for (id, est) in [("1.3", 30), ("1.4", 30)] {
+        ev(
+            &mut s,
+            "owner",
+            0,
+            "node_added",
+            node(id, Some("1"), "task", Some(est)),
+        );
+    }
+    // Three tasks finish at their estimate (30 min each); 1.4 and 2.1 are left.
+    for (n, task) in ["1.1", "1.2", "1.3"].iter().enumerate() {
+        let sid = format!("done000{n}");
+        let from = i64::try_from(n).unwrap() * 2000;
+        start(&mut s, &sid, from);
+        claim(&mut s, &sid, from, task);
+        unit(&mut s, &sid, from + 1, 1800);
+        ev(
+            &mut s,
+            &sid,
+            from + 1802,
+            "verified",
+            json!({"verif_id": format!("v{task}"), "task_id": task, "level": 2, "sha": "a",
+                   "files": [], "evidence": "ok", "by": "agent"}),
+        );
+        ev(&mut s, &sid, from + 1803, "session_ended", json!({}));
+    }
+    start(&mut s, "live0001", 7000);
+    claim(&mut s, "live0001", 7000, "1.4");
+    ev(&mut s, "live0001", 7001, "prompt", json!({"chars": 1}));
+    ev(
+        &mut s,
+        "live0001",
+        7010,
+        "usage",
+        json!({"path": "/t", "offset_after": 1, "replies": [
+            {"message_id": "m1", "model": "claude-opus-5-5", "ts": at(7005).to_string(),
+             "input": 1_000_000, "output": 100_000},
+            {"message_id": "m2", "model": "mystery", "ts": at(7006).to_string(),
+             "output": 2_000_000}]}),
+    );
+    let g = glance_at(&s, 7100);
+    let p = &g.projects[0];
+    let f = p.forecast.as_ref().unwrap();
+    assert_eq!(f.forecast.points, 3);
+    assert_eq!(f.forecast.remaining_min, 90);
+    // Every ratio is 1.0: P50 = P90 = 90 minutes, minus nothing spent yet on 1.4.
+    assert_eq!((f.forecast.p50_hours, f.forecast.p90_hours), (1.5, 1.5));
+    assert!(f.text.starts_with("likely by "), "{}", f.text);
+    assert!(f.short.starts_with("likely "), "{}", f.short);
+    assert!(f.compact.is_some());
+    assert_eq!(
+        f.help,
+        "50% and 90% chance, based on how long 3 verified tasks actually took"
+    );
+    let cost = p.cost.as_ref().unwrap();
+    assert_eq!(cost.tokens, 3_100_000);
+    assert_eq!(cost.unpriced_models, ["mystery"]);
+    assert_eq!(cost.text, "≥ $6.00 (some models unpriced)");
+    assert_eq!(
+        cost.summary,
+        "≥ $6.00 spent (some models unpriced) · 3.1M tokens"
+    );
+    let live = row(&g, "live0001").cost.as_ref().unwrap();
+    assert_eq!(live.usd, Some(6.0));
 }

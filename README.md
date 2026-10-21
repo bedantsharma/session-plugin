@@ -44,6 +44,27 @@ A task claimed done is checked, not taken on trust:
   (`log_decision`) when a task is done, before compaction and at the end of a session; a
   changed decision supersedes the old one. `bridge-screen decisions [--all]` lists them.
 
+## Cost and forecast
+
+- **Cost.** At each Stop (and when a subagent stops) bridge-screen reads only the new
+  lines of the session's transcript and records each model reply's token counts once —
+  never the text. Tokens go to the task, any open detour and the agent that spent them.
+  Money is worked out when you look, from the prices in `~/.bridge-screen/config.toml`
+  (`[prices."<model>"]`, USD per million tokens; defaults ship for current Claude
+  models), so fixing a price fixes past costs too. A model without a price shows its cost
+  as "unknown", never $0 (Haiku 5.5, whose price depends on prompt length, and fast-mode
+  replies, shown as "<model> (fast)", ship without one). `bridge-screen usage [--by model|task|session|agent]` prints
+  it; `bridge-screen usage --catch-up` reads older transcripts to the end at once.
+- **Forecast.** Each project gets a finish range: "likely by Oct 30 · could take until
+  Nov 8". The first date is the **P50** — a 50% chance of being done by then; the second
+  is the **P90** — a 90% chance. It comes from how long verified tasks actually took
+  against their estimates (per model once there are 6 of them), applied 1000 times at
+  random to the tasks left, then turned into dates with your recent agent hours per
+  day. With fewer than 3 finished tasks, or no recent activity, there are no dates —
+  the screens say why. Tasks without an estimate are left out and counted. The range
+  narrows as more work is verified; `bridge-screen forecast` explains its basis, and
+  the dashboard's Calibration page shows the ratios and how the forecast moved.
+
 ## Three screens
 
 Every screen shows the same facts from one model, and every button records what the
@@ -57,8 +78,10 @@ matching CLI command records.
 - **Browser.** `bridge-screen ui` starts the dashboard on `127.0.0.1` (one instance;
   running it again prints the same URL) and opens it. The URL carries a random token
   after `#token=`; requests without it are refused. Drill into a project (plan tree,
-  scope line, re-plans), a session (timeline, time split, checkpoints, handoff), a task
-  (decisions, verification evidence), the raw history and the drift tuning.
+  scope line, re-plans), a session (timeline with tokens per unit, time split, cost,
+  checkpoints, handoff), a task (cost by model and agent, retries, steps, estimate vs
+  actual, decisions, verification evidence), the calibration behind the forecast, the
+  raw history and the drift tuning.
 - **Claude desktop app.** `/bridge-screen` asks Claude to call `show_progress`, which
   renders an inline card with the same needs-you buttons (MCP Apps). Hosts without MCP
   Apps get the text view.
