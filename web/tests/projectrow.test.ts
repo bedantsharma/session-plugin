@@ -79,4 +79,14 @@ describe('ProjectRow', () => {
     expect(line.textContent).not.toMatch(/likely|Oct|Nov/)
     expect(screen.queryByTestId('cost')).toBeNull()
   })
+
+  it('never shows the snake_case codes the API sends, with a forecast and a cost', () => {
+    for (const f of [forecast(), forecast('No recent activity to turn hours into dates')]) {
+      const { container, unmount } = render(ProjectRow, {
+        project: { ...project(), forecast: f, cost: COST },
+      })
+      expect(container.textContent).not.toMatch(/[a-z]_[a-z]/)
+      unmount()
+    }
+  })
 })

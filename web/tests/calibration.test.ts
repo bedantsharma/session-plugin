@@ -142,4 +142,28 @@ describe('Calibration drill', () => {
       container.querySelector('[aria-label="Agent hours left, 50% and 90% chance, over time"]'),
     ).not.toBeNull()
   })
+
+  it('never shows the snake_case codes the API sends', async () => {
+    const pts = [point('1.1', 1, '2026-10-14T09:00:00Z'), point('1.2', 2, '2026-10-15T09:00:00Z')]
+    const d = drill({
+      models: [
+        {
+          model: 'claude-opus-5-5',
+          name: 'Opus 5.5',
+          points: pts,
+          median_ratio: 1.5,
+          text: 'tasks typically take 1.5× their estimate',
+          own: false,
+        },
+      ],
+      pooled: pts,
+      pooled_text: 'tasks typically take 1.5× their estimate',
+      history: [
+        { ts: '2026-10-15T09:00:00Z', ...forecast('No recent activity to turn hours into dates') },
+      ],
+    })
+    const { container } = render(Calibration, { client: client(d), repo: 'r1', version: 1 })
+    await screen.findByTestId('calibration-forecast')
+    expect(container.textContent).not.toMatch(/[a-z]_[a-z]/)
+  })
 })
