@@ -294,6 +294,35 @@ mod tests {
             .query_row("SELECT count(*) FROM drift_samples", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0);
+        // The agent called a unit drift; the owner corrects it to asked for: the drift
+        // sample is forgotten, and a rebuild agrees.
+        for (kind, data) in [
+            ("prompt", json!({"chars": 1})),
+            ("unit_stopped", json!({"score": 0.9})),
+            (
+                "unit_labeled",
+                json!({"unit_no": 2, "label": "drift", "source": "agent", "score": 0.9}),
+            ),
+        ] {
+            s.append(crate::store::EventDraft::new("r", "s", kind, data))
+                .unwrap();
+        }
+        let count = |s: &Store| -> i64 {
+            s.conn()
+                .query_row("SELECT count(*) FROM drift_samples", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(count(&s), 1);
+        s.append(crate::store::EventDraft::new(
+            "r",
+            "s",
+            "unit_labeled",
+            json!({"unit_no": 2, "label": "requested", "source": "owner", "score": 0.9}),
+        ))
+        .unwrap();
+        assert_eq!(count(&s), 0);
+        s.rebuild().unwrap();
+        assert_eq!(count(&s), 0);
     }
 
     #[test]

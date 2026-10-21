@@ -363,6 +363,14 @@ fn unit_labeled(tx: &Transaction, event: &Event, d: &UnitLabeled) -> Result<()> 
     let sample = d.label != Label::Requested
         && (d.source == LabelSource::Owner
             || (d.source == LabelSource::Agent && d.heuristic != Some(d.label)));
+    if d.label == Label::Requested {
+        // Relabelled as asked for (e.g. the owner correcting a "drift"): the unit's earlier
+        // samples were evidence about the wrong question; tuning forgets them.
+        tx.execute(
+            "DELETE FROM drift_samples WHERE repo_id = ?1 AND unit_ref = ?2",
+            params![event.repo_id, format!("{sid}:{}", d.unit_no)],
+        )?;
+    }
     if let Some(score) = score.filter(|_| sample) {
         tx.execute(
             "INSERT INTO drift_samples (repo_id, unit_ref, score, label, source, ts)
