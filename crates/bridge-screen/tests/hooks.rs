@@ -595,6 +595,23 @@ fn hook_latency() {
 #[test]
 #[ignore = "perf check: run on demand with --release"]
 fn hook_latency_stop_path() {
+    scoring_path("stop", "hook stop (30 files, 300-node plan)");
+}
+
+/// A prompt closing a unit that missed its Stop scores it from its files: the same unit
+/// and plan as [`hook_latency_stop_path`].
+#[test]
+#[ignore = "perf check: run on demand with --release"]
+fn hook_latency_interrupted_prompt() {
+    scoring_path(
+        "user-prompt-submit",
+        "hook user-prompt-submit closing an interrupted unit (30 files, 300-node plan)",
+    );
+}
+
+/// `event` closes and scores a fresh unit of 30 files, 200 times, against a 300-node plan
+/// on the large database.
+fn scoring_path(event: &str, label: &str) {
     use bridge_screen_core::plan::{EditContext, NodeKind, PlanOp, plan_edit};
     use bridge_screen_core::store::{Actor, EventDraft, append_in};
     use std::time::Instant;
@@ -650,7 +667,7 @@ fn hook_latency_stop_path() {
     let session = "perf-session-07";
     claim_for(&env, session, "3.5");
 
-    let mut payload = common::fixture_json("stop", session, &env.repo_path());
+    let mut payload = common::fixture_json(event, session, &env.repo_path());
     payload["last_assistant_message"] = json!(
         "Wired the checkout task into the storefront, added tests for the order summary and fixed the cart total rounding."
     );
@@ -681,7 +698,7 @@ fn hook_latency_stop_path() {
                 })
                 .unwrap();
             let start = Instant::now();
-            env.hook_raw("stop", &payload);
+            env.hook_raw(event, &payload);
             start.elapsed()
         })
         .collect();
@@ -695,7 +712,7 @@ fn hook_latency_stop_path() {
         )
         .unwrap();
     assert_eq!(labelled, 200, "every unit was scored");
-    report("hook stop (30 files, 300-node plan)", times);
+    report(label, times);
 }
 
 /// 50 committed files and 5 symbols in them, for a claim: the L1 check at a commit then

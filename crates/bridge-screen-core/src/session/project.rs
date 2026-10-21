@@ -86,12 +86,16 @@ fn unknown() -> String {
 }
 
 /// A user prompt. Only its length is kept, never its text.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Prompt {
     #[serde(default)]
     pub prompt_id: Option<String>,
     #[serde(default)]
     pub chars: u64,
+    /// The drift score of the open unit this prompt closes because it missed its Stop
+    /// (spec §7.2), when it was scored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_score: Option<f64>,
 }
 
 /// `tool_intent` (before an edit tool runs) and `file_changed` (after it succeeded).
@@ -537,6 +541,7 @@ impl Moment<'_> {
     fn prompt(&self, open: Option<Unit>, d: &Prompt) -> Result<()> {
         // A unit still open here missed its Stop: it ends where the next one begins.
         if let Some(u) = open {
+            self.set_score(&u, d.closed_score)?;
             self.close_unit(u)?;
         }
         // A prompt after SessionEnd means the session is alive after all.
@@ -636,15 +641,20 @@ impl Moment<'_> {
 
     fn unit_stopped(&self, open: Option<Unit>, d: &UnitStopped) -> Result<()> {
         if let Some(u) = open {
-            if let Some(score) = d.score {
-                self.tx.execute(
-                    "UPDATE units SET drift_score = ?3 WHERE session_id = ?1 AND unit_no = ?2",
-                    params![u.session_id, u.unit_no, score],
-                )?;
-            }
+            self.set_score(&u, d.score)?;
             self.close_unit(u)?;
         }
         self.set_state(SessionState::Idle)
+    }
+
+    fn set_score(&self, u: &Unit, score: Option<f64>) -> Result<()> {
+        if let Some(score) = score {
+            self.tx.execute(
+                "UPDATE units SET drift_score = ?3 WHERE session_id = ?1 AND unit_no = ?2",
+                params![u.session_id, u.unit_no, score],
+            )?;
+        }
+        Ok(())
     }
 
     fn close_unit(&self, mut u: Unit) -> Result<()> {

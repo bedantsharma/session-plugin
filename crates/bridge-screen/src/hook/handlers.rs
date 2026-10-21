@@ -77,11 +77,7 @@ pub fn handle(
     let call = (event == HookEvent::PreToolUse)
         .then(|| our_mcp_call(input))
         .flatten();
-    // Stop scores the unit it is about to close (in memory; the message isn't stored).
-    let scored = match (&ctx.known, event) {
-        (Some(known), HookEvent::Stop) => nav::score_open_unit(store.conn(), known, input)?,
-        _ => None,
-    };
+    let scored = score_closing(event, &ctx, store, input)?;
     let mut drafts = drafts_for(event, &ctx, store, scored)?;
     // An edit before the read-back the briefing asked for: one nudge (spec §8.4).
     let nudge = match event {
@@ -113,11 +109,13 @@ pub fn handle(
         all.push(ctx.draft("session_started", &ctx.session_started("unknown"))?);
     }
     all.extend(drafts);
+    let closed = scored.map(|(unit_no, _)| unit_no);
     let nav_ctx = nav::NavCtx {
         event,
         input,
         config,
-        stopped_unit: scored.map(|(unit_no, _)| unit_no),
+        stopped_unit: closed.filter(|_| event == HookEvent::Stop),
+        interrupted_unit: closed.filter(|_| event == HookEvent::UserPromptSubmit),
         actor: ctx.actor(),
         now: jiff::Timestamp::now(),
     };
@@ -280,8 +278,27 @@ fn resolve<'a>(event: HookEvent, input: &'a HookInput, store: &Store) -> Result<
     }))
 }
 
-/// The events one hook call records (possibly none). `scored` is the unit a Stop closes
-/// and its drift score.
+/// Stop scores the unit it is about to close (in memory; the message isn't stored). A
+/// prompt closes a unit that missed its Stop and scores it from its files alone.
+fn score_closing(
+    event: HookEvent,
+    ctx: &Ctx,
+    store: &Store,
+    input: &HookInput,
+) -> Result<Option<(i64, Option<f64>)>> {
+    let Some(known) = &ctx.known else {
+        return Ok(None);
+    };
+    let summary = match event {
+        HookEvent::Stop => input.last_assistant_message.as_deref().unwrap_or(""),
+        HookEvent::UserPromptSubmit => "",
+        _ => return Ok(None),
+    };
+    Ok(nav::score_open_unit(store.conn(), known, summary)?)
+}
+
+/// The events one hook call records (possibly none). `scored` is the unit a Stop (or a
+/// prompt, when the unit missed its Stop) closes and its drift score.
 fn drafts_for(
     event: HookEvent,
     ctx: &Ctx,
@@ -305,6 +322,7 @@ fn drafts_for(
                     .prompt
                     .as_deref()
                     .map_or(0, |p| p.chars().count() as u64),
+                closed_score: scored.and_then(|(_, score)| score),
             },
         )?,
         HookEvent::PreToolUse => {
