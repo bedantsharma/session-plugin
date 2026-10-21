@@ -429,6 +429,7 @@ fn verify_cmd(
         _ if withdraw => OwnerAction::Withdraw {
             repo: repo.id,
             task: task.to_string(),
+            verification_id: None,
         },
         Some(note) => OwnerAction::Broken {
             repo: repo.id,

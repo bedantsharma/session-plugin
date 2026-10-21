@@ -754,7 +754,7 @@ fn withdraw_restores_previous_status() {
         ],
     );
     assert_eq!(status(&s, "r", "1.1"), NodeStatus::L4);
-    let line = withdraw(&mut s, "r", "1.1").unwrap();
+    let line = withdraw(&mut s, "r", "1.1", None).unwrap();
     assert!(
         line.starts_with("Took back your sign-off on 1.1 T1.1"),
         "{line}"
@@ -762,7 +762,7 @@ fn withdraw_restores_previous_status() {
     assert_eq!(status(&s, "r", "1.1"), NodeStatus::L2);
     // A second withdraw finds nothing of the owner's left: stale, nothing recorded.
     let before = crate::store::read_all(s.conn(), Some("r")).unwrap().len();
-    let err = withdraw(&mut s, "r", "1.1").unwrap_err();
+    let err = withdraw(&mut s, "r", "1.1", None).unwrap_err();
     assert!(matches!(err, crate::error::Error::Stale(_)), "{err}");
     assert!(
         err.to_string().contains("nothing to withdraw on 1.1"),
@@ -773,11 +773,11 @@ fn withdraw_restores_previous_status() {
         before
     );
 
-    withdraw(&mut s, "r", "1.2").unwrap();
+    withdraw(&mut s, "r", "1.2", None).unwrap();
     assert_eq!(status(&s, "r", "1.2"), NodeStatus::Claimed);
-    withdraw(&mut s, "r", "1.3").unwrap();
+    withdraw(&mut s, "r", "1.3", None).unwrap();
     assert_eq!(status(&s, "r", "1.3"), NodeStatus::Todo);
-    withdraw(&mut s, "r", "1.4.1").unwrap();
+    withdraw(&mut s, "r", "1.4.1", None).unwrap();
     assert_eq!(status(&s, "r", "1.4.1"), NodeStatus::Active);
 
     // The owner's "broken" taken back: what it wiped counts again.
@@ -792,10 +792,10 @@ fn withdraw_restores_previous_status() {
         )],
     );
     assert_eq!(status(&s, "r", "1.1"), NodeStatus::Failed);
-    let line = withdraw(&mut s, "r", "1.1").unwrap();
+    let line = withdraw(&mut s, "r", "1.1", None).unwrap();
     assert!(line.contains("\"broken\""), "{line}");
     assert_eq!(status(&s, "r", "1.1"), NodeStatus::L2);
-    assert!(withdraw(&mut s, "r", "1.1").is_err());
+    assert!(withdraw(&mut s, "r", "1.1", None).is_err());
     let states: Vec<VerifState> = verifications(s.conn(), "r", "1.1")
         .unwrap()
         .iter()
@@ -828,4 +828,29 @@ fn withdraw_restores_previous_status() {
     let before = dump(&s);
     s.rebuild().unwrap();
     assert_eq!(dump(&s), before);
+}
+
+#[test]
+fn a_double_click_on_take_back_is_stale() {
+    let mut s = store();
+    script(
+        &mut s,
+        &[
+            ("r", "owner", 10, "verified", by_owner("v1", "1.1", 4)),
+            ("r", "owner", 11, "verified", by_owner("v2", "1.1", 4)),
+        ],
+    );
+    // The screen showed v2; the first click takes it back.
+    let w = withdrawable(s.conn(), "r", "1.1").unwrap().unwrap();
+    assert_eq!(w.verification_id, "v2");
+    withdraw(&mut s, "r", "1.1", Some("v2")).unwrap();
+    // The second click (same page, same v2) must not take back the older v1 too.
+    let before = crate::store::read_all(s.conn(), Some("r")).unwrap().len();
+    let err = withdraw(&mut s, "r", "1.1", Some("v2")).unwrap_err();
+    assert!(matches!(err, crate::error::Error::Stale(_)), "{err}");
+    assert_eq!(
+        crate::store::read_all(s.conn(), Some("r")).unwrap().len(),
+        before
+    );
+    assert_eq!(status(&s, "r", "1.1"), NodeStatus::L4);
 }

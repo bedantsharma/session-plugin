@@ -81,8 +81,15 @@ pub fn withdrawable(conn: &Connection, repo_id: &str, task: &str) -> Result<Opti
 }
 
 /// Take back the owner's newest verdict on `task` (`verify <task> --withdraw`). Refused
-/// as stale, recording nothing, when there is none. Returns the line to show.
-pub fn withdraw(store: &mut Store, repo_id: &str, task: &str) -> Result<String> {
+/// as stale, recording nothing, when there is none, or when `expected` (the verdict the
+/// screen showed) is no longer the newest in force — a double click, or a page from
+/// before another verdict. Returns the line to show.
+pub fn withdraw(
+    store: &mut Store,
+    repo_id: &str,
+    task: &str,
+    expected: Option<&str>,
+) -> Result<String> {
     let title = crate::claim::task_title(store.conn(), repo_id, task)?.unwrap_or_default();
     let name = format!("{task} {title}").trim_end().to_string();
     store.write(|tx| {
@@ -91,6 +98,12 @@ pub fn withdraw(store: &mut Store, repo_id: &str, task: &str) -> Result<String> 
                 "nothing to withdraw on {task}: you haven't signed it off or marked it broken"
             )));
         };
+        if expected.is_some_and(|e| e != w.verification_id) {
+            return Err(Error::Stale(format!(
+                "already changed: the verdict you saw on {task} was taken back or replaced; \
+                 reload to see where it stands"
+            )));
+        }
         let data = VerificationWithdrawn {
             task_id: task.to_string(),
             verification_id: w.verification_id.clone(),

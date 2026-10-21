@@ -735,6 +735,7 @@ fn withdraw_action(conn: &Connection, repo: &str, id: &str) -> Result<Option<sup
             action: crate::owner::OwnerAction::Withdraw {
                 repo: repo.to_string(),
                 task: id.to_string(),
+                verification_id: Some(w.verification_id),
             },
             inputs: Vec::new(),
             tone: super::Tone::Neutral,
