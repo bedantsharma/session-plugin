@@ -166,6 +166,9 @@ struct RawUsage {
     cache_creation_input_tokens: Option<u64>,
     #[serde(default)]
     cache_creation: Option<CacheCreation>,
+    /// `fast` for fast mode, which is priced apart (see [`super::FAST`]).
+    #[serde(default)]
+    speed: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -215,9 +218,13 @@ fn reply(line: &[u8]) -> Option<Reply> {
         ),
         None => (u.cache_creation_input_tokens.unwrap_or(0), 0),
     };
+    let mut model = m.model.unwrap_or_else(|| "unknown".to_string());
+    if u.speed.as_deref() == Some("fast") {
+        model.push_str(super::FAST);
+    }
     let reply = Reply {
         message_id: id,
-        model: m.model.unwrap_or_else(|| "unknown".to_string()),
+        model,
         ts: l.timestamp.unwrap_or_default(),
         input: u.input_tokens.unwrap_or(0),
         output: u.output_tokens.unwrap_or(0),

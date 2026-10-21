@@ -548,3 +548,46 @@ fn catch_up_reads_a_reply_line_too_long_for_a_hook() {
     assert_eq!(ids, ["big", "m2"]);
     assert!(!all.more);
 }
+
+/// Fast mode costs more than the standard rate, so its replies are kept apart and are
+/// unpriced until the owner adds a fast price: never silently priced at the standard one.
+#[test]
+fn fast_mode_replies_are_not_priced_at_the_standard_rate() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.jsonl");
+    let fast =
+        line("f1", &at(5), 7).replace(r#""service_tier""#, r#""speed":"fast","service_tier""#);
+    let standard =
+        line("s1", &at(6), 7).replace(r#""service_tier""#, r#""speed":"standard","service_tier""#);
+    write(&path, &(fast + &standard));
+    let out = read_new(&path, 0, MAX_HOOK_BYTES).unwrap();
+    let models: Vec<&str> = out.replies.iter().map(|r| r.model.as_str()).collect();
+    assert_eq!(models, ["claude-opus-5-5 (fast)", "claude-opus-5-5"]);
+    assert_eq!(model_text("claude-opus-5-5 (fast)"), "Opus 5.5 (fast)");
+    let prices = crate::config::default_prices();
+    let t = tokens(&[
+        (
+            "claude-opus-5-5 (fast)",
+            Counts {
+                output: 1_000_000,
+                ..Counts::default()
+            },
+        ),
+        (
+            "claude-opus-5-5",
+            Counts {
+                output: 1_000_000,
+                ..Counts::default()
+            },
+        ),
+    ]);
+    let c = cost(&t, &prices);
+    assert_eq!(c.unpriced_models, ["claude-opus-5-5 (fast)"]);
+    assert_eq!(cost_text(&c), "≥ $20.00 (some models unpriced)");
+    // An owner's fast price is used for fast replies only.
+    let mut mine = prices.clone();
+    mine.insert("claude-opus-5-5 (fast)".into(), price(8.0, 40.0));
+    let c = cost(&t, &mine);
+    assert!(c.complete());
+    assert_eq!(cost_text(&c), "$60.00");
+}

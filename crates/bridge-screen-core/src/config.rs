@@ -48,14 +48,26 @@ pub struct Price {
 }
 
 /// The price for `model`: its exact id, else the longest configured prefix of it
-/// (`claude-opus-5` prices `claude-opus-5-1`), else none.
+/// (`claude-opus-5` prices `claude-opus-5-1`), else none. A fast-mode model
+/// (`claude-opus-5-5 (fast)`) matches only fast entries, by the same rule on the base id,
+/// so it is never priced at the standard rate.
 pub fn price_for<'a>(prices: &'a BTreeMap<String, Price>, model: &str) -> Option<&'a Price> {
     if let Some(p) = prices.get(model) {
         return Some(p);
     }
+    let fast = crate::telemetry::FAST;
+    let (base, is_fast) = match model.strip_suffix(fast) {
+        Some(base) => (base, true),
+        None => (model, false),
+    };
     prices
         .iter()
-        .filter(|(k, _)| !k.is_empty() && model.starts_with(k.as_str()))
+        .filter_map(|(k, p)| match (k.strip_suffix(fast), is_fast) {
+            (Some(kb), true) => Some((kb, p)),
+            (None, false) => Some((k.as_str(), p)),
+            _ => None,
+        })
+        .filter(|(k, _)| !k.is_empty() && base.starts_with(k))
         .max_by_key(|(k, _)| k.len())
         .map(|(_, p)| p)
 }
@@ -67,9 +79,15 @@ pub const PRICES_SOURCE: &str = "\
 # (Anthropic first-party API rates, cached 2026-10-06), taken 2026-10-21: input and
 # output per model; cache reads at 0.1x input (0.05x on Opus 5.5, 0.025x on Fable 5.1 and
 # Mythos 5.1); cache writes at 1.25x input (5-minute) and 2x input (1-hour).
-# Not included: Haiku 5.5 (its price changes above 100K-token prompts, which one rate
-# can't express) and fast mode (priced higher). Models without a price show their cost
-# as unknown. Entries here override the defaults key by key.
+# Not included, so their cost shows as unknown (with a 'no price for' note) rather than
+# a wrong number:
+# - Haiku 5.5: $0.10 / $0.50 for prompts up to 100K tokens, $0.50 / $2.50 above that;
+#   one rate per model can't express two.
+# - Fast mode (replies marked fast, shown as e.g. claude-opus-5-5 (fast)): $8 / $40
+#   on Opus 5.5 and $10 / $50 on Opus 5, but the reference gives no cache rates for it.
+#   Add an entry such as [prices.\"claude-opus-5-5 (fast)\"] to price it; fast replies are
+#   never priced at the standard rate.
+# Entries here override the defaults key by key.
 ";
 
 /// The built-in price table (see [`PRICES_SOURCE`]).
@@ -79,6 +97,7 @@ pub fn default_prices() -> BTreeMap<String, Price> {
         ("claude-fable-5-1", 10.0, 50.0, 0.25),
         ("claude-mythos-5-1", 10.0, 50.0, 0.25),
         ("claude-fable-5", 10.0, 50.0, 1.0),
+        ("claude-mythos-5", 10.0, 50.0, 1.0),
         ("claude-opus-5-5", 4.0, 20.0, 0.2),
         ("claude-opus-5", 5.0, 25.0, 0.5),
         ("claude-opus-4-8", 5.0, 25.0, 0.5),

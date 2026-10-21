@@ -28,6 +28,10 @@ use crate::error::Result;
 pub use project::{USAGE_KINDS, project};
 pub use read::{MAX_HOOK_BYTES, ReadOut, read_new, read_to_end};
 
+/// Appended to the model id of a fast-mode reply (`claude-opus-5-5 (fast)`): fast mode
+/// costs more than the standard rate, so it is priced only by an entry of its own.
+pub const FAST: &str = " (fast)";
+
 /// One model reply's tokens, as the `usage` event carries it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reply {
@@ -574,6 +578,9 @@ pub fn cost_text(cost: &Cost) -> String {
 
 /// `Opus 5.5` for `claude-opus-5-5`: a model id for people (unknown shapes as they are).
 pub fn model_text(model: &str) -> String {
+    if let Some(base) = model.strip_suffix(FAST) {
+        return format!("{}{FAST}", model_text(base));
+    }
     let Some(rest) = model.strip_prefix("claude-") else {
         return model.to_string();
     };
