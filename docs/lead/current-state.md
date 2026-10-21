@@ -12,7 +12,7 @@
 - Three readable screens (terminal, browser dashboard, desktop-app card), now in plain words — every message is listed before/after in `message-audit.md`.
 - Cost in tokens and dollars per task, session and project; a finish range per project; a Calibration page.
 
-**In flight:** nothing running.
+**In flight:** work cut short by a new message is now checked for drift (it used to be marked on task unchecked) — fix ready, waiting for merge.
 
 **Open problems:**
 - **Friends can't install it yet:** no published release. — Open; needs a first release.

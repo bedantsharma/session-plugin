@@ -188,6 +188,13 @@ pub const LABEL_REQUEST: &str = "bridge-screen: label your last unit — on-task
 /// The same, when the heuristic flagged the unit as possible drift.
 pub const DRIFT_REQUEST: &str = "bridge-screen: possible drift in your last unit. Label it — on-task, detour, drift, or requested (the owner asked for this in this session) — with label_unit (one call).";
 
+/// Asking about a unit a new prompt cut short, at the next Stop.
+pub fn earlier_request(unit_no: i64) -> String {
+    format!(
+        "bridge-screen: unit {unit_no} was cut short by a new message and still needs a label — on-task, detour, drift, or requested (the owner asked for this in this session). Label it with label_unit (one call)."
+    )
+}
+
 /// What a hook should record and say after its own events.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Step {
@@ -254,7 +261,89 @@ fn declared_label(conn: &Connection, detour_id: &str) -> Result<Label> {
 ///   cut-off it is first `drift_flagged`). The request is the only Stop continuation:
 ///   never when `stop_hook_active`, and at most one note per unit. When it can't be sent,
 ///   the heuristic labels the unit now (`drift` when flagged, else `on_task`).
+///
+/// When this unit needs no question, the unit before it may: one cut short by a new
+/// prompt whose score fell between the cut-offs (see [`label_left_unlabeled`]). It is
+/// asked about the same way, under the same limits.
 pub fn label_at_stop(
+    conn: &Connection,
+    session: &Session,
+    unit: &Unit,
+    stop_hook_active: bool,
+    th: &Thresholds,
+) -> Result<Step> {
+    let mut step = label_stopped(conn, session, unit, stop_hook_active, th)?;
+    if step.note.is_none() {
+        ask_about_interrupted(conn, session, unit.unit_no, stop_hook_active, th, &mut step)?;
+    }
+    Ok(step)
+}
+
+/// The unit before `unit_no`, when it was cut short by a new prompt and is still waiting
+/// for its question: unlabelled, outside a detour, scored between the cut-offs.
+fn waiting_interrupted(
+    conn: &Connection,
+    session: &Session,
+    unit_no: i64,
+    th: &Thresholds,
+) -> Result<Option<Unit>> {
+    Ok(
+        crate::session::unit(conn, &session.session_id, unit_no - 1)?.filter(|u| {
+            u.label.is_none()
+                && u.stopped_at.is_some()
+                && u.detour_id.is_none()
+                && u.drift_score.is_some_and(|s| th.heuristic(s).is_none())
+        }),
+    )
+}
+
+/// At the Stop of unit `unit_no`: ask about the interrupted unit before it, or, when the
+/// question can't go out, label that unit by the heuristic now.
+fn ask_about_interrupted(
+    conn: &Connection,
+    session: &Session,
+    unit_no: i64,
+    stop_hook_active: bool,
+    th: &Thresholds,
+    step: &mut Step,
+) -> Result<()> {
+    let Some(earlier) = waiting_interrupted(conn, session, unit_no, th)? else {
+        return Ok(());
+    };
+    let ask = Candidate::new(
+        NoteKind::LabelRequest,
+        Channel::Stop,
+        earlier_request(earlier.unit_no),
+        format!("label:{}", earlier.unit_no),
+    );
+    let chosen = if stop_hook_active {
+        None
+    } else {
+        select(conn, &session.session_id, unit_no, Channel::Stop, vec![ask])?
+    };
+    if let Some(note) = chosen {
+        step.events.push(note_sent_draft(
+            &session.repo_id,
+            &session.session_id,
+            unit_no,
+            &note,
+        )?);
+        step.note = Some(note.text);
+    } else {
+        step.events.push(labeled(
+            session,
+            &earlier,
+            Label::OnTask,
+            LabelSource::Heuristic,
+            earlier.drift_score,
+            None,
+        )?);
+    }
+    Ok(())
+}
+
+/// [`label_at_stop`] for the stopped unit itself.
+fn label_stopped(
     conn: &Connection,
     session: &Session,
     unit: &Unit,
@@ -344,45 +433,57 @@ pub fn label_at_stop(
     Ok(step)
 }
 
-/// When a new prompt arrives and the last finished unit is still waiting for its label,
-/// the heuristic labels it (`requested` or `detour` if a detour was open, `drift` if
-/// flagged, else `on_task`).
+/// When a new prompt arrives (spec §7.2):
+/// - the unit it just closed because the unit missed its Stop (`interrupted`) is labelled
+///   like a Stop unit, from its files alone: `requested` or `detour` if a detour was open,
+///   `on_task` below the lower cut-off (or unscored), `drift` above the upper one (first
+///   `drift_flagged`); between the cut-offs it waits for the next Stop's question;
+/// - any other finished unit among the last two still waiting for its label is labelled by
+///   the heuristic (`requested` or `detour` if a detour was open, `drift` if flagged, else
+///   `on_task`).
 pub fn label_left_unlabeled(
     conn: &Connection,
     session: &Session,
+    interrupted: Option<i64>,
     th: &Thresholds,
-) -> Result<Option<EventDraft>> {
-    let last: Option<i64> = conn
+) -> Result<Vec<EventDraft>> {
+    let waiting: Vec<i64> = conn
         .prepare_cached(
-            "SELECT unit_no FROM units WHERE session_id = ?1 AND stopped_at IS NOT NULL
-             ORDER BY unit_no DESC LIMIT 1",
+            "SELECT unit_no FROM units
+             WHERE session_id = ?1 AND stopped_at IS NOT NULL AND label IS NULL
+               AND unit_no >= (SELECT max(unit_no) FROM units
+                               WHERE session_id = ?1 AND stopped_at IS NOT NULL) - 1
+             ORDER BY unit_no",
         )?
-        .query_row([&session.session_id], |r| r.get(0))
-        .optional()?;
-    let Some(unit_no) = last else {
-        return Ok(None);
-    };
-    let Some(unit) =
-        crate::session::unit(conn, &session.session_id, unit_no)?.filter(|u| u.label.is_none())
-    else {
-        return Ok(None);
-    };
-    let heuristic = unit.drift_score.and_then(|s| th.heuristic(s));
-    let (label, source) = if let Some(detour_id) = &unit.detour_id {
-        (declared_label(conn, detour_id)?, LabelSource::Declared)
-    } else if unit.flagged {
-        (Label::Drift, LabelSource::Heuristic)
-    } else {
-        (Label::OnTask, LabelSource::Heuristic)
-    };
-    Ok(Some(labeled(
-        session,
-        &unit,
-        label,
-        source,
-        unit.drift_score,
-        heuristic,
-    )?))
+        .query_map([&session.session_id], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut out = Vec::new();
+    for unit_no in waiting {
+        let Some(unit) = crate::session::unit(conn, &session.session_id, unit_no)? else {
+            continue;
+        };
+        let score = unit.drift_score;
+        let heuristic = score.and_then(|s| th.heuristic(s));
+        let (label, source) = if let Some(detour_id) = &unit.detour_id {
+            (declared_label(conn, detour_id)?, LabelSource::Declared)
+        } else if interrupted == Some(unit_no) {
+            match score {
+                Some(s) if s > th.upper => {
+                    let data = DriftFlagged { unit_no, score: s };
+                    out.push(draft(session, "drift_flagged", &data)?);
+                    (Label::Drift, LabelSource::Heuristic)
+                }
+                Some(s) if s >= th.lower => continue,
+                _ => (Label::OnTask, LabelSource::Heuristic),
+            }
+        } else if unit.flagged {
+            (Label::Drift, LabelSource::Heuristic)
+        } else {
+            (Label::OnTask, LabelSource::Heuristic)
+        };
+        out.push(labeled(session, &unit, label, source, score, heuristic)?);
+    }
+    Ok(out)
 }
 
 /// `1.2 Login form`, or `your task` without one.

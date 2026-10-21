@@ -1,5 +1,6 @@
 //! The drift heuristic (spec §7.2): a score from 0 (clearly on the task) to 1 (clearly
-//! elsewhere) for one unit of work, from the files it touched and the agent's last message.
+//! elsewhere) for one unit of work, from the files it touched and the agent's last message
+//! (the files alone when there is no message).
 //!
 //! [`score`] is a pure function. [`context`] reads what it compares against from the views.
 //! The agent's last message is used in memory only; it is never stored here.
@@ -129,8 +130,14 @@ pub fn score(input: &ScoreInput) -> ScoreBreakdown {
             .count();
         share(unmapped, files.len())
     };
+    // No message at all (a unit cut short by a new prompt has none): the files alone
+    // decide; missing text is not evidence of drift. Without task files to compare with,
+    // the area alone can't reach the drift cut-off: at most a question.
+    let no_text = input.summary.trim().is_empty();
     let score = match file_affinity {
+        Some(fa) if no_text => (W_FILE * (1.0 - fa) + W_AREA * area_penalty) / (W_FILE + W_AREA),
         Some(fa) => W_FILE * (1.0 - fa) + W_TEXT * (1.0 - text_affinity) + W_AREA * area_penalty,
+        None if no_text => W_AREA_ONLY * area_penalty,
         None => W_TEXT_ONLY * (1.0 - text_affinity) + W_AREA_ONLY * area_penalty,
     };
     ScoreBreakdown {
@@ -290,6 +297,25 @@ mod tests {
             mapped_dirs: &set(&["src"]),
         });
         assert_eq!(b.file_affinity, None);
+        assert!((b.score - 0.4).abs() < 1e-9, "{b:?}");
+        // No message (a unit cut short by a new prompt): the files alone.
+        let unit = files(&["src/login.rs", "tools/gen.py"]);
+        let b = score(&ScoreInput {
+            unit_files: &unit,
+            summary: "",
+            task_files: &set(&["src/login.rs"]),
+            intent_text: INTENT,
+            mapped_dirs: &set(&["src"]),
+        });
+        assert!((b.score - 0.5).abs() < 1e-9, "{b:?}");
+        let unit = files(&["infra/main.tf"]);
+        let b = score(&ScoreInput {
+            unit_files: &unit,
+            summary: "",
+            task_files: &HashSet::new(),
+            intent_text: INTENT,
+            mapped_dirs: &set(&["src"]),
+        });
         assert!((b.score - 0.4).abs() < 1e-9, "{b:?}");
         // Nothing at all: 0.
         let b = score(&ScoreInput {

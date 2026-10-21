@@ -28,17 +28,20 @@ pub struct NavCtx<'a> {
     pub config: &'a Config,
     /// For Stop: the unit it closed.
     pub stopped_unit: Option<i64>,
+    /// For `UserPromptSubmit`: the unit it closed because the unit missed its Stop.
+    pub interrupted_unit: Option<i64>,
     pub actor: Actor,
     /// Only for decisions (live away time); never written into views.
     pub now: Timestamp,
 }
 
-/// The unit a Stop is about to close and its drift score (`None` without a plan). The
-/// agent's last message is used here in memory only.
+/// The open unit a Stop (or a prompt, when the unit missed its Stop) is about to close
+/// and its drift score (`None` without a plan). `summary` is the agent's last message, used
+/// here in memory only; empty when there is none.
 pub fn score_open_unit(
     conn: &Connection,
     session: &Session,
-    input: &HookInput,
+    summary: &str,
 ) -> Result<Option<(i64, Option<f64>)>> {
     let Some(unit) = current_unit(conn, &session.session_id)? else {
         return Ok(None);
@@ -52,7 +55,7 @@ pub fn score_open_unit(
     let score = against.map(|c| {
         drift::score(&ScoreInput {
             unit_files: &unit.files,
-            summary: input.last_assistant_message.as_deref().unwrap_or(""),
+            summary,
             task_files: &c.task_files,
             intent_text: &c.intent_text,
             mapped_dirs: &c.mapped_dirs,
@@ -79,9 +82,7 @@ pub fn step(conn: &Connection, nc: &NavCtx) -> Result<Step> {
             None => Step::default(),
         },
         HookEvent::UserPromptSubmit => Step {
-            events: navigator::label_left_unlabeled(conn, &session, &th)?
-                .into_iter()
-                .collect(),
+            events: navigator::label_left_unlabeled(conn, &session, nc.interrupted_unit, &th)?,
             note: None,
         },
         _ => Step::default(),
