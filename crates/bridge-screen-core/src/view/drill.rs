@@ -411,6 +411,68 @@ pub struct SessionDrill {
     pub owner_answers: Vec<OwnerAnswer>,
     /// Tokens and cost of the whole session; `None` before any usage.
     pub cost: Option<CostRow>,
+    /// Its waits (spec §9.1): open first, then cleared.
+    pub waits: Vec<WaitRow>,
+}
+
+/// One wait on the session drill.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WaitRow {
+    pub wait_id: String,
+    /// `2.4 Login form`, `api:2.4 Login endpoint`, or the free text.
+    pub target: String,
+    pub reason: String,
+    pub open: bool,
+    /// `waiting 40m`, `done @abc1234`, `cleared by hand`, `now a plan link`.
+    pub state_text: String,
+    /// Clear, and for a task target "Make it a plan link" (open waits only).
+    pub actions: Vec<ActionSpec>,
+}
+
+fn wait_rows(conn: &Connection, id: &str, now: Timestamp) -> Result<Vec<WaitRow>> {
+    let mut rows: Vec<WaitRow> = crate::waits::of_session(conn, id)?
+        .into_iter()
+        .map(|w| {
+            let open = w.is_open();
+            let state_text = match (w.cleared_why, &w.cleared_sha) {
+                (None, _) => format!("waiting {}m", w.since_min(now)),
+                (Some(crate::waits::ClearedWhy::TargetDone), Some(sha)) => {
+                    format!("done @{}", sha.chars().take(7).collect::<String>())
+                }
+                (Some(crate::waits::ClearedWhy::Promoted), _) => "now a plan link".into(),
+                (Some(_), _) => "cleared by hand".into(),
+            };
+            let mut actions = Vec::new();
+            if open {
+                actions.push(button(
+                    "Clear",
+                    OwnerAction::ClearWait {
+                        wait_id: w.wait_id.clone(),
+                    },
+                    Tone::Neutral,
+                ));
+                if w.target_task.is_some() {
+                    actions.push(button(
+                        "Make it a plan link",
+                        OwnerAction::PromoteWait {
+                            wait_id: w.wait_id.clone(),
+                        },
+                        Tone::Primary,
+                    ));
+                }
+            }
+            WaitRow {
+                wait_id: w.wait_id,
+                target: w.target_text,
+                reason: w.reason,
+                open,
+                state_text,
+                actions,
+            }
+        })
+        .collect();
+    rows.sort_by_key(|r| !r.open);
+    Ok(rows)
 }
 
 /// The session's units and where their time went.
@@ -543,7 +605,6 @@ pub fn session(
     cfg: &Config,
     now: Timestamp,
 ) -> Result<Option<SessionDrill>> {
-    let _ = now;
     let Some(s) = session::get(conn, id)? else {
         return Ok(None);
     };
@@ -599,6 +660,7 @@ pub fn session(
         leftovers,
         readback: s.readback,
         cost: super::cost_row(conn, &Scope::Session(id.to_string()), cfg)?,
+        waits: wait_rows(conn, id, now)?,
     }))
 }
 

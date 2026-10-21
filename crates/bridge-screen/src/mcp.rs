@@ -49,6 +49,9 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 mod onboard;
+mod waits;
+
+pub use waits::{WaitIdInput, WaitingOnInput};
 
 const NO_SESSION: &str =
     "bridge-screen couldn't tell which session this is; is the plugin's hook enabled?";
@@ -500,6 +503,33 @@ impl Bridge {
     )]
     async fn init_plan(&self, Parameters(args): Parameters<Args<InitDraft>>) -> CallToolResult {
         text(self.do_init_plan(&args))
+    }
+
+    #[tool(
+        description = "Say this session is waiting on something: a task id (\"2.4\"), a task in another repo (\"<repo>:<task id>\"), or a few words (\"Sam's API key\"). Keep working on what you can. A task wait clears by itself when the task is verified (L2+) and you get a note here; clear a free-text wait with clear_wait when it arrives."
+    )]
+    async fn waiting_on(
+        &self,
+        Parameters(args): Parameters<Args<WaitingOnInput>>,
+    ) -> CallToolResult {
+        text(self.do_waiting_on(&args))
+    }
+
+    #[tool(
+        description = "Close one of this session's waits (its id, e.g. \"W3\") when what you waited on arrived."
+    )]
+    async fn clear_wait(&self, Parameters(args): Parameters<Args<WaitIdInput>>) -> CallToolResult {
+        text(self.do_clear_wait(&args))
+    }
+
+    #[tool(
+        description = "Turn this session's wait on a task into a plan link: your active task then depends on it. Use only when the owner agreed that your task always needs it."
+    )]
+    async fn promote_wait(
+        &self,
+        Parameters(args): Parameters<Args<WaitIdInput>>,
+    ) -> CallToolResult {
+        text(self.do_promote_wait(&args))
     }
 
     #[tool(
@@ -1366,6 +1396,22 @@ fn agent_status(
             .map(|(t, level)| format!("{t} (L{level})"))
             .collect();
         let _ = writeln!(out, "Unverified: {} — verify them", list.join(" · "));
+    }
+    let waits = bridge_screen_core::waits::open_of(conn, &s.session_id)?;
+    if !waits.is_empty() {
+        let now = jiff::Timestamp::now();
+        let list: Vec<String> = waits
+            .iter()
+            .map(|w| {
+                format!(
+                    "{} {} (since {}m)",
+                    w.wait_id,
+                    w.target_text,
+                    w.since_min(now)
+                )
+            })
+            .collect();
+        let _ = writeln!(out, "Waiting on: {}", list.join(" · "));
     }
     let open = tangent::open_detours(conn, &s.session_id)?;
     if !open.is_empty() {

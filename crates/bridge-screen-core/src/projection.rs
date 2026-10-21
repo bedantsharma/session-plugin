@@ -13,6 +13,7 @@ use crate::store::Event;
 use crate::tangent::{TANGENT_KINDS, project as project_tangent};
 use crate::telemetry::{USAGE_KINDS, project as project_usage};
 use crate::verify::{VERIFY_KINDS, project as project_verify};
+use crate::waits::{WAIT_KINDS, project as project_wait};
 
 /// View tables that `Store::rebuild` empties and refills from events.
 pub const VIEW_TABLES: &[&str] = &[
@@ -63,6 +64,8 @@ pub fn apply(tx: &Transaction, event: &Event) -> Result<()> {
         project_forecast(tx, event)?;
     } else if IMPORT_KINDS.contains(&kind) {
         project_import(tx, event)?;
+    } else if WAIT_KINDS.contains(&kind) {
+        project_wait(tx, event)?;
     }
     Ok(())
 }

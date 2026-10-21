@@ -160,6 +160,14 @@ pub enum Command {
         #[arg(short = 'C', long = "dir", default_value = ".")]
         dir: PathBuf,
     },
+    /// Sessions' waits (spec §9.1): `wait list`, `wait clear <id>`, `wait promote <id>`.
+    Wait {
+        #[command(subcommand)]
+        action: WaitCommand,
+        /// Any directory inside the repo.
+        #[arg(short = 'C', long = "dir", default_value = ".", global = true)]
+        dir: PathBuf,
+    },
     /// Rebuild all views from the event log.
     Rebuild,
     /// Print the effective configuration (and this repo's tuned drift thresholds).
@@ -186,6 +194,16 @@ pub enum Command {
         #[arg(value_enum)]
         event: HookEvent,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum WaitCommand {
+    /// The repo's waits, open first.
+    List,
+    /// Close a wait: what the session waited on arrived.
+    Clear { wait_id: String },
+    /// Turn a wait on a task into a plan link of the waiting session's task.
+    Promote { wait_id: String },
 }
 
 #[derive(Debug, Subcommand)]

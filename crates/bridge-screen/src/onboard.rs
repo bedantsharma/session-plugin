@@ -6,9 +6,13 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use bridge_screen_core::import::{self, ImportCtx, ImportOutcome, ScanBudget};
+use bridge_screen_core::owner::OwnerAction;
 use bridge_screen_core::paths::Home;
 use bridge_screen_core::repo;
 use bridge_screen_core::store::{Actor, OWNER_SESSION};
+use bridge_screen_core::waits;
+
+use crate::cli::WaitCommand;
 
 use crate::commands::open_store;
 
@@ -62,6 +66,52 @@ pub fn init(dir: &Path, goal: Option<&str>) -> Result<()> {
         bridge_screen_core::init::render(&evidence, &repo.name, goal)
     );
     Ok(())
+}
+
+/// `bridge-screen wait list|clear <id>|promote <id> [-C DIR]`. Clearing and promoting are
+/// owner actions (`owner::act`, stale-click checked).
+pub fn wait(dir: &Path, action: WaitCommand) -> Result<()> {
+    let home = Home::resolve()?;
+    let mut store = open_store(&home)?;
+    match action {
+        WaitCommand::List => {
+            let repo = repo::identify(dir)?;
+            store.register_repo(&repo)?;
+            let all = waits::of_repo(store.conn(), &repo.id)?;
+            if all.is_empty() {
+                println!("No waits in {}.", repo.name);
+            }
+            let now = jiff::Timestamp::now();
+            for w in all {
+                let session: String = w.session_id.chars().take(6).collect();
+                let state = match (w.cleared_why, &w.cleared_sha) {
+                    (None, _) => format!("open for {}m", w.since_min(now)),
+                    (Some(waits::ClearedWhy::TargetDone), Some(sha)) => {
+                        format!("done @{}", sha.chars().take(7).collect::<String>())
+                    }
+                    (Some(waits::ClearedWhy::Promoted), _) => "now a plan link".to_string(),
+                    (Some(_), _) => "cleared by hand".to_string(),
+                };
+                println!(
+                    "{}  {session}  waiting on {} — {} ({state})",
+                    w.wait_id, w.target_text, w.reason
+                );
+            }
+            Ok(())
+        }
+        WaitCommand::Clear { wait_id } => crate::commands::owner_cmd(
+            &home,
+            &mut store,
+            Some(dir),
+            &OwnerAction::ClearWait { wait_id },
+        ),
+        WaitCommand::Promote { wait_id } => crate::commands::owner_cmd(
+            &home,
+            &mut store,
+            Some(dir),
+            &OwnerAction::PromoteWait { wait_id },
+        ),
+    }
 }
 
 /// What an import did, in plain words.

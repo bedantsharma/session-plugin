@@ -45,6 +45,7 @@ fn lists_three_tools_with_schemas() {
         vec![
             "claim_done",
             "claim_task",
+            "clear_wait",
             "close_detour",
             "handoff_note",
             "handoff_readback",
@@ -55,13 +56,15 @@ fn lists_three_tools_with_schemas() {
             "plan_edit",
             "progress_report",
             "promote_detour",
+            "promote_wait",
             "report_published",
             "resolve_leftover",
             "resume",
             "show_progress",
             "start_detour",
             "status",
-            "verify"
+            "verify",
+            "waiting_on"
         ]
     );
     for tool in tools {

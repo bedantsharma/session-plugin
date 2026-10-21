@@ -611,9 +611,9 @@ fn verify_nudges(conn: &Connection, session: &Session, unit: &Unit) -> Result<Ve
 
 /// Dependencies of the active task that reached L2 or above, verified by another session
 /// (spec §9.1): once per dependency and commit per session. Links into other repos say
-/// which repo.
+/// which repo; waits that cleared because their target was done get the same note.
 fn dependency_ready(conn: &Connection, session: &Session) -> Result<Vec<Candidate>> {
-    let mut out = Vec::new();
+    let mut out = crate::waits::cleared_notes(conn, session)?;
     let Some(task) = &session.active_task else {
         return Ok(out);
     };

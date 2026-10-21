@@ -68,6 +68,14 @@ tangent to another agent; declare it and do it:
 - Work the **owner asked for** in this session that isn't your task ("also add a
   licence"): `start_detour` with `"requested_by_owner": true` — never drift or away time.
 
+### Waiting on something
+
+Blocked on another task (`2.4`, or `api:2.4` in another repo) or on something outside
+(`Sam's API key`)? Call `waiting_on` with the target and a reason, and keep working on what
+you can. A task wait clears by itself when the task is verified (L2+) and you get a note;
+clear a free-text one with `clear_wait`. Make it a plan link (`promote_wait`) only when the
+owner agrees your task always needs it.
+
 ## 4. Labels and navigator notes
 
 Each unit is on-task, a detour, `requested` (the owner asked for it this session — not

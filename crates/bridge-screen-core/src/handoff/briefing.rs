@@ -178,6 +178,25 @@ fn deps_of(conn: &Connection, repo: &str, task: &str) -> Result<Vec<String>> {
     Ok(deps)
 }
 
+/// Sessions (live, the previous one, this one) that missed a checkpoint still pending.
+fn missed_checkpoints(
+    conn: &Connection,
+    me: &Session,
+    prev: Option<&Session>,
+) -> Result<Vec<Session>> {
+    Ok(session::list_live(conn, Some(&me.repo_id))?
+        .into_iter()
+        .chain(prev.cloned())
+        .chain(std::iter::once(me.clone()))
+        .filter(|s| s.checkpoint_missed != 0 && s.checkpoint_pending.is_some())
+        .fold(Vec::<Session>::new(), |mut acc, s| {
+            if !acc.iter().any(|a| a.session_id == s.session_id) {
+                acc.push(s);
+            }
+            acc
+        }))
+}
+
 fn gather(conn: &Connection, me: &Session) -> Result<Facts> {
     let repo = me.repo_id.as_str();
     let prev = previous(conn, me)?;
@@ -215,17 +234,7 @@ fn gather(conn: &Connection, me: &Session) -> Result<Facts> {
         });
         unverified_tasks.push((n.id.clone(), verify::current_level(conn, repo, &n.id)?));
     }
-    let missed = session::list_live(conn, Some(repo))?
-        .into_iter()
-        .chain(prev.clone())
-        .chain(std::iter::once(me.clone()))
-        .filter(|s| s.checkpoint_missed != 0 && s.checkpoint_pending.is_some())
-        .fold(Vec::<Session>::new(), |mut acc, s| {
-            if !acc.iter().any(|a| a.session_id == s.session_id) {
-                acc.push(s);
-            }
-            acc
-        });
+    let missed = missed_checkpoints(conn, me, prev.as_ref())?;
     let mut detours = Vec::new();
     let mut suspended = Vec::new();
     for s in &sessions {
@@ -236,7 +245,7 @@ fn gather(conn: &Connection, me: &Session) -> Result<Facts> {
             }
         }
     }
-    let (milestone, checkpoint, cue, note, deps) = match &task {
+    let (milestone, checkpoint, cue, note, mut deps) = match &task {
         Some(t) => {
             let checkpoint = match latest_checkpoint_for_task(conn, repo, t)? {
                 Some(c) => Some(c),
@@ -258,6 +267,14 @@ fn gather(conn: &Connection, me: &Session) -> Result<Facts> {
         }
         None => (None, None, None, None, Vec::new()),
     };
+    // Open waits, and waits whose target was done since the last session (spec §9.1).
+    let since = prev.as_ref().and_then(|p| p.ended_at.clone());
+    deps.extend(crate::waits::briefing_items(
+        conn,
+        &sessions,
+        since.as_deref(),
+        jiff::Timestamp::now(),
+    )?);
     let leftovers = leftovers(conn, repo, true)?
         .into_iter()
         .filter(|l| l.state == LeftoverState::Open)
