@@ -167,3 +167,46 @@ describe('the Motion setting', () => {
     }
   })
 })
+
+describe('the desktop card', () => {
+  const rule = (sel: string) => {
+    const at = appCss.indexOf(`${sel} {`)
+    expect(at, sel).toBeGreaterThanOrEqual(0)
+    return appCss.slice(at, appCss.indexOf('}', at))
+  }
+
+  it('keeps a 600 ms flash, behind the Motion switch, that outranks the 1.2 s one', () => {
+    expect(rule(`${GATE} .card-root .flash`)).toMatch(/animation-duration:\s*600ms/)
+    // Both are gated; the card's has one more class, so it wins whatever the order.
+    expect(rule(`${GATE} .flash`)).toMatch(/flash 1\.2s/)
+  })
+
+  it('drops the ring, the sheen and the bar transitions; the dot only breathes', () => {
+    expect(rule('.card-root .working-dot::after,\n.card-root .sheen::after')).toMatch(
+      /display:\s*none/,
+    )
+    expect(rule('.card-root .bar-fill')).toMatch(/transition:\s*none !important/)
+    const inside = media(appCss, NO_PREF).blocks.join('\n')
+    expect(inside).toMatch(
+      new RegExp(
+        `${GATE.replace(/[[\]()'=:]/g, '\\$&')} \\.card-root \\.working-dot \\{\\s*animation: breathe-soft`,
+      ),
+    )
+  })
+
+  it("the card's Motion button switches data-motion on its document", async () => {
+    vi.stubGlobal('matchMedia', () => ({ matches: false }) as MediaQueryList)
+    const { motion } = await import('../src/lib/motion.svelte')
+    motion.set(true)
+    expect(document.documentElement.dataset.motion).toBe('on')
+    motion.toggle()
+    expect(document.documentElement.dataset.motion).toBe('off')
+    vi.unstubAllGlobals()
+  })
+
+  it('the card never uses the one-off cues it drops (heartbeat, number, pill bump)', () => {
+    const card = readFileSync(join(root, 'card/Card.svelte'), 'utf8')
+    for (const cue of ["'beat'", "cls: 'num'", "'bump'", "'pulse-3'", 'sheen'])
+      expect(card, cue).not.toContain(cue)
+  })
+})

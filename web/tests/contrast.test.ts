@@ -126,6 +126,9 @@ describe.each(['dark', 'light'])('%s theme', (name) => {
     ['warn', 'tint-working'],
     ['fg', 'tint-flash'],
     ['muted', 'tint-flash'],
+    // A hovered or flashing session row shows its detour label in warn, straight on the row.
+    ['warn', 'hover'],
+    ['warn', 'tint-flash'],
   ])('text %s on %s ≥ 4.5:1', (fg, bg) => {
     expect(ratio(t[fg], tint(bg)), `${fg} on ${bg}`).toBeGreaterThanOrEqual(4.5)
   })
