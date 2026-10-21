@@ -52,7 +52,8 @@ A task claimed done is checked, not taken on trust:
   Money is worked out when you look, from the prices in `~/.bridge-screen/config.toml`
   (`[prices."<model>"]`, USD per million tokens; defaults ship for current Claude
   models), so fixing a price fixes past costs too. A model without a price shows its cost
-  as "unknown", never $0. `bridge-screen usage [--by model|task|session|agent]` prints
+  as "unknown", never $0 (Haiku 5.5, whose price depends on prompt length, and fast-mode
+  replies, shown as "<model> (fast)", ship without one). `bridge-screen usage [--by model|task|session|agent]` prints
   it; `bridge-screen usage --catch-up` reads older transcripts to the end at once.
 - **Forecast.** Each project gets a finish range: "likely by Oct 30 · could take until
   Nov 8". The first date is the **P50** — a 50% chance of being done by then; the second

@@ -84,5 +84,5 @@ Choices someone will later ask "why?" about. Newest last. Entries are never dele
 
 ## #17 Cost is computed when you look, from config prices — Accepted — 2026-10-21
 **Context:** Prices change and defaults can be wrong; stored dollar amounts would freeze mistakes.
-**Decision:** Only token counts are recorded; every screen prices them from `config.toml` at read time. Defaults come from the claude-api pricing reference (taken 2026-10-21); a model with no price shows "unknown", never $0. Haiku 5.5 is left out (its price changes above 100K-token prompts) and fast mode isn't priced separately.
-**Consequences:** Fixing a price fixes all past costs. Costs for unpriced models stay "unknown" until you add a price.
+**Decision:** Only token counts are recorded; every screen prices them from `config.toml` at read time. Defaults come from the claude-api pricing reference (taken 2026-10-21); a model with no price shows "unknown", never $0. Haiku 5.5 is left out (its price changes above 100K-token prompts), and fast-mode replies are kept apart as "<model> (fast)" with no default price (the reference gives no fast cache rates), so neither is ever shown at a wrong rate.
+**Consequences:** Fixing a price fixes all past costs. Costs for unpriced models (Haiku 5.5, fast mode) stay "unknown" — or make a total read "≥ $X" — until you add a price.
