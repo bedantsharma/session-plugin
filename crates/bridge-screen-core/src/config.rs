@@ -1,5 +1,6 @@
 //! User settings in `<home>/config.toml`. Missing keys fall back to defaults.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -30,6 +31,37 @@ pub struct Config {
     pub verify_timeout_s: u64,
     /// The dashboard's port on 127.0.0.1 (`bridge-screen ui`); 0 = any free port.
     pub ui_port: u16,
+    /// USD per million tokens, per model id or id prefix (spec §9.2). Entries in the file
+    /// override the built-in defaults key by key; models with no entry are unpriced.
+    pub prices: BTreeMap<String, Price>,
+}
+
+/// A model's prices in USD per million tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Price {
+    pub input: f64,
+    pub output: f64,
+    pub cache_read: f64,
+    pub cache_write_5m: f64,
+    pub cache_write_1h: f64,
+}
+
+/// The price for `model`: its exact id, else the longest configured prefix of it
+/// (`claude-opus-5` prices `claude-opus-5-1`), else none.
+pub fn price_for<'a>(prices: &'a BTreeMap<String, Price>, model: &str) -> Option<&'a Price> {
+    if let Some(p) = prices.get(model) {
+        return Some(p);
+    }
+    prices
+        .iter()
+        .filter(|(k, _)| !k.is_empty() && model.starts_with(k.as_str()))
+        .max_by_key(|(k, _)| k.len())
+        .map(|(_, p)| p)
+}
+
+/// The built-in price table.
+pub fn default_prices() -> BTreeMap<String, Price> {
+    BTreeMap::new()
 }
 
 impl Default for Config {
@@ -44,6 +76,7 @@ impl Default for Config {
             tolerance_pct: 20,
             verify_timeout_s: 120,
             ui_port: 0,
+            prices: default_prices(),
         }
     }
 }
@@ -53,7 +86,13 @@ impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         match std::fs::read_to_string(path) {
             Ok(text) => {
-                toml::from_str(&text).map_err(|e| Error::Config(format!("{}: {e}", path.display())))
+                let mut cfg: Self = toml::from_str(&text)
+                    .map_err(|e| Error::Config(format!("{}: {e}", path.display())))?;
+                // The owner's prices override the defaults key by key.
+                for (model, price) in default_prices() {
+                    cfg.prices.entry(model).or_insert(price);
+                }
+                Ok(cfg)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(e.into()),
@@ -96,6 +135,7 @@ mod tests {
                 tolerance_pct: 20,
                 verify_timeout_s: 120,
                 ui_port: 0,
+                prices: super::default_prices(),
             }
         );
     }
@@ -145,6 +185,7 @@ mod tests {
             tolerance_pct: 30,
             verify_timeout_s: 300,
             ui_port: 8787,
+            prices: super::default_prices(),
         };
         let text = cfg.to_toml().unwrap();
         assert_eq!(toml::from_str::<Config>(&text).unwrap(), cfg);

@@ -185,6 +185,9 @@ fn migrate(conn: &mut Connection) -> Result<()> {
     if current < 7 {
         tx.execute_batch(schema::V7)?;
     }
+    if current < 8 {
+        tx.execute_batch(schema::V8)?;
+    }
     tx.execute(
         "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
         [SCHEMA_VERSION.to_string()],
@@ -428,6 +431,64 @@ mod tests {
             "verify_nudges",
             "repo_settings",
         ] {
+            let n: i64 = store
+                .conn()
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0, "{table}");
+        }
+    }
+
+    #[test]
+    fn migrates_v7_database_to_v8_keeping_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            for v in [
+                super::schema::V1,
+                super::schema::V2,
+                super::schema::V3,
+                super::schema::V4,
+                super::schema::V5,
+                super::schema::V6,
+                super::schema::V7,
+            ] {
+                conn.execute_batch(v).unwrap();
+            }
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('schema_version', '7')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions (session_id, repo_id, cwd, source, started_at, last_event_at,
+                                       state, unit_count, active_secs)
+                 VALUES ('s', 'r', '/x', 'startup', 't0', 't1', 'idle', 1, 42)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO repo_settings (repo_id, publish_reports) VALUES ('r', 'never')",
+                [],
+            )
+            .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let version: String = store
+            .conn()
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, "8");
+        let s = crate::session::get(store.conn(), "s").unwrap().unwrap();
+        assert_eq!(s.active_secs, 42);
+        let set = crate::verify::settings(store.conn(), "r").unwrap();
+        assert_eq!(set.publish_reports.as_deref(), Some("never"));
+        for table in ["usage_replies", "transcript_cursors", "forecast_history"] {
             let n: i64 = store
                 .conn()
                 .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))

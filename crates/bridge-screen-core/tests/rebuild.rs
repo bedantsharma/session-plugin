@@ -47,6 +47,9 @@ fn dump(store: &Store) -> Vec<String> {
         ("decisions", "repo_id, decision_id"),
         ("verify_nudges", "repo_id, task_id"),
         ("repo_settings", "repo_id"),
+        ("usage_replies", "message_id"),
+        ("transcript_cursors", "path"),
+        ("forecast_history", "repo_id, ts"),
     ] {
         let mut stmt = store
             .conn()
@@ -854,6 +857,88 @@ fn rebuild_reproduces_verification_and_decision_views() {
         )
         .unwrap();
     assert_eq!(status, "l2");
+    s.rebuild().unwrap();
+    assert_eq!(dump(&s), before);
+}
+
+/// Usage across units, a detour and a subagent: a reply logged twice, a cursor that only
+/// moves forward and one restarted after a shrunk file.
+#[test]
+fn rebuild_reproduces_usage_views() {
+    let mut s = Store::open_in_memory().unwrap();
+    let t0: Timestamp = "2026-10-15T09:00:00Z".parse().unwrap();
+    let at = |secs: i64| (t0 + SignedDuration::from_secs(secs)).to_string();
+    let reply = |id: &str, secs: i64| {
+        json!({"message_id": id, "model": "claude-opus-5-5", "ts": at(secs), "input": 3,
+               "output": 40, "cache_read": 900, "cache_write_5m": 20, "cache_write_1h": 5})
+    };
+    let script = vec![
+        (
+            "s1",
+            0,
+            "session_started",
+            json!({"cwd": "/a", "source": "startup", "transcript_path": "/t/s1.jsonl"}),
+        ),
+        (
+            "s1",
+            1,
+            "task_claimed",
+            json!({"task_id": "1.1", "mode": "auto", "confidence": 0.9}),
+        ),
+        ("s1", 2, "prompt", json!({"chars": 3})),
+        (
+            "s1",
+            10,
+            "detour_opened",
+            json!({"detour_id": "D1", "reason": "flaky", "blocks": "1.1",
+                   "resume_cue": "rerun"}),
+        ),
+        ("s1", 60, "unit_stopped", json!({"unit_no": 1})),
+        (
+            "s1",
+            60,
+            "usage",
+            json!({"path": "/t/s1.jsonl", "offset_after": 500,
+                   "replies": [reply("m1", 5), reply("m2", 30)]}),
+        ),
+        (
+            "s1",
+            61,
+            "usage",
+            json!({"path": "/t/s1/subagents/agent-a.jsonl", "offset_after": 90,
+                   "agent_id": "a", "agent_type": "Explore", "replies": [reply("m3", 40)]}),
+        ),
+        (
+            "s1",
+            62,
+            "usage",
+            json!({"path": "/t/s1.jsonl", "offset_after": 300, "replies": [reply("m2", 50)]}),
+        ),
+        (
+            "s1",
+            63,
+            "usage",
+            json!({"path": "/t/s1/subagents/agent-a.jsonl", "offset_after": 10,
+                   "restarted": true, "agent_id": "a", "replies": []}),
+        ),
+    ];
+    s.write(|tx| {
+        for (session, secs, kind, data) in script {
+            let draft = EventDraft::new("a", session, kind, data);
+            append_in_at(tx, draft, t0 + SignedDuration::from_secs(secs))?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let before = dump(&s);
+    assert_eq!(
+        before
+            .iter()
+            .filter(|r| r.starts_with("usage_replies: "))
+            .count(),
+        3
+    );
+    assert!(before.iter().any(|r| r.starts_with("transcript_cursors: ")));
     s.rebuild().unwrap();
     assert_eq!(dump(&s), before);
 }

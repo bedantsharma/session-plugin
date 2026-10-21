@@ -9,6 +9,7 @@ use crate::plan::project::{PLAN_KINDS, project as project_plan};
 use crate::session::{SESSION_KINDS, project as project_session};
 use crate::store::Event;
 use crate::tangent::{TANGENT_KINDS, project as project_tangent};
+use crate::telemetry::{USAGE_KINDS, project as project_usage};
 use crate::verify::{VERIFY_KINDS, project as project_verify};
 
 /// View tables that `Store::rebuild` empties and refills from events.
@@ -31,6 +32,9 @@ pub const VIEW_TABLES: &[&str] = &[
     "decisions",
     "verify_nudges",
     "repo_settings",
+    "usage_replies",
+    "transcript_cursors",
+    "forecast_history",
 ];
 
 /// Update view tables for one event. Unknown kinds change no views.
@@ -48,6 +52,8 @@ pub fn apply(tx: &Transaction, event: &Event) -> Result<()> {
         project_verify(tx, event)?;
     } else if DECISION_KINDS.contains(&kind) {
         project_decision(tx, event)?;
+    } else if USAGE_KINDS.contains(&kind) {
+        project_usage(tx, event)?;
     }
     Ok(())
 }

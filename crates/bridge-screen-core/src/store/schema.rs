@@ -1,6 +1,6 @@
 //! SQL schema. Version 1 is the first released schema; later versions append migrations.
 
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 pub const V1: &str = r"
 CREATE TABLE meta (
@@ -349,4 +349,53 @@ ALTER TABLE sessions ADD COLUMN question_since TEXT;
 /// Version 7: the per-repo `publish_reports` switch (`never` or `ask`, spec §10.6).
 pub const V7: &str = r"
 ALTER TABLE repo_settings ADD COLUMN publish_reports TEXT;
+";
+
+/// Version 8: telemetry and forecast (spec §6.2, §9.2–9.3) — each model reply's tokens,
+/// attributed to its unit, task, detour and agent; a byte cursor per transcript file;
+/// and the history of forecasts. Money is never stored: it is computed when read.
+pub const V8: &str = r"
+CREATE TABLE usage_replies (
+    message_id     TEXT PRIMARY KEY,
+    repo_id        TEXT NOT NULL,
+    session_id     TEXT NOT NULL,
+    agent_id       TEXT,
+    agent_type     TEXT,
+    model          TEXT NOT NULL,
+    ts             TEXT NOT NULL,
+    unit_no        INTEGER,
+    task_id        TEXT,
+    detour_id      TEXT,
+    input          INTEGER NOT NULL DEFAULT 0,
+    output         INTEGER NOT NULL DEFAULT 0,
+    cache_read     INTEGER NOT NULL DEFAULT 0,
+    cache_write_5m INTEGER NOT NULL DEFAULT 0,
+    cache_write_1h INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX usage_replies_task ON usage_replies (repo_id, task_id);
+CREATE INDEX usage_replies_session ON usage_replies (session_id);
+
+CREATE TABLE transcript_cursors (
+    path       TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    agent_id   TEXT,
+    offset     INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE forecast_history (
+    repo_id       TEXT NOT NULL,
+    ts            TEXT NOT NULL,
+    p50_hours     REAL NOT NULL,
+    p90_hours     REAL NOT NULL,
+    p50_date      TEXT,
+    p90_date      TEXT,
+    remaining_min INTEGER NOT NULL,
+    unestimated   INTEGER NOT NULL,
+    points        INTEGER NOT NULL,
+    hours_per_day REAL,
+    reason        TEXT
+);
+
+CREATE INDEX forecast_history_repo ON forecast_history (repo_id, ts);
 ";

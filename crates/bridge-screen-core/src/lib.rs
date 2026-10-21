@@ -22,6 +22,7 @@ pub mod session;
 pub mod squash;
 pub mod store;
 pub mod tangent;
+pub mod telemetry;
 pub mod tuning;
 pub mod verify;
 pub mod view;
