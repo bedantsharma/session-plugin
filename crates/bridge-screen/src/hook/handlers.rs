@@ -506,9 +506,11 @@ fn stop_drafts(
         },
     )?];
     // The branch may have changed since SessionStart: file reads only, no git process.
+    // Read the session's own worktree when known: the turn's cwd may have moved into
+    // another repo, whose branch isn't this session's.
     if let Some(known) = &ctx.known {
         let stop_at = known.worktree.as_deref().map(std::path::Path::new);
-        if let Some(branch) = repo::read_head(&input.cwd, stop_at)
+        if let Some(branch) = repo::read_head(stop_at.unwrap_or(&input.cwd), stop_at)
             && known.branch.as_deref() != Some(branch.as_str())
         {
             drafts.push(ctx.draft("branch_changed", &session::BranchChanged { branch })?);

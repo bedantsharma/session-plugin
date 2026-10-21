@@ -1312,4 +1312,12 @@ fn stop_refreshes_branch() {
     common::git(&wt, &["checkout", "-q", "-b", "wt-two"]);
     turn("s2", &wt_s);
     assert_eq!(state("s2"), (Some("wt-two".to_string()), 1));
+    // s1's turn ending with its cwd in the other worktree: s1's own worktree is read.
+    turn("s1", &wt_s);
+    let (branch, n) = state("s1");
+    assert!(
+        branch.as_deref().unwrap().starts_with("detached at "),
+        "{branch:?}"
+    );
+    assert_eq!(n, 2);
 }
