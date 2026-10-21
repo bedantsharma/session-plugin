@@ -422,3 +422,35 @@ fn the_basis_uses_the_same_ratio_as_the_calibration_page() {
         Some("tasks typically take 1× their estimate")
     );
 }
+
+/// Events that change nothing the forecast uses (another session's prompt, a
+/// notification) leave it exactly as it was: the dates don't flicker between refreshes.
+#[test]
+fn unrelated_events_leave_the_forecast_alone() {
+    let mut s = Store::open_in_memory().unwrap();
+    plan(
+        &mut s,
+        &[
+            ("1.1", Some(10)),
+            ("1.2", Some(10)),
+            ("1.3", Some(10)),
+            ("1.4", Some(17)),
+            ("1.5", Some(23)),
+            ("1.6", Some(31)),
+            ("1.7", Some(41)),
+            ("1.8", Some(53)),
+        ],
+    );
+    work(&mut s, "1.1", 0, 7, 2);
+    work(&mut s, "1.2", 1000, 19, 2);
+    work(&mut s, "1.3", 3000, 33, 2);
+    let now = at(DAY / 2);
+    let before = run(s.conn(), "r", now, &utc()).unwrap();
+    for i in 0..10 {
+        script(
+            &mut s,
+            &[("other", 5000 + i, "notification", json!({"kind": "idle"}))],
+        );
+        assert_eq!(run(s.conn(), "r", now, &utc()).unwrap(), before, "{i}");
+    }
+}

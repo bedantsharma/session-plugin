@@ -11,8 +11,8 @@
 //!   activity, there are no dates — only the reason. Leaves without an estimate are left
 //!   out and counted.
 //!
-//! Deterministic: the generator is seeded from the repo and the last event used, so the
-//! same inputs give the same P50/P90. History: [`record`] appends a `forecast_ran` after
+//! Deterministic: the generator is seeded from the repo and the numbers it draws from,
+//! so the same inputs give the same P50/P90. History: [`record`] appends a `forecast_ran` after
 //! each verification at L2 or above (never from a hook), when the forecast moved.
 
 pub mod project;
@@ -302,16 +302,6 @@ pub fn date_after(now: Timestamp, tz: &TimeZone, hours: f64, per_day: f64) -> Op
     Some(date.to_string())
 }
 
-/// The newest event position the forecast depends on (forecast history excluded, so
-/// recording one doesn't change the next).
-fn last_pos(conn: &Connection, repo: &str) -> Result<i64> {
-    Ok(conn
-        .prepare_cached(
-            "SELECT COALESCE(MAX(pos), 0) FROM events WHERE repo_id = ?1 AND kind != 'forecast_ran'",
-        )?
-        .query_row([repo], |r| r.get(0))?)
-}
-
 /// `not enough finished tasks to forecast yet — need 2 more`.
 fn thin_reason(points: usize) -> String {
     let more = MIN_POINTS - points;
@@ -319,6 +309,21 @@ fn thin_reason(points: usize) -> String {
         "Not enough finished tasks to forecast yet — {more} more {} needed",
         if more == 1 { "is" } else { "are" }
     )
+}
+
+/// The generator's seed: the repo and exactly the numbers the runs draw from (each
+/// leaf's estimate, time spent and ratios). The same inputs give the same forecast, and
+/// events that change none of them (a prompt elsewhere, a notification, a recorded
+/// forecast) don't move it.
+fn seed_for(repo: &str, legs: &[(f64, f64, &[f64])]) -> u64 {
+    let mut bytes = Vec::new();
+    for (estimate, spent, ratios) in legs {
+        for v in [*estimate, *spent].iter().chain(ratios.iter()) {
+            bytes.extend_from_slice(&v.to_bits().to_le_bytes());
+        }
+        bytes.push(0xFF);
+    }
+    rng::seed(&[repo.as_bytes(), &bytes])
 }
 
 /// The forecast for `repo` at `now` (dates in `tz`), from [`RUNS`] runs.
@@ -386,8 +391,7 @@ pub fn run_with(
         let spent = active.get(&leaf.id).copied().unwrap_or(0).max(0) as f64 / 60.0;
         legs.push((f64::from(*estimate), spent, ratios));
     }
-    let pos = last_pos(conn, repo)?.to_string();
-    let mut rng = rng::Rng::new(rng::seed(&[repo.as_bytes(), pos.as_bytes()]));
+    let mut rng = rng::Rng::new(seed_for(repo, &legs));
     let mut totals: Vec<f64> = (0..runs.max(1))
         .map(|_| {
             legs.iter()
