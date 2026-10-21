@@ -17,8 +17,9 @@ pub mod project;
 pub mod read;
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{Price, price_for};
@@ -65,6 +66,165 @@ pub struct Usage {
     pub agent_type: Option<String>,
     #[serde(default)]
     pub replies: Vec<Reply>,
+}
+
+/// Where Claude Code writes a subagent's transcript, next to the session's own:
+/// `<transcript dir>/<session_id>/subagents/agent-<agent_id>.jsonl`.
+pub fn subagent_path(transcript: &Path, session_id: &str, agent_id: &str) -> PathBuf {
+    transcript
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .join(session_id)
+        .join("subagents")
+        .join(format!("agent-{agent_id}.jsonl"))
+}
+
+/// A transcript's byte cursor (0 when it was never read).
+pub fn cursor(conn: &Connection, path: &str) -> Result<u64> {
+    let offset: Option<i64> = conn
+        .prepare_cached("SELECT offset FROM transcript_cursors WHERE path = ?1")?
+        .query_row([path], |r| r.get(0))
+        .optional()?;
+    Ok(offset.and_then(|o| u64::try_from(o).ok()).unwrap_or(0))
+}
+
+/// What a transcript holds that isn't recorded yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pending {
+    /// The `usage` event to record, or `None` when nothing moved.
+    pub usage: Option<Usage>,
+    /// A line too long to read was skipped (worth a log line).
+    pub skipped_long_line: bool,
+}
+
+/// Read `path` from its cursor — at most `max` bytes, or to the end with `None` (owner
+/// catch-up only) — and drop replies already recorded.
+pub fn pending(conn: &Connection, path: &Path, max: Option<u64>) -> Result<Pending> {
+    let key = path.to_string_lossy().into_owned();
+    let from = cursor(conn, &key)?;
+    let out = match max {
+        Some(max) => read::read_new(path, from, max)?,
+        None => read::read_to_end(path, from)?,
+    };
+    let mut known = conn.prepare_cached("SELECT 1 FROM usage_replies WHERE message_id = ?1")?;
+    let mut replies = Vec::with_capacity(out.replies.len());
+    for r in out.replies {
+        if !known.exists([&r.message_id])? {
+            replies.push(r);
+        }
+    }
+    let moved = out.offset_after != from || out.restarted;
+    Ok(Pending {
+        usage: (moved || !replies.is_empty()).then_some(Usage {
+            path: key,
+            offset_after: out.offset_after,
+            restarted: out.restarted,
+            agent_id: None,
+            agent_type: None,
+            replies,
+        }),
+        skipped_long_line: out.skipped_long_line,
+    })
+}
+
+/// The subagent transcripts of a session: (agent id, agent type, path), by agent id. The
+/// type comes from the `.meta.json` next to each (its `agentType`, nothing else).
+pub fn subagent_files(
+    transcript: &Path,
+    session_id: &str,
+) -> Vec<(String, Option<String>, PathBuf)> {
+    let dir = subagent_path(transcript, session_id, "x")
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(id) = name
+            .strip_prefix("agent-")
+            .and_then(|n| n.strip_suffix(".jsonl"))
+        else {
+            continue;
+        };
+        let meta = dir.join(format!("agent-{id}.meta.json"));
+        let agent_type = std::fs::read(&meta)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .and_then(|v| v["agentType"].as_str().map(str::to_string));
+        out.push((id.to_string(), agent_type, entry.path()));
+    }
+    out.sort();
+    out
+}
+
+/// What a catch-up added.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CatchUp {
+    /// Transcript files read.
+    pub files: usize,
+    /// New replies recorded.
+    pub replies: usize,
+    /// Their tokens.
+    pub tokens: u64,
+}
+
+/// Read every known transcript of the repo's sessions (and their subagents') to the end
+/// and record what is new. Owner-run (`bridge-screen usage --catch-up`), never a hook:
+/// it is unbounded.
+pub fn catch_up(store: &mut crate::store::Store, repo_id: &str) -> Result<CatchUp> {
+    let mut stmt = store.conn().prepare(
+        "SELECT session_id, transcript_path FROM sessions
+         WHERE repo_id = ?1 AND transcript_path IS NOT NULL ORDER BY started_at, session_id",
+    )?;
+    let sessions: Vec<(String, String)> = stmt
+        .query_map([repo_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(stmt);
+    let mut out = CatchUp::default();
+    for (session, transcript) in sessions {
+        let main = PathBuf::from(&transcript);
+        let mut files = vec![(None, None, main.clone())];
+        files.extend(
+            subagent_files(&main, &session)
+                .into_iter()
+                .map(|(id, kind, path)| (Some(id), kind, path)),
+        );
+        for (agent_id, agent_type, path) in files {
+            if !path.exists() {
+                continue;
+            }
+            out.files += 1;
+            let Some(mut usage) = pending(store.conn(), &path, None)?.usage else {
+                continue;
+            };
+            usage.agent_id.clone_from(&agent_id);
+            usage.agent_type.clone_from(&agent_type);
+            out.replies += usage.replies.len();
+            out.tokens += usage
+                .replies
+                .iter()
+                .map(|r| r.input + r.output + r.cache_read + r.cache_write_5m + r.cache_write_1h)
+                .sum::<u64>();
+            let actor = crate::store::Actor {
+                agent_id,
+                agent_type,
+                model: None,
+            };
+            store.append(
+                crate::store::EventDraft::new(
+                    repo_id,
+                    &session,
+                    "usage",
+                    serde_json::to_value(&usage)?,
+                )
+                .actor(actor),
+            )?;
+        }
+    }
+    Ok(out)
 }
 
 /// Token counts of one kind of spend.
@@ -221,7 +381,6 @@ pub fn session_by_unit(conn: &Connection, session: &str) -> Result<BTreeMap<i64,
 
 /// The model with the most output tokens on a task, if any reply is attributed to it.
 pub fn main_model(conn: &Connection, repo: &str, task: &str) -> Result<Option<String>> {
-    use rusqlite::OptionalExtension;
     Ok(conn
         .prepare_cached(
             "SELECT model FROM usage_replies WHERE repo_id = ?1 AND task_id = ?2

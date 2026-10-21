@@ -6,6 +6,7 @@ mod mcp;
 mod report;
 mod status;
 mod ui;
+mod usage;
 mod watch;
 mod words;
 

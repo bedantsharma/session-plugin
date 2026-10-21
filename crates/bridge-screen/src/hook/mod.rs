@@ -82,6 +82,9 @@ pub struct HookInput {
     pub agent_id: Option<String>,
     #[serde(default, deserialize_with = "lenient_string")]
     pub agent_type: Option<String>,
+    /// SubagentStop: the subagent's own transcript.
+    #[serde(default, deserialize_with = "lenient_string")]
+    pub agent_transcript_path: Option<String>,
     /// SessionStart: startup, resume, clear, compact or fork.
     #[serde(default, deserialize_with = "lenient_string")]
     pub source: Option<String>,
@@ -222,7 +225,7 @@ pub fn bad_command_line(message: &str) {
 
 /// Append one line to `<home>/hook-errors.log`, creating the folder if needed. Failing to
 /// log is ignored.
-fn log_error(home: &Home, label: &str, message: &str) {
+pub(crate) fn log_error(home: &Home, label: &str, message: &str) {
     let line = format!(
         "{} {} {}\n",
         jiff::Timestamp::now(),

@@ -256,3 +256,185 @@ fn readable_numbers() {
     assert_eq!(model_text("claude-haiku-4-5-20251001"), "Haiku 4.5");
     assert_eq!(model_text("gpt-x"), "gpt-x");
 }
+
+/// A transcript line for reply `id` (the same reply may be written on several lines).
+fn line(id: &str, ts: &str, output: u64) -> String {
+    format!(
+        r#"{{"parentUuid":"p","isSidechain":false,"type":"assistant","requestId":"req_{id}","timestamp":"{ts}","message":{{"id":"{id}","model":"claude-opus-5-5","role":"assistant","content":[{{"type":"text","text":"SECRET reply text"}}],"usage":{{"input_tokens":3,"cache_creation_input_tokens":30,"cache_read_input_tokens":200,"output_tokens":{output},"output_tokens_details":{{"thinking_tokens":0}},"service_tier":"standard","cache_creation":{{"ephemeral_1h_input_tokens":20,"ephemeral_5m_input_tokens":10}}}}}}}}"#
+    ) + "\n"
+}
+
+fn write(path: &std::path::Path, text: &str) {
+    std::fs::write(path, text).unwrap();
+}
+
+fn append(path: &std::path::Path, text: &str) {
+    use std::io::Write as _;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .unwrap()
+        .write_all(text.as_bytes())
+        .unwrap();
+}
+
+#[test]
+fn a_reply_written_on_several_lines_is_read_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.jsonl");
+    let ts = at(5);
+    write(
+        &path,
+        &[
+            line("m1", &ts, 7),
+            line("m1", &ts, 7),
+            line("m1", &ts, 7),
+            line("m2", &ts, 1),
+        ]
+        .concat(),
+    );
+    let out = read_new(&path, 0, MAX_HOOK_BYTES).unwrap();
+    let ids: Vec<&str> = out.replies.iter().map(|r| r.message_id.as_str()).collect();
+    assert_eq!(ids, ["m1", "m2"]);
+    let r = &out.replies[0];
+    assert_eq!(
+        (
+            r.input,
+            r.output,
+            r.cache_read,
+            r.cache_write_5m,
+            r.cache_write_1h
+        ),
+        (3, 7, 200, 10, 20)
+    );
+    assert_eq!(
+        (r.model.as_str(), r.ts.as_str()),
+        ("claude-opus-5-5", ts.as_str())
+    );
+    assert!(!out.more);
+}
+
+#[test]
+fn only_whole_lines_are_read_and_a_shrunk_file_restarts() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.jsonl");
+    let full = line("m1", &at(5), 7);
+    let (head, tail) = full.split_at(40);
+    write(&path, head);
+    let out = read_new(&path, 0, MAX_HOOK_BYTES).unwrap();
+    assert_eq!(
+        (out.replies.len(), out.offset_after, out.more),
+        (0, 0, true)
+    );
+    append(&path, tail);
+    let out = read_new(&path, 0, MAX_HOOK_BYTES).unwrap();
+    assert_eq!(out.replies.len(), 1);
+    assert_eq!(out.offset_after, full.len() as u64);
+    // The file was replaced by a shorter one: read again from the start.
+    write(&path, &line("m9", &at(6), 1));
+    let out = read_new(&path, full.len() as u64 + 500, MAX_HOOK_BYTES).unwrap();
+    assert!(out.restarted);
+    assert_eq!(out.replies[0].message_id, "m9");
+}
+
+#[test]
+fn reads_are_bounded_and_long_lines_never_stall() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.jsonl");
+    let one = line("m1", &at(5), 7);
+    let text: String = (0..10).map(|i| line(&format!("m{i}"), &at(5), 1)).collect();
+    write(&path, &text);
+    let max = one.len() as u64 * 3 + 5;
+    let out = read_new(&path, 0, max).unwrap();
+    assert_eq!(out.replies.len(), 3);
+    assert!(out.more);
+    let rest = read_to_end(&path, out.offset_after).unwrap();
+    assert_eq!(rest.replies.len(), 7);
+    assert!(!rest.more);
+    // A line longer than the slice: extended to its end (within 2 × max).
+    let long = format!("{{\"type\":\"user\",\"pad\":\"{}\"}}\n", "x".repeat(150));
+    write(&path, &(long.clone() + &one));
+    let out = read_new(&path, 0, 100).unwrap();
+    assert_eq!(out.offset_after, long.len() as u64);
+    // Longer than 2 × max: skipped, and the cursor still moves.
+    let out = read_new(&path, 0, 50).unwrap();
+    assert!(out.skipped_long_line);
+    assert_eq!(out.offset_after, 100);
+    let next = read_new(&path, out.offset_after, 1000).unwrap();
+    assert_eq!(next.replies.len(), 1);
+}
+
+#[test]
+fn other_lines_are_ignored_and_a_missing_file_is_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.jsonl");
+    let text = [
+        r#"{"type":"user","message":{"role":"user","content":"say \"usage\" and \"assistant\""}}"#,
+        r#"{"type":"assistant","message":{"id":"m1","model":"claude-opus-5-5","content":"no usage"}}"#,
+        r#"{"type":"assistant","message":{"id":"m0","model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0}}}"#,
+        r#"not json at all "usage" "assistant""#,
+        r#"{"type":"assistant","timestamp":"2026-10-14T09:00:01Z","message":{"id":"m2","usage":{"output_tokens":4,"cache_creation_input_tokens":9}}}"#,
+    ]
+    .join("\n")
+        + "\n";
+    write(&path, &text);
+    let out = read_new(&path, 0, MAX_HOOK_BYTES).unwrap();
+    assert_eq!(out.replies.len(), 1);
+    let r = &out.replies[0];
+    // Without the 5m/1h split, a cache write is the default 5-minute one.
+    assert_eq!(
+        (r.model.as_str(), r.output, r.cache_write_5m),
+        ("unknown", 4, 9)
+    );
+    let missing = read_new(&dir.path().join("nope.jsonl"), 7, MAX_HOOK_BYTES).unwrap();
+    assert_eq!(
+        missing,
+        ReadOut {
+            offset_after: 7,
+            ..ReadOut::default()
+        }
+    );
+}
+
+#[test]
+fn pending_skips_replies_already_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.jsonl");
+    let mut s = Store::open_in_memory().unwrap();
+    session(&mut s);
+    write(
+        &path,
+        &[line("m1", &at(30), 7), line("m1", &at(30), 7)].concat(),
+    );
+    let first = pending(s.conn(), &path, Some(MAX_HOOK_BYTES)).unwrap();
+    let usage = first.usage.unwrap();
+    assert_eq!(usage.replies.len(), 1);
+    script(
+        &mut s,
+        &[("s1", 400, "usage", serde_json::to_value(&usage).unwrap())],
+    );
+    // The reply's other lines arrive in the next read: nothing new.
+    append(
+        &path,
+        &[line("m1", &at(30), 7), line("m2", &at(30), 1)].concat(),
+    );
+    let next = pending(s.conn(), &path, Some(MAX_HOOK_BYTES))
+        .unwrap()
+        .usage
+        .unwrap();
+    assert_eq!(next.replies.len(), 1);
+    assert_eq!(next.replies[0].message_id, "m2");
+    // Nothing new and the cursor at the end: nothing to record.
+    script(
+        &mut s,
+        &[("s1", 401, "usage", serde_json::to_value(&next).unwrap())],
+    );
+    assert_eq!(
+        pending(s.conn(), &path, Some(MAX_HOOK_BYTES))
+            .unwrap()
+            .usage,
+        None
+    );
+    let t = totals(s.conn(), &Scope::Session("s1".into())).unwrap();
+    assert_eq!((t.replies, t.sum.output), (2, 8));
+}

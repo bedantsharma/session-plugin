@@ -13,6 +13,7 @@ use bridge_screen_core::session::{
     SessionEnded, SessionStarted, SessionState, SubagentStopped, UnitStopped,
 };
 use bridge_screen_core::store::{Actor, EventDraft, Store, append_in};
+use bridge_screen_core::telemetry::{self, MAX_HOOK_BYTES};
 use bridge_screen_core::tuning;
 use serde::Serialize;
 
@@ -326,14 +327,23 @@ fn drafts_for(
             };
             ctx.draft("file_changed", &FileEvent { tool, files })?
         }
-        HookEvent::Stop => return stop_drafts(ctx, store, scored),
-        HookEvent::SubagentStop => ctx.draft(
-            "subagent_stopped",
-            &SubagentStopped {
-                agent_type: input.agent_type.clone(),
-                summary: summary(input),
-            },
-        )?,
+        HookEvent::Stop => {
+            let mut drafts = stop_drafts(ctx, store, scored)?;
+            drafts.extend(usage_draft(event, ctx, store)?);
+            return Ok(drafts);
+        }
+        HookEvent::SubagentStop => {
+            let stopped = ctx.draft(
+                "subagent_stopped",
+                &SubagentStopped {
+                    agent_type: input.agent_type.clone(),
+                    summary: summary(input),
+                },
+            )?;
+            let mut drafts = vec![stopped];
+            drafts.extend(usage_draft(event, ctx, store)?);
+            return Ok(drafts);
+        }
         HookEvent::PreCompact => ctx.draft("precompact", &serde_json::json!({}))?,
         HookEvent::Notification => {
             let kind = match input.notification_type.as_deref() {
@@ -359,17 +369,85 @@ fn drafts_for(
                 Some(known) => handoff::end_state(store.conn(), known),
                 None => (None, Vec::new()),
             };
-            ctx.draft(
+            let ended = ctx.draft(
                 "session_ended",
                 &SessionEnded {
                     reason: input.reason.clone(),
                     end_kind,
                     dirty_files,
                 },
-            )?
+            )?;
+            // One last (still bounded) read of the transcript.
+            let mut drafts = vec![ended];
+            drafts.extend(usage_draft(event, ctx, store)?);
+            return Ok(drafts);
         }
     };
     Ok(vec![draft])
+}
+
+/// The transcript a Stop, SessionEnd or SubagentStop reads: the session's, or the
+/// subagent's own (`agent_transcript_path`, else derived from the session's).
+fn transcript_for(event: HookEvent, ctx: &Ctx) -> Option<PathBuf> {
+    let input = ctx.input;
+    let main = input
+        .transcript_path
+        .clone()
+        .or_else(|| ctx.known.as_ref().and_then(|k| k.transcript_path.clone()))
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from);
+    if event != HookEvent::SubagentStop {
+        return main;
+    }
+    if let Some(own) = input
+        .agent_transcript_path
+        .as_deref()
+        .filter(|p| !p.is_empty())
+    {
+        return Some(PathBuf::from(own));
+    }
+    let agent = input.agent_id.as_deref()?;
+    Some(telemetry::subagent_path(&main?, &input.session_id, agent))
+}
+
+/// The `usage` event for the transcript's new lines (at most [`MAX_HOOK_BYTES`]), if any
+/// reply is new or the cursor moved (spec §9.2). Reading the transcript must never cost
+/// the session its other events: a failure is logged and nothing is recorded.
+fn usage_draft(event: HookEvent, ctx: &Ctx, store: &Store) -> Result<Option<EventDraft>> {
+    let Some(path) = transcript_for(event, ctx) else {
+        return Ok(None);
+    };
+    let found = match telemetry::pending(store.conn(), &path, Some(MAX_HOOK_BYTES)) {
+        Ok(found) => found,
+        Err(e) => {
+            log(event, &format!("reading {}: {e}", path.display()));
+            return Ok(None);
+        }
+    };
+    if found.skipped_long_line {
+        log(
+            event,
+            &format!(
+                "skipped a transcript line too long to read in {}",
+                path.display()
+            ),
+        );
+    }
+    let Some(mut usage) = found.usage else {
+        return Ok(None);
+    };
+    if event == HookEvent::SubagentStop {
+        usage.agent_id.clone_from(&ctx.input.agent_id);
+        usage.agent_type.clone_from(&ctx.input.agent_type);
+    }
+    Ok(Some(ctx.draft("usage", &usage)?))
+}
+
+/// Note a problem in `hook-errors.log` without failing the hook.
+fn log(event: HookEvent, message: &str) {
+    if let Ok(home) = bridge_screen_core::paths::Home::resolve() {
+        super::log_error(&home, event.kebab(), message);
+    }
 }
 
 /// Stop: the unit stops, and a turn that ends with a question to the owner is one (the

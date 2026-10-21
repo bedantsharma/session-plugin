@@ -104,6 +104,25 @@ pub enum Command {
         #[arg(long)]
         all: bool,
     },
+    /// Tokens and cost per project, task, session, agent or model (spec §9.2).
+    Usage {
+        /// Any directory inside the repo.
+        #[arg(short = 'C', long = "dir", default_value = ".")]
+        dir: PathBuf,
+        /// Only this session (a unique prefix of its id).
+        #[arg(long)]
+        session: Option<String>,
+        /// Only this task (its usage includes detours opened under it).
+        #[arg(long)]
+        task: Option<String>,
+        /// How to split the totals.
+        #[arg(long, value_enum, default_value_t = UsageBy::Task)]
+        by: UsageBy,
+        /// Read every transcript of this repo's sessions to the end first and record
+        /// what's new (hooks read at most 512 KiB at a time).
+        #[arg(long)]
+        catch_up: bool,
+    },
     /// Rebuild all views from the event log.
     Rebuild,
     /// Print the effective configuration (and this repo's tuned drift thresholds).
@@ -179,6 +198,15 @@ impl From<DriftAnswer> for bridge_screen_core::owner::DriftAnswer {
             DriftAnswer::Stop => Self::Stop,
         }
     }
+}
+
+/// How `usage` splits its totals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum UsageBy {
+    Model,
+    Task,
+    Session,
+    Agent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]

@@ -55,6 +55,13 @@ pub fn run(cli: Cli) -> Result<()> {
             dir,
         } => verify_cmd(&dir, &task, broken.as_deref(), level),
         Command::Decisions { dir, task, all } => decisions_cmd(&dir, task.as_deref(), all),
+        Command::Usage {
+            dir,
+            session,
+            task,
+            by,
+            catch_up,
+        } => crate::usage::run(&dir, session.as_deref(), task.as_deref(), by, catch_up),
         Command::Rebuild => rebuild(),
         Command::Config { action: None, dir } => config(&dir),
         Command::Config {
@@ -106,7 +113,7 @@ pub fn print_status() -> Result<()> {
     Ok(())
 }
 
-fn open_store(home: &Home) -> Result<Store> {
+pub fn open_store(home: &Home) -> Result<Store> {
     home.ensure()?;
     Ok(Store::open(&home.db_path())?)
 }
