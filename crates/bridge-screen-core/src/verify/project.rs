@@ -19,7 +19,16 @@ pub const VERIFY_KINDS: &[&str] = &[
     "verification_failed",
     "verification_stale",
     "verify_nudged",
+    "verification_withdrawn",
 ];
+
+/// The owner took back a verdict (owner only): `verification_id` is the `verif_id` of a
+/// sign-off, or the event id of a "broken" (`verification_failed`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerificationWithdrawn {
+    pub task_id: String,
+    pub verification_id: String,
+}
 
 /// A task reached a level of the ladder, at commit `sha`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,9 +133,12 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
         }
         "verification_failed" => {
             let d: VerificationFailed = payload(event)?;
+            // Remember which failure wiped each row and what it was, so the owner can take a
+            // "broken" back.
             tx.execute(
-                "UPDATE verifications SET state = 'failed' WHERE repo_id = ?1 AND task_id = ?2",
-                params![repo, d.task_id],
+                "UPDATE verifications SET failed_from = state, failed_by = ?3, state = 'failed'
+                 WHERE repo_id = ?1 AND task_id = ?2 AND state IN ('current', 'stale')",
+                params![repo, d.task_id, event.id],
             )?;
             clear_nudges(tx, repo, &d.task_id)?;
             refresh_status(tx, repo, &d.task_id, true)?;
@@ -142,6 +154,24 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
             if dropped > 0 {
                 refresh_status(tx, repo, &d.task_id, false)?;
             }
+        }
+        "verification_withdrawn" => {
+            let d: VerificationWithdrawn = payload(event)?;
+            let signoff = tx.execute(
+                "UPDATE verifications SET state = 'withdrawn'
+                 WHERE verif_id = ?1 AND repo_id = ?2 AND state IN ('current', 'stale')",
+                params![d.verification_id, repo],
+            )?;
+            if signoff == 0 {
+                // A "broken" taken back: what it wiped counts again.
+                tx.execute(
+                    "UPDATE verifications SET state = COALESCE(failed_from, 'current'),
+                         failed_from = NULL, failed_by = NULL
+                     WHERE repo_id = ?1 AND task_id = ?2 AND failed_by = ?3",
+                    params![repo, d.task_id, d.verification_id],
+                )?;
+            }
+            refresh_status(tx, repo, &d.task_id, false)?;
         }
         "verify_nudged" => {
             let d: VerifyNudged = payload(event)?;

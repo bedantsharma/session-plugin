@@ -103,6 +103,8 @@ pub enum OwnerAction {
         task: String,
         note: String,
     },
+    /// Take back the owner's newest verdict (sign-off or "broken") on a task.
+    Withdraw { repo: String, task: String },
     /// Put the repo's auto-tuned drift thresholds back to the defaults.
     ResetDrift { repo: String },
 }
@@ -248,6 +250,7 @@ pub fn act(store: &mut Store, ctx: &ActCtx, action: &OwnerAction) -> Result<Stri
         } => resolve(store, ctx, repo.as_deref(), leftover_ids, *action),
         OwnerAction::Verify { repo, task, level } => verdict(store, ctx, repo, task, *level, None),
         OwnerAction::Broken { repo, task, note } => verdict(store, ctx, repo, task, 4, Some(note)),
+        OwnerAction::Withdraw { repo, task } => verify::withdraw(store, repo, task),
         OwnerAction::ResetDrift { repo } => reset_drift(store, ctx, repo),
     }
 }

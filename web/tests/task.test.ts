@@ -31,6 +31,7 @@ const drill: TaskDrill = {
     { id: '1.1.2', title: 'Errors', status: 'active', current: true },
   ],
   ratio: 1.8,
+  withdraw: null,
 }
 
 const client: Client = {
@@ -57,5 +58,31 @@ describe('Task drill', () => {
     ])
     expect(screen.getByRole('table', { name: 'By agent' })).toHaveTextContent('Main agent')
     expect(container.textContent).not.toMatch(/[a-z]_[a-z]/)
+  })
+
+  it('offers "Take back sign-off" and sends the withdraw through the owner action', async () => {
+    const sent: unknown[] = []
+    const d: TaskDrill = {
+      ...drill,
+      status: 'l4',
+      withdraw: {
+        label: 'Take back sign-off',
+        action: { kind: 'withdraw', repo: 'r1', task: '1.1' },
+        inputs: [],
+        tone: 'neutral',
+      },
+    }
+    const c: Client = {
+      get: async <T>() => d as T,
+      act: async (a) => {
+        sent.push(a)
+        return { ok: false, status: 409, error: 'nothing to withdraw on 1.1' }
+      },
+    }
+    render(Task, { client: c, repo: 'r1', id: '1.1', version: 1 })
+    const btn = await screen.findByRole('button', { name: 'Take back sign-off' })
+    btn.click()
+    expect(await screen.findByRole('status')).toHaveTextContent('nothing to withdraw on 1.1')
+    expect(sent).toEqual([{ kind: 'withdraw', repo: 'r1', task: '1.1' }])
   })
 })

@@ -630,6 +630,9 @@ pub struct TaskDrill {
     pub steps: Vec<StepRow>,
     /// Actual ÷ estimate, once it is done (L2 or above) and both are known.
     pub ratio: Option<f64>,
+    /// "Take back sign-off": the owner's newest verdict still in force, as a one-click
+    /// action (refused as stale when it was already taken back).
+    pub withdraw: Option<super::ActionSpec>,
 }
 
 /// One line of a cost split: who or what, its tokens and its cost.
@@ -718,6 +721,25 @@ fn task_usage(conn: &Connection, repo: &str, id: &str, cfg: &Config) -> Result<O
         by_model,
         by_agent,
     }))
+}
+
+/// "Take back sign-off" for the owner's newest verdict still in force.
+fn withdraw_action(conn: &Connection, repo: &str, id: &str) -> Result<Option<super::ActionSpec>> {
+    Ok(
+        verify::withdrawable(conn, repo, id)?.map(|w| super::ActionSpec {
+            label: if w.signoff {
+                "Take back sign-off".to_string()
+            } else {
+                "Take back \"broken\"".to_string()
+            },
+            action: crate::owner::OwnerAction::Withdraw {
+                repo: repo.to_string(),
+                task: id.to_string(),
+            },
+            inputs: Vec::new(),
+            tone: super::Tone::Neutral,
+        }),
+    )
 }
 
 /// The task's subtasks in plan order, the current one marked.
@@ -838,6 +860,7 @@ pub fn task(conn: &Connection, repo: &str, id: &str, cfg: &Config) -> Result<Tas
         usage: task_usage(conn, repo, id, cfg)?,
         steps: steps(conn, repo, id)?,
         ratio,
+        withdraw: withdraw_action(conn, repo, id)?,
     })
 }
 

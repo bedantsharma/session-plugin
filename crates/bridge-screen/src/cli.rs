@@ -79,13 +79,18 @@ pub enum Command {
         #[arg(long)]
         dry_run: bool,
     },
-    /// The owner's verdict on a task (spec §8.5 L4): it works, or `--broken "<note>"`.
+    /// The owner's verdict on a task (spec §8.5 L4): it works, `--broken "<note>"`, or
+    /// `--withdraw` to take your last verdict back.
     Verify {
         /// The task or subtask id, e.g. 2.3.
         task: String,
         /// It doesn't work: what's wrong. The task goes back to failed.
-        #[arg(long, value_name = "NOTE")]
+        #[arg(long, value_name = "NOTE", conflicts_with = "withdraw")]
         broken: Option<String>,
+        /// Take back your last sign-off (or "broken") on the task: it goes back to where it
+        /// was before.
+        #[arg(long)]
+        withdraw: bool,
         /// The level reached (the owner's own check is L4).
         #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(i64).range(1..=4))]
         level: i64,

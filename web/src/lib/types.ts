@@ -259,6 +259,8 @@ export interface TaskDrill {
   }[]
   actors: { agent_type: string | null; model: string | null }[]
   retries: number
+  /** "Take back sign-off": the owner's newest verdict still in force. */
+  withdraw: ActionSpec | null
   usage: TaskUsage | null
   steps: { id: string; title: string; status: string; current: boolean }[]
   /** Actual ÷ estimate, once done. */

@@ -571,6 +571,54 @@ fn owner_verifies_or_marks_broken_from_the_cli() {
 }
 
 #[test]
+fn owner_takes_a_verdict_back_from_the_cli_only() {
+    let (env, mut mcp) = at_l1();
+    assert!(env.run(&["verify", "1.1"], "").status.success());
+    assert!(
+        env.run(&["verify", "1.1", "--broken", "the reset link 404s"], "")
+            .status
+            .success()
+    );
+    // The agent's server can't take it back, even with a well-formed action.
+    let (is_error, text) = mcp.call(
+        "owner_action",
+        &json!({"nonce": "x", "action": {"kind": "withdraw", "repo": "r", "task": "1.1"}}),
+    );
+    assert!(is_error, "{text}");
+    assert!(text.contains("--withdraw"), "{text}");
+    assert_eq!(status(&env, "1.1"), NodeStatus::Failed);
+    // First the "broken" comes back off, then the sign-off, then nothing is left.
+    let out = env.run(&["verify", "1.1", "--withdraw"], "");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "Took back your \"broken\" verdict on 1.1 Login form; it's back to where it was before."
+    );
+    assert_eq!(status(&env, "1.1"), NodeStatus::L4);
+    assert!(
+        env.run(&["verify", "1.1", "--withdraw"], "")
+            .status
+            .success()
+    );
+    assert_eq!(status(&env, "1.1"), NodeStatus::L1);
+    let out = env.run(&["verify", "1.1", "--withdraw"], "");
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("nothing to withdraw on 1.1"), "{err}");
+    assert_eq!(status(&env, "1.1"), NodeStatus::L1);
+    // --broken and --withdraw don't go together.
+    assert!(
+        !env.run(&["verify", "1.1", "--withdraw", "--broken", "x"], "")
+            .status
+            .success()
+    );
+}
+
+#[test]
 fn test_settings_round_trip_through_the_cli() {
     let env = Env::new();
     set_test_command(&env, "cargo test -q");

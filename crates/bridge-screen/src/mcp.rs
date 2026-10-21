@@ -1089,6 +1089,14 @@ impl Bridge {
 
     fn do_owner_action(&self, args: &Args<OwnerActionInput>) -> Result<String, String> {
         let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        // Taking a sign-off back is the owner's alone: the CLI or the dashboard, never
+        // through the agent's server (spec §8.5).
+        if matches!(input.action, OwnerAction::Withdraw { .. }) {
+            return Err(
+                "refused: taking back a sign-off is done on the dashboard or with `bridge-screen verify <task> --withdraw`; nothing was recorded"
+                    .into(),
+            );
+        }
         if !self.nonce_valid(&input.nonce) {
             return Err(
                 "refused: owner_action answers clicks on the progress card only (its nonce is missing, wrong or expired); nothing was recorded"
