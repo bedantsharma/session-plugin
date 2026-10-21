@@ -330,6 +330,7 @@ fn drafts_for(
         HookEvent::Stop => {
             let mut drafts = stop_drafts(ctx, store, scored)?;
             drafts.extend(usage_draft(event, ctx, store)?);
+            drafts.extend(lagging_subagent_draft(event, ctx, store)?);
             return Ok(drafts);
         }
         HookEvent::SubagentStop => {
@@ -441,6 +442,39 @@ fn usage_draft(event: HookEvent, ctx: &Ctx, store: &Store) -> Result<Option<Even
         usage.agent_type.clone_from(&ctx.input.agent_type);
     }
     Ok(Some(ctx.draft("usage", &usage)?))
+}
+
+/// The next slice of one subagent transcript that its SubagentStop didn't finish (spec
+/// §9.2): a subagent stops once, so the session's Stops read the rest, one file and at
+/// most [`MAX_HOOK_BYTES`] per Stop. Failures are logged; nothing is recorded.
+fn lagging_subagent_draft(
+    event: HookEvent,
+    ctx: &Ctx,
+    store: &Store,
+) -> Result<Option<EventDraft>> {
+    // The first file with a whole new line (one only holding a half-written line yields
+    // nothing and doesn't hold up the others).
+    let found = (|| -> bridge_screen_core::error::Result<Option<telemetry::Usage>> {
+        for (agent_id, agent_type, path) in
+            telemetry::lagging_subagents(store.conn(), &ctx.input.session_id)?
+        {
+            let p = telemetry::pending(store.conn(), &path, Some(MAX_HOOK_BYTES))?;
+            if let Some(mut u) = p.usage {
+                u.agent_id = Some(agent_id);
+                u.agent_type = agent_type;
+                return Ok(Some(u));
+            }
+        }
+        Ok(None)
+    })();
+    match found {
+        Ok(Some(usage)) => Ok(Some(ctx.draft("usage", &usage)?)),
+        Ok(None) => Ok(None),
+        Err(e) => {
+            log(event, &format!("reading a subagent transcript: {e}"));
+            Ok(None)
+        }
+    }
 }
 
 /// Note a problem in `hook-errors.log` without failing the hook.

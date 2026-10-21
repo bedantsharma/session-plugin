@@ -153,15 +153,56 @@ pub fn subagent_files(
         else {
             continue;
         };
-        let meta = dir.join(format!("agent-{id}.meta.json"));
-        let agent_type = std::fs::read(&meta)
-            .ok()
-            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-            .and_then(|v| v["agentType"].as_str().map(str::to_string));
+        let agent_type = meta_agent_type(&entry.path());
         out.push((id.to_string(), agent_type, entry.path()));
     }
     out.sort();
     out
+}
+
+/// The subagent transcripts of `session` with bytes past their cursors: (agent id,
+/// agent type, path), by path. A subagent stops once, so a transcript bigger than one
+/// hook's slice is finished by the session's later Stops. The type is the one already
+/// recorded for the agent, else its `.meta.json`'s `agentType`.
+pub fn lagging_subagents(
+    conn: &Connection,
+    session: &str,
+) -> Result<Vec<(String, Option<String>, PathBuf)>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT path, agent_id, offset FROM transcript_cursors
+         WHERE session_id = ?1 AND agent_id IS NOT NULL ORDER BY path",
+    )?;
+    let rows: Vec<(String, String, i64)> = stmt
+        .query_map([session], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut out = Vec::new();
+    for (path, agent, offset) in rows {
+        let path = PathBuf::from(path);
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if i64::try_from(meta.len()).unwrap_or(i64::MAX) == offset {
+            continue;
+        }
+        let recorded: Option<String> = conn
+            .prepare_cached(
+                "SELECT agent_type FROM usage_replies
+                 WHERE session_id = ?1 AND agent_id = ?2 AND agent_type IS NOT NULL LIMIT 1",
+            )?
+            .query_row(params![session, agent], |r| r.get(0))
+            .optional()?;
+        let agent_type = recorded.or_else(|| meta_agent_type(&path));
+        out.push((agent, agent_type, path));
+    }
+    Ok(out)
+}
+
+/// The `agentType` in the `.meta.json` next to a subagent transcript.
+fn meta_agent_type(transcript: &Path) -> Option<String> {
+    let meta = transcript.with_extension("meta.json");
+    let bytes = std::fs::read(meta).ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    v["agentType"].as_str().map(str::to_string)
 }
 
 /// What a catch-up added.

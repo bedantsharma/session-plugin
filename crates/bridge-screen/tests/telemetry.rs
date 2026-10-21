@@ -545,3 +545,55 @@ fn config_shows_the_price_table_and_its_sources() {
     );
     assert!(!text.contains("[prices"), "{text}");
 }
+
+/// A subagent stops once, but its transcript can be bigger than one hook's slice: the
+/// session's later Stops read the rest, still with the subagent's id and type.
+#[test]
+fn a_big_subagent_transcript_is_finished_by_later_stops() {
+    let env = Env::new();
+    let t = Transcript::new("s1");
+    start(&env, "s1", &t);
+    let path = telemetry::subagent_path(&t.path, "s1", "a1");
+    let mut text = String::new();
+    let mut n = 0;
+    while text.len() < 1300 * 1024 {
+        text.push_str(&line_at(
+            &format!("sub{n}"),
+            1,
+            &jiff::Timestamp::now().to_string(),
+            true,
+        ));
+        text.push_str(&user_line());
+        n += 1;
+    }
+    append(&path, &text);
+    hook(&env, "subagent-stop", "s1", &t, |p| {
+        p["agent_id"] = json!("a1");
+        p["agent_type"] = json!("Explore");
+        p["agent_transcript_path"] = json!(path.to_string_lossy());
+    });
+    for _ in 0..3 {
+        hook(&env, "user-prompt-submit", "s1", &t, |_| {});
+        hook(&env, "stop", "s1", &t, |_| {});
+    }
+    let store = Store::open(&env.db_path()).unwrap();
+    let agent = telemetry::totals(
+        store.conn(),
+        &Scope::Agent {
+            session: "s1".into(),
+            agent_id: "a1".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(agent.replies, n);
+    let untyped: i64 = store
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM usage_replies WHERE agent_type IS NOT 'Explore'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(untyped, 0);
+    assert_eq!(env.log(), "");
+}

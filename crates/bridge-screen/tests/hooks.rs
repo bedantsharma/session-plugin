@@ -1152,6 +1152,8 @@ fn transcript_slice(batch: usize, bytes: usize) -> String {
 
 /// Stop and SubagentStop each with 512 KiB of unread transcript (spec §9.2, §11.1): a
 /// backlog is read in bounded slices, each within the hook budget, on the large database.
+/// The subagent's transcript gets twice what its SubagentStop reads, so every Stop also
+/// finishes 512 KiB of it: the worst case, two full slices in one Stop.
 #[test]
 #[ignore = "perf check: run on demand with --release"]
 fn hook_latency_stop_and_subagent_stop_with_a_transcript_backlog() {
@@ -1199,7 +1201,7 @@ fn hook_latency_stop_and_subagent_stop_with_a_transcript_backlog() {
                 Ok(())
             })
             .unwrap();
-        append(&sub, &transcript_slice(2 * i + 1, slice));
+        append(&sub, &transcript_slice(2 * i + 1, 2 * slice));
         let start = Instant::now();
         env.hook_raw("subagent-stop", &sub_payload);
         subs.push(start.elapsed());
@@ -1214,6 +1216,9 @@ fn hook_latency_stop_and_subagent_stop_with_a_transcript_backlog() {
         .query_row("SELECT count(*) FROM usage_replies", [], |r| r.get(0))
         .unwrap();
     assert!(replies > 100 * 2 * 200, "{replies} replies recorded");
-    report("hook stop (512 KiB transcript backlog)", stops);
+    report(
+        "hook stop (512 KiB transcript backlog + 512 KiB of a subagent's)",
+        stops,
+    );
     report("hook subagent-stop (512 KiB transcript backlog)", subs);
 }
