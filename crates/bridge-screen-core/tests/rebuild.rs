@@ -1014,3 +1014,158 @@ fn rebuild_of_empty_store_is_fine() {
     let mut s = Store::open_in_memory().unwrap();
     assert_eq!(s.rebuild().unwrap().events, 0);
 }
+
+/// SP8: imports (a replan and a baseline), init, waits (open, cleared by their target,
+/// promoted) and task branches all come back the same from the log.
+#[test]
+#[allow(clippy::too_many_lines)] // one scenario with every kind
+fn rebuild_reproduces_import_init_wait_and_branch_views() {
+    use bridge_screen_core::import::{ImportCtx, ScanBudget, scan};
+    use bridge_screen_core::init::{self, InitBy, InitDraft};
+    use bridge_screen_core::repo::RepoInfo;
+    use bridge_screen_core::waits;
+    use std::fmt::Write as _;
+
+    let mut s = Store::open_in_memory().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let plans = dir.path().join("docs/superpowers/plans");
+    std::fs::create_dir_all(&plans).unwrap();
+    for (id, name) in [("a", "web"), ("b", "api"), ("c", "old")] {
+        s.register_repo(&RepoInfo {
+            id: id.into(),
+            name: name.into(),
+            root: dir.path().into(),
+        })
+        .unwrap();
+    }
+    let plan = |tasks: &[&str]| {
+        let mut out = String::from("# Login Implementation Plan\n\n**Goal:** Sign in.\n\n");
+        for (i, t) in tasks.iter().enumerate() {
+            let _ = write!(
+                out,
+                "### Task {}: {t}\n- [x] step one\n- [ ] step two\n\n",
+                i + 1
+            );
+        }
+        out
+    };
+    let ctx = ImportCtx {
+        session_id: "owner".into(),
+        actor: Actor::default(),
+        dry_run: false,
+    };
+    // Repo a: imported, then a big change (a replan).
+    std::fs::write(plans.join("a.md"), plan(&["One", "Two", "Three"])).unwrap();
+    scan(&mut s, "a", dir.path(), &ctx, ScanBudget::UNLIMITED).unwrap();
+    std::fs::write(plans.join("a.md"), plan(&["One", "Deux", "Trois", "Four"])).unwrap();
+    scan(&mut s, "a", dir.path(), &ctx, ScanBudget::UNLIMITED).unwrap();
+    // Repo c: a hand-made plan gets a baseline.
+    plan_edit(&mut s, &ctx_for("c"), &[add(None, NodeKind::Goal, "goal")]).unwrap();
+    scan(&mut s, "c", dir.path(), &ctx, ScanBudget::UNLIMITED).unwrap();
+    // Repo b: set up with init_plan.
+    let draft: InitDraft = serde_json::from_value(json!({
+        "goal": {"title": "API", "intent": "Clients call it."},
+        "milestones": [{"title": "Auth", "intent": "Sign in works.",
+                        "tasks": [{"title": "Login", "done": {"evidence": "shipped", "files": ["src/a.rs"]}},
+                                  {"title": "Logout"}]}],
+        "owner_said": "yes"
+    }))
+    .unwrap();
+    s.write(|tx| {
+        init::apply(
+            tx,
+            &InitBy {
+                repo_id: "b",
+                session_id: "owner",
+                actor: &Actor::default(),
+            },
+            &draft,
+        )
+    })
+    .unwrap();
+    // Sessions on branches; waits opened, cleared by their target, promoted, by hand.
+    for (repo, sid, branch) in [("a", "s1", "feat/auth"), ("b", "s2", "feat/auth")] {
+        s.append(EventDraft::new(
+            repo,
+            sid,
+            "session_started",
+            json!({"cwd": "/x", "source": "startup", "branch": branch}),
+        ))
+        .unwrap();
+    }
+    s.append(
+        EventDraft::new(
+            "a",
+            "s1",
+            "task_claimed",
+            json!({"task_id": "1", "mode": "confirmed", "confidence": 1.0}),
+        )
+        .task("1"),
+    )
+    .unwrap();
+    let s1 = bridge_screen_core::session::get(s.conn(), "s1")
+        .unwrap()
+        .unwrap();
+    for target in ["api:1.2", "api:1.1", "the key"] {
+        s.write(|tx| waits::open(tx, &s1, target, "needed", &Actor::default()))
+            .unwrap();
+    }
+    s.write(|tx| {
+        let d = bridge_screen_core::verify::verified_draft(
+            "b",
+            "s2",
+            "1.2",
+            2,
+            "abc1234",
+            vec![],
+            "ok",
+            bridge_screen_core::verify::By::Agent,
+            None,
+        )?;
+        bridge_screen_core::store::append_in(tx, d)?;
+        waits::clear_for_in(tx, "b", "1.2", "abc1234")
+    })
+    .unwrap();
+    s.write(|tx| waits::promote(tx, "W2", Some("s1"), &Actor::default()))
+        .unwrap();
+    s.write(|tx| waits::clear(tx, "W3", None, &Actor::default()))
+        .unwrap();
+
+    let before = dump(&s);
+    let rows = |table: &str| {
+        before
+            .iter()
+            .filter(|l| l.starts_with(&format!("{table}: ")))
+            .count()
+    };
+    // a.md in repos a and c (c's as a baseline), its tasks and steps, three waits.
+    assert_eq!(rows("plan_sources"), 2);
+    assert!(rows("plan_source_items") >= 12);
+    assert_eq!(rows("waits"), 3);
+    let one = |sql: &str| -> i64 { s.conn().query_row(sql, [], |r| r.get(0)).unwrap() };
+    assert_eq!(
+        one("SELECT count(*) FROM plan_sources WHERE baseline = 1"),
+        1
+    );
+    assert_eq!(
+        one("SELECT count(*) FROM plan_nodes WHERE source = 'init'"),
+        4
+    );
+    assert_eq!(
+        one("SELECT count(*) FROM plan_nodes WHERE branch = 'feat/auth'"),
+        1
+    );
+    assert_eq!(one("SELECT count(DISTINCT cleared_why) FROM waits"), 3);
+    let kinds: Vec<String> = bridge_screen_core::store::read_all(s.conn(), None)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.kind)
+        .collect();
+    assert!(kinds.contains(&"replan".to_string()));
+    s.rebuild().unwrap();
+    assert_eq!(dump(&s), before);
+}
+
+fn ctx_for(repo: &str) -> EditContext {
+    ctx(repo, false)
+}

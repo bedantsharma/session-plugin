@@ -17,16 +17,20 @@
     <h2 class="text-base font-semibold">Same branch, several repos</h2>
     <ul class="flex flex-col gap-2">
       {#each groups as g (g.branch)}
-        <li class="flex items-center gap-3 text-row" title={tip(g)} data-branch={g.branch}>
-          <span class="w-40 shrink-0 truncate font-mono text-meta">{g.branch}</span>
-          <div class="min-w-0 flex-1">
+        <li
+          class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-row"
+          title={tip(g)}
+          data-branch={g.branch}
+        >
+          <span class="max-w-40 min-w-0 truncate font-mono text-meta">{g.branch}</span>
+          <div class="min-w-24 flex-1">
             <ProgressBar
               done={g.done_pct ?? 0}
               claimed={g.claimed_pct ?? 0}
               muted={g.done_pct === null}
             />
           </div>
-          <span class="shrink-0 text-meta text-muted tabular-nums"
+          <span class="min-w-0 text-meta text-muted tabular-nums"
             >{groupPct(g.done_pct)} · {reposWord(g.repos.length)}</span
           >
           <span class="sr-only">{tip(g)}</span>

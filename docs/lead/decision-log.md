@@ -116,3 +116,24 @@ Choices someone will later ask "why?" about. Newest last. Entries are never dele
 **Context:** #22 hashed the first 256 bytes of each transcript. Those bytes are message text, and the rule is that bridge-screen reads only ids, model names, token counts and timestamps from a transcript — a hash still means reading the text.
 **Decision:** The file's identity comes from its metadata only: device, inode and creation time (where the file system records one). A file deleted and written again, or renamed over, gets a new identity and is read again from the top; message ids keep anything from counting twice.
 **Consequences:** No transcript text is read for this. A file rewritten in place (same file, new contents) keeps its identity; it is still caught when it gets shorter, but not when it is rewritten as long or longer. Claude Code only appends to transcripts, so this isn't expected in practice. No extra read per stop.
+
+## #24 A repo planned by hand records its plan files instead of importing them — Accepted — 2026-10-21
+**Context:** bridge-screen now reads a repo's plan files (`docs/superpowers/plans/`) by itself. This repo, and any repo planned by hand, would get a duplicate milestone for every file it already has.
+**Decision:** The first time bridge-screen sees the plan folder of a repo that already has a plan, it notes every file there as "already planned by hand" and creates nothing. Files added or changed after that are imported. `bridge-screen import <file> --into <milestone>` links a file to an existing milestone by hand (tasks matched by title). Added when building it: a changed file whose title is the title of an existing milestone (or the goal) joins it, matched by title, instead of becoming a new milestone.
+**Consequences:** No duplicates in hand-planned repos. A hand-noted file that changes and whose title matches no milestone does become a new milestone; link it with `--into` first if that's not what you want.
+
+## #25 Waits on free text are allowed; only waits on a task clear by themselves — Accepted — 2026-10-21
+**Context:** Agents are blocked on other tasks ("2.4", or a task in another repo) and on things outside bridge-screen ("Sam's API key").
+**Decision:** `waiting_on` takes either. A wait on a task clears when that task is verified (tests pass or better), in the same step as the verification, and the waiting session hears once. A free-text wait is cleared by the agent or by you. A wait is never a needs-you item (the session isn't blocked on you); it shows as an amber "waiting".
+**Consequences:** You can see who is waiting on what without being asked to do anything.
+
+## #26 A task's branch is the branch it was last claimed on — Accepted — 2026-10-21
+**Context:** Branch groups (the same branch in several repos) need to know which tasks belong to a branch.
+**Decision:** Each task remembers the branch of the session that last claimed it; nothing to fill in by hand. Branch groups leave out each repo's default branch (`main`, `master`, or what origin's HEAD points to, read as a file).
+**Consequences:** A task claimed again from another branch moves to that branch's group. A subtask without its own claim counts on its task's branch.
+
+## #27 A task in another repo is written `<repo name>:<task id>` — Accepted — 2026-10-21
+**Context:** Plan links and waits can point at a task in another repo.
+**Decision:** The repo is named by its folder name (or its id). A name two registered repos share is refused, listing both folders, so you pick by id.
+**Consequences:** Short to write; two checkouts with the same folder name need the id.
+

@@ -28,6 +28,11 @@
 - **Cost (per task, session, project):** tokens times the prices in your config, worked out when you look (never stored); "unknown" when a model has no price.
 - **Forecast (P50 / P90):** the finish range. P50 = a 50% chance of being done by that date ("likely by"); P90 = a 90% chance ("could take until").
 - **Calibration:** how long finished tasks actually took against their estimates (e.g. "tasks typically take 1.8× their estimate" — the middle value, so one runaway task doesn't skew it); the forecast is built from it.
+- **Imported plan:** a plan file in `docs/superpowers/plans/` that bridge-screen read into the plan by itself (it never writes to the file). A ticked step counts as claimed done, never checked. A file already planned by hand is only noted, not imported.
+- **Set up (`bridge-screen init`):** for a repo with work but no plan: bridge-screen lists what the repo shows, the agent drafts a plan, you confirm it once, and tasks that look done are recorded as claimed and checked for "the code exists".
+- **Waiting on (a wait):** a session saying it is blocked on a task (here or in another repo) or on something outside ("Sam's API key"). Shown as an amber "waiting"; a wait on a task ends by itself when that task's tests pass. Not a needs-you item.
+- **Plan link (dependency):** a task that can't finish before another task, possibly in another repo (`api:2.4`). A wait can be turned into one ("Make it a plan link").
+- **Branch group:** the same branch with live sessions in two or more repos, shown as one line with a combined done%.
 - **Glance / drill-down:** the first dashboard screen / the detail pages behind it.
 - **Desktop card:** the inline progress view inside the Claude desktop app.
 - **Hook:** the moment Claude Code hands an event to bridge-screen. **MCP tools (agent tools):** the functions agents call on bridge-screen. **Skill:** the instructions that teach agents the protocol.
