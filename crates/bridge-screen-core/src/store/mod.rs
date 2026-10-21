@@ -551,13 +551,25 @@ mod tests {
             )
             .unwrap();
         drop(store);
+        let Err(e) = Store::open(&path) else {
+            panic!("a newer schema must be refused")
+        };
         assert!(matches!(
-            Store::open(&path),
-            Err(Error::SchemaTooNew {
+            e,
+            Error::SchemaTooNew {
                 found: 99,
                 supported: super::SCHEMA_VERSION
-            })
+            }
         ));
+        assert_eq!(
+            e.to_string(),
+            format!(
+                "bridge-screen was updated while this session was open. Start a new Claude \
+                 session to keep using it (data format 99; this session's copy understands up \
+                 to {}).",
+                super::SCHEMA_VERSION
+            )
+        );
     }
 
     #[test]

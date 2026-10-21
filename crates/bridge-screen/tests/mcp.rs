@@ -1080,3 +1080,26 @@ mod reports {
         assert!(err);
     }
 }
+
+#[test]
+fn a_newer_data_format_tells_the_agent_to_start_a_new_session() {
+    let env = setup();
+    env.hook("session-start", "s1");
+    Store::open(&env.db_path())
+        .unwrap()
+        .conn()
+        .execute(
+            "UPDATE meta SET value = '99' WHERE key = 'schema_version'",
+            [],
+        )
+        .unwrap();
+    let mut mcp = Mcp::start(&env, &env.repo_path());
+    let (_, text) = mcp.call("status", &json!({}));
+    assert!(
+        text.starts_with(
+            "bridge-screen was updated while this session was open. Start a new Claude session"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("data format 99"), "{text}");
+}

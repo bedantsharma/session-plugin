@@ -163,10 +163,40 @@ impl HookOutput {
 pub fn run(event: HookEvent, stdin: &str, home: &Home) -> Result<Option<HookOutput>> {
     let input: HookInput = serde_json::from_str(stdin).context("hook input is not valid JSON")?;
     home.ensure()?;
-    let mut store = Store::open(&home.db_path())?;
+    let mut store = match Store::open(&home.db_path()) {
+        Ok(store) => store,
+        Err(e @ bridge_screen_core::error::Error::SchemaTooNew { .. }) => {
+            // An older hook binary meeting newer data: logged once per session, then quiet.
+            return if first_schema_warning(home, &input.session_id) {
+                Err(e.into())
+            } else {
+                Ok(None)
+            };
+        }
+        Err(e) => return Err(e.into()),
+    };
     // A broken config file must not break the session: fall back to defaults.
     let config = Config::load(&home.config_path()).unwrap_or_default();
     handlers::handle(event, &input, &mut store, &config)
+}
+
+/// Has this session not been told yet that its data is newer than this binary? Marks it
+/// told (a small file under `<home>/schema-warned/`), so the log gets one line per session.
+fn first_schema_warning(home: &Home, session_id: &str) -> bool {
+    let dir = home.root().join("schema-warned");
+    let name: String = session_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    if name.is_empty() {
+        return true;
+    }
+    let _ = std::fs::create_dir_all(&dir);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dir.join(name))
+        .is_ok()
 }
 
 /// The `hook` command as the binary runs it: always exits 0.

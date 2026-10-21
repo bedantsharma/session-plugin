@@ -1222,3 +1222,27 @@ fn hook_latency_stop_and_subagent_stop_with_a_transcript_backlog() {
     );
     report("hook subagent-stop (512 KiB transcript backlog)", subs);
 }
+
+#[test]
+fn a_newer_data_format_is_logged_once_per_session() {
+    let env = Env::new();
+    env.hook("session-start", "s1");
+    bridge_screen_core::store::Store::open(&env.db_path())
+        .unwrap()
+        .conn()
+        .execute(
+            "UPDATE meta SET value = '99' WHERE key = 'schema_version'",
+            [],
+        )
+        .unwrap();
+    for _ in 0..3 {
+        assert_eq!(env.hook("user-prompt-submit", "s1"), "");
+    }
+    env.hook("user-prompt-submit", "s2");
+    let log = env.log();
+    let lines: Vec<&str> = log
+        .lines()
+        .filter(|l| l.contains("updated while this session was open"))
+        .collect();
+    assert_eq!(lines.len(), 2, "{log}");
+}

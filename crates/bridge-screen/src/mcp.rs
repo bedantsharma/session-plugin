@@ -389,6 +389,8 @@ impl Bridge {
 
     fn open(&self) -> Result<Store, String> {
         self.home.ensure().map_err(msg)?;
+        // A newer data format (bridge-screen upgraded while this session was open) comes
+        // back as the tool's result text, telling the agent to start a new session.
         Store::open(&self.home.db_path()).map_err(msg)
     }
 
