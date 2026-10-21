@@ -511,3 +511,23 @@ fn cache_writes_are_priced_by_duration() {
     assert!((priced(&w1, &p) - 8.0).abs() < 1e-9);
     assert!((priced(&read, &p) - (0.8 + 2.0)).abs() < 1e-9);
 }
+
+/// Lines Claude Code may write: a lone surrogate escape (text cut mid-emoji), a byte
+/// that isn't UTF-8 inside the message text, and a CRLF ending. Each reply still counts.
+#[test]
+fn odd_lines_still_count() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.jsonl");
+    let good = line("m1", &at(5), 7);
+    let surrogate = good.replace("SECRET reply text", "cut \\ud83d");
+    let mut bad = good.replace("m1", "m2").into_bytes();
+    let pos = bad.windows(6).position(|w| w == b"SECRET").unwrap();
+    bad[pos] = 0xff;
+    let mut all = surrogate.replace("m1", "m3").into_bytes();
+    all.extend(bad);
+    all.extend(good.replace('\n', "\r\n").replace("m1", "m4").into_bytes());
+    std::fs::write(&path, all).unwrap();
+    let out = read_new(&path, 0, MAX_HOOK_BYTES).unwrap();
+    let ids: Vec<&str> = out.replies.iter().map(|r| r.message_id.as_str()).collect();
+    assert_eq!(ids, ["m3", "m2", "m4"]);
+}
