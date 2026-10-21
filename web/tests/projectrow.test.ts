@@ -24,10 +24,9 @@ describe('ProjectRow', () => {
     const exploring = container.querySelector('[data-milestone="1"]')!
     expect(exploring).toHaveTextContent('exploring')
     expect(exploring).not.toHaveTextContent('uphill')
-    expect(exploring.querySelector('[title]')).toHaveAttribute(
-      'title',
-      'Unknowns remain — this % may still change',
-    )
+    const chip = exploring.querySelector('[aria-describedby]')!
+    expect(chip).toHaveAttribute('tabindex', '0')
+    expect(chip).toHaveAccessibleDescription('Unknowns remain — this % may still change')
     expect(screen.getByTestId('exploring-pct').className).toContain('text-muted')
     expect(exploring).toHaveTextContent('stuck · 3 sessions')
     const executing = container.querySelector('[data-milestone="2"]')!

@@ -12,6 +12,7 @@
   import { changed } from '$lib/changed'
   import { hhmm } from '$lib/format'
   import { hillWord, statusWord } from '$lib/words'
+  import { addedGroups, addedText } from '$lib/scope'
   import type { ProjectDrill, ProjectRow, TreeNode } from '$lib/types'
   import { useModel } from './useModel.svelte'
 
@@ -61,13 +62,7 @@
     return Math.max(...times) - Math.min(...times) >= 60_000
   })
   const latest = $derived(m.data?.scope.at(-1))
-  const added = $derived(
-    (m.data?.scope ?? []).flatMap((p, i, all) =>
-      i > 0 && p.total_min > all[i - 1].total_min
-        ? [{ ts: p.ts, by: p.total_min - all[i - 1].total_min }]
-        : [],
-    ),
-  )
+  const added = $derived(addedGroups(m.data?.scope ?? []))
 
   // The tree: chevrons fold a node's children away.
   let folded = $state<Record<string, boolean>>({})
@@ -182,7 +177,7 @@
         {/if}
         {#if added.length}
           <p class="mt-3 text-meta text-muted">
-            Scope added: {added.map((a) => `+${a.by} min at ${hhmm(a.ts)}`).join(' · ')}
+            Scope added: {addedText(added)}
           </p>
         {/if}
       </div>

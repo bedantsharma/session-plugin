@@ -893,8 +893,8 @@ fn drift_actions(session: &str, has_detour: bool, task: Option<&str>) -> Vec<Act
             *parent = task.and_then(|t| t.rsplit_once('.').map(|(p, _)| p.to_string()));
         }
         make.inputs = vec![
-            input("parent", "parent (milestone or task id)", true),
-            input("title", "title", true),
+            input("parent", "Under (e.g. 10)", true),
+            input("title", "Task title", true),
         ];
         out.push(make);
     }

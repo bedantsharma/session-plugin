@@ -21,8 +21,8 @@ export function item(over: Partial<NeedsYou> = {}): NeedsYou {
         label: 'Make it a task',
         action: { kind: 'drift', session: 's1aaaa', answer: 'make_task', parent: '1' },
         inputs: [
-          { name: 'parent', label: 'parent (milestone or task id)', required: true },
-          { name: 'title', label: 'title', required: true },
+          { name: 'parent', label: 'Under (e.g. 10)', required: true },
+          { name: 'title', label: 'Task title', required: true },
         ],
         tone: 'neutral',
       },
