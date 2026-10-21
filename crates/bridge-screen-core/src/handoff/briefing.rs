@@ -26,6 +26,9 @@ const IF_THEN_SHOWN: usize = 5;
 const DEPS_SHOWN: usize = 5;
 const DECISIONS_SHOWN: usize = 5;
 
+/// The briefing's goal line when the repo has no plan (spec §12.2).
+pub const NO_PLAN: &str = "No plan yet. If this repo has work already, run `bridge-screen init` and follow it; otherwise ask the owner what the goal is.";
+
 /// Asking for the read-back at the end of a briefing.
 pub const READBACK_ASK: &str = "Read back before your first edit: call handoff_readback with the goal, what's in flight, and your next action.";
 
@@ -307,7 +310,7 @@ fn goal_line(f: &Facts) -> String {
         )
         .trim_end_matches([' ', '—'])
         .to_string(),
-        None => "No plan yet — ask the owner whether to create one (bridge-screen plan edit / plan_edit tool).".to_string(),
+        None => NO_PLAN.to_string(),
     }
 }
 

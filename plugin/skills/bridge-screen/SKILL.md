@@ -34,13 +34,23 @@ Use it for new work, wrong estimates, dropped tasks, dependencies, or a mileston
 from uphill (unknowns remain) to downhill. Always give a `reason`; a deliberate re-plan
 sets `"replan": true`. Ops apply together or not at all; an error names the failing op
 (`op 2: …`) — fix it and resend. Goals and milestones need an intent (2–3 sentences of
-purpose and end state). If the repo has no plan, ask the owner before adding a goal.
+purpose and end state). If the repo has no plan, see "Starting on a repo with no plan".
 
 ```json
 {"ops": [{"op": "add_node", "parent": "1", "kind": "task", "title": "Audit log", "estimate_min": 45},
          {"op": "set_estimate", "id": "1.2", "estimate_min": 20}],
  "reason": "Audit log came up while building login"}
 ```
+
+### Starting on a repo with no plan
+
+- Plan files in `docs/superpowers/plans/` are imported by themselves at SessionStart (or
+  with `bridge-screen import`); a ticked step is recorded as claimed, not verified.
+- A repo with work but no plan: run `bridge-screen init` and follow it. Draft the goal,
+  milestones and tasks (with estimates) from its evidence, mark the tasks that look done
+  with the files that show it, **show the draft to the owner once**, then call
+  `init_plan` with the draft and their words (`owner_said`).
+- A brand-new repo: ask the owner what the goal is.
 
 ## 3. Detours: tangent work that blocks your task
 

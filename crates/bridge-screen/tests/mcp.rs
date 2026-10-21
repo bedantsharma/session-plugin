@@ -48,6 +48,7 @@ fn lists_three_tools_with_schemas() {
             "close_detour",
             "handoff_note",
             "handoff_readback",
+            "init_plan",
             "label_unit",
             "log_decision",
             "owner_action",
@@ -109,7 +110,10 @@ fn claim_task_binds_to_the_calling_session() {
     let args = json!({"id": "1.2", "mode": "confirmed", "confidence": 1});
     bind(&env, "s2", "claim_task", &args, "toolu_2");
     let (_, text) = mcp.call("claim_task", &args);
-    assert_eq!(text, "Claimed 1.2 Password reset. Released 1.1.");
+    assert_eq!(
+        text,
+        "Claimed 1.2 Password reset. Released 1.1.\nIt has no estimate yet: set one in agent-minutes with plan_edit (set_estimate)."
+    );
 
     // A new task under a milestone.
     let args = json!({"new_task": {"parent": "1", "title": "Remember me", "estimate_min": 20},

@@ -150,6 +150,16 @@ pub enum Command {
         #[arg(short = 'C', long = "dir", default_value = ".")]
         dir: PathBuf,
     },
+    /// Set up a repo that has work but no plan: prints what the repo shows (read-only) and
+    /// the steps for the agent to draft the plan, confirm it with you, and apply it.
+    Init {
+        /// The goal, in your words, for the agent's draft.
+        #[arg(long)]
+        goal: Option<String>,
+        /// Any directory inside the repo.
+        #[arg(short = 'C', long = "dir", default_value = ".")]
+        dir: PathBuf,
+    },
     /// Rebuild all views from the event log.
     Rebuild,
     /// Print the effective configuration (and this repo's tuned drift thresholds).

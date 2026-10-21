@@ -415,7 +415,7 @@ fn session_start_without_a_plan_asks_for_one() {
     let out = env.hook("session-start", "s1");
     assert_eq!(
         context_of(&out, "SessionStart"),
-        "bridge-screen briefing — stable\nNo plan yet — ask the owner whether to create one (bridge-screen plan edit / plan_edit tool)."
+        "bridge-screen briefing — stable\nNo plan yet. If this repo has work already, run `bridge-screen init` and follow it; otherwise ask the owner what the goal is."
     );
     // No plan, no claim reminders.
     for _ in 0..4 {

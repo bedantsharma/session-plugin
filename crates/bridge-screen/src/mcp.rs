@@ -21,6 +21,7 @@ use bridge_screen_core::claim::{self, ClaimMode, ClaimRequest, ClaimTarget};
 use bridge_screen_core::config::Config;
 use bridge_screen_core::decision;
 use bridge_screen_core::handoff::{self, LeftoverAction};
+use bridge_screen_core::init::InitDraft;
 use bridge_screen_core::owner::{self, OwnerAction};
 use bridge_screen_core::paths::Home;
 use bridge_screen_core::plan::{EditContext, NodeKind, NodeStatus, PlanOp, get_node, load_tree};
@@ -46,6 +47,8 @@ use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
+
+mod onboard;
 
 const NO_SESSION: &str =
     "bridge-screen couldn't tell which session this is; is the plugin's hook enabled?";
@@ -493,6 +496,13 @@ impl Bridge {
     }
 
     #[tool(
+        description = "Create the plan for a repo that has work but no plan (after `bridge-screen init`): the goal, milestones and tasks you drafted from the repo's evidence, with the tasks that look done and the files that show it. Show the draft to the owner first and pass their confirming words in owner_said. Done tasks are recorded as claimed and checked at HEAD (L1), never more."
+    )]
+    async fn init_plan(&self, Parameters(args): Parameters<Args<InitDraft>>) -> CallToolResult {
+        text(self.do_init_plan(&args))
+    }
+
+    #[tool(
         description = "This session's bridge-screen state: active task, units of work and active minutes, the plan goal and the next tasks to do."
     )]
     async fn status(&self, Parameters(args): Parameters<Args<StatusInput>>) -> CallToolResult {
@@ -633,6 +643,12 @@ impl Bridge {
         let mut reply = format!("Claimed {} {title}.", out.task_id);
         if let Some(prev) = out.released {
             let _ = write!(reply, " Released {prev}.");
+        }
+        if onboard::asks_for_estimate(&store, &session.repo_id, &out.task_id).map_err(msg)? {
+            let _ = write!(
+                reply,
+                "\nIt has no estimate yet: set one in agent-minutes with plan_edit (set_estimate)."
+            );
         }
         Ok(reply)
     }
@@ -1426,7 +1442,7 @@ fn plan_status(
                 let _ = write!(out, "Next: {}", next.join(" · "));
             }
         }
-        None => out.push_str("No plan yet — ask the owner whether to create one."),
+        None => out.push_str(bridge_screen_core::handoff::briefing::NO_PLAN),
     }
     Ok(())
 }

@@ -1,4 +1,5 @@
-//! Getting a repo onto bridge-screen: `bridge-screen import` (plan files, spec §12.1).
+//! Getting a repo onto bridge-screen: `bridge-screen import` (plan files, spec §12.1) and
+//! `bridge-screen init` (a half-built repo, spec §12.2).
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -44,6 +45,22 @@ pub fn import(dir: &Path, file: Option<&Path>, into: Option<&str>, dry_run: bool
         )?,
     };
     print!("{}", render(&outcomes, dry_run));
+    Ok(())
+}
+
+/// `bridge-screen init [-C DIR] [--goal TEXT]`: the evidence and the agent's steps. Reads
+/// only (git and files); writes nothing but the repo's registration.
+pub fn init(dir: &Path, goal: Option<&str>) -> Result<()> {
+    let repo = repo::identify(dir)?;
+    let home = Home::resolve()?;
+    let store = open_store(&home)?;
+    store.register_repo(&repo)?;
+    let wt = repo::worktree_toplevel(dir).unwrap_or_else(|_| repo.root.clone());
+    let evidence = bridge_screen_core::init::evidence(store.conn(), &repo.id, &wt)?;
+    print!(
+        "{}",
+        bridge_screen_core::init::render(&evidence, &repo.name, goal)
+    );
     Ok(())
 }
 

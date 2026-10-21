@@ -222,7 +222,7 @@ fn plugin_package_is_consistent() {
     let mode = std::fs::metadata(&launcher).unwrap().permissions().mode();
     assert_ne!(mode & 0o111, 0, "launcher must be executable");
     let skill = std::fs::read_to_string(plugin.join("skills/bridge-screen/SKILL.md")).unwrap();
-    assert!(skill.lines().count() <= 120);
+    assert!(skill.lines().count() <= 150);
     assert!(skill.starts_with("---\nname: bridge-screen\n"));
 }
 

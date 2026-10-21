@@ -13,6 +13,7 @@ pub mod forecast;
 pub mod git;
 pub mod handoff;
 pub mod import;
+pub mod init;
 pub mod navigator;
 pub mod owner;
 pub mod paths;
