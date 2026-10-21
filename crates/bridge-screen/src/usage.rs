@@ -1,5 +1,5 @@
 //! `bridge-screen usage`: tokens and cost in plain words (spec §9.2), and the owner's
-//! catch-up of transcripts the hooks haven't fully read yet.
+//! catch-up of transcripts the hooks haven't fully read yet; `bridge-screen forecast`.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -171,3 +171,72 @@ fn session_by_prefix(conn: &Connection, repo: &str, prefix: &str) -> Result<Stri
         many => bail!("session prefix {prefix} is ambiguous: {}", many.join(", ")),
     }
 }
+
+/// `bridge-screen forecast`: the range in plain words and what it rests on.
+pub fn forecast(dir: &Path) -> Result<()> {
+    use bridge_screen_core::forecast as fc;
+    let repo = repo::identify(dir)?;
+    let home = Home::resolve()?;
+    let store = open_store(&home)?;
+    store.register_repo(&repo)?;
+    let now = jiff::Timestamp::now();
+    let tz = jiff::tz::TimeZone::system();
+    let f = fc::run(store.conn(), &repo.id, now, &tz)?;
+    print!("{}", forecast_text(&repo.name, &f, now, &tz));
+    Ok(())
+}
+
+/// The forecast's text, as `bridge-screen forecast` prints it.
+pub fn forecast_text(
+    name: &str,
+    f: &bridge_screen_core::forecast::Forecast,
+    now: jiff::Timestamp,
+    tz: &jiff::tz::TimeZone,
+) -> String {
+    use bridge_screen_core::forecast as fc;
+    let mut text = String::new();
+    if f.dates().is_some() {
+        let _ = writeln!(text, "{name}: {}", fc::range_text(f, now, tz));
+        let _ = writeln!(text, "  ({})", fc::RANGE_HELP);
+    } else {
+        let _ = writeln!(
+            text,
+            "{name}: no dates yet. {}.",
+            fc::range_text(f, now, tz)
+        );
+    }
+    if f.points > 0 {
+        let mut basis = fc::basis_text(f);
+        if let Some(first) = basis.get_mut(0..1) {
+            first.make_ascii_uppercase();
+        }
+        let _ = writeln!(text, "{basis}.");
+    }
+    #[allow(clippy::cast_precision_loss)] // minutes of estimate, small
+    let remaining_h = f.remaining_min as f64 / 60.0;
+    let mut left = format!("{} of estimated work left", fc::hours_text(remaining_h));
+    if f.dates().is_some() || f.reason.as_deref() == Some(NO_ACTIVITY) {
+        let _ = write!(
+            left,
+            "; likely {} of agent time, up to {}",
+            fc::hours_text(f.p50_hours),
+            fc::hours_text(f.p90_hours)
+        );
+    }
+    if let Some(per_day) = f.hours_per_day {
+        let _ = write!(left, " (lately {} a day)", fc::hours_text(per_day));
+    }
+    let _ = writeln!(text, "{left}.");
+    match f.unestimated {
+        0 => {}
+        1 => {
+            let _ = writeln!(text, "1 task has no estimate and isn't counted.");
+        }
+        n => {
+            let _ = writeln!(text, "{n} tasks have no estimate and aren't counted.");
+        }
+    }
+    text
+}
+
+const NO_ACTIVITY: &str = "No recent activity to turn hours into dates";

@@ -123,6 +123,12 @@ pub enum Command {
         #[arg(long)]
         catch_up: bool,
     },
+    /// When the project will likely be done, and what the forecast is based on (spec §9.3).
+    Forecast {
+        /// Any directory inside the repo.
+        #[arg(short = 'C', long = "dir", default_value = ".")]
+        dir: PathBuf,
+    },
     /// Rebuild all views from the event log.
     Rebuild,
     /// Print the effective configuration (and this repo's tuned drift thresholds).

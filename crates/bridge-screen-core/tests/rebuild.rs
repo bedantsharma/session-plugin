@@ -862,7 +862,7 @@ fn rebuild_reproduces_verification_and_decision_views() {
 }
 
 /// Usage across units, a detour and a subagent: a reply logged twice, a cursor that only
-/// moves forward and one restarted after a shrunk file.
+/// moves forward and one restarted after a shrunk file; then two forecasts.
 #[test]
 fn rebuild_reproduces_usage_views() {
     let mut s = Store::open_in_memory().unwrap();
@@ -921,6 +921,22 @@ fn rebuild_reproduces_usage_views() {
             json!({"path": "/t/s1/subagents/agent-a.jsonl", "offset_after": 10,
                    "restarted": true, "agent_id": "a", "replies": []}),
         ),
+        (
+            "s1",
+            70,
+            "forecast_ran",
+            json!({"p50_hours": 0.0, "p90_hours": 0.0, "remaining_min": 90, "unestimated": 1,
+                   "points": 1, "hours_per_day": null,
+                   "reason": "Not enough finished tasks to forecast yet — 2 more are needed"}),
+        ),
+        (
+            "owner",
+            80,
+            "forecast_ran",
+            json!({"p50_hours": 4.5, "p90_hours": 7.25, "p50_date": "2026-10-17",
+                   "p90_date": "2026-10-19", "remaining_min": 90, "unestimated": 0,
+                   "points": 3, "hours_per_day": 1.5}),
+        ),
     ];
     s.write(|tx| {
         for (session, secs, kind, data) in script {
@@ -939,6 +955,13 @@ fn rebuild_reproduces_usage_views() {
         3
     );
     assert!(before.iter().any(|r| r.starts_with("transcript_cursors: ")));
+    assert_eq!(
+        before
+            .iter()
+            .filter(|r| r.starts_with("forecast_history: "))
+            .count(),
+        2
+    );
     s.rebuild().unwrap();
     assert_eq!(dump(&s), before);
 }

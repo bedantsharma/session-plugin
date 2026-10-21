@@ -62,6 +62,7 @@ pub fn run(cli: Cli) -> Result<()> {
             by,
             catch_up,
         } => crate::usage::run(&dir, session.as_deref(), task.as_deref(), by, catch_up),
+        Command::Forecast { dir } => crate::usage::forecast(&dir),
         Command::Rebuild => rebuild(),
         Command::Config { action: None, dir } => config(&dir),
         Command::Config {

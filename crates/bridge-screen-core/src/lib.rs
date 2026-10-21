@@ -9,6 +9,7 @@ pub mod config;
 pub mod decision;
 pub mod drift;
 pub mod error;
+pub mod forecast;
 pub mod git;
 pub mod handoff;
 pub mod navigator;

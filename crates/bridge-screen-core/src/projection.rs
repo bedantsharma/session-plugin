@@ -4,6 +4,7 @@ use rusqlite::Transaction;
 
 use crate::decision::{DECISION_KINDS, project as project_decision};
 use crate::error::Result;
+use crate::forecast::{FORECAST_KINDS, project as project_forecast};
 use crate::handoff::{HANDOFF_KINDS, project as project_handoff};
 use crate::plan::project::{PLAN_KINDS, project as project_plan};
 use crate::session::{SESSION_KINDS, project as project_session};
@@ -54,6 +55,8 @@ pub fn apply(tx: &Transaction, event: &Event) -> Result<()> {
         project_decision(tx, event)?;
     } else if USAGE_KINDS.contains(&kind) {
         project_usage(tx, event)?;
+    } else if FORECAST_KINDS.contains(&kind) {
+        project_forecast(tx, event)?;
     }
     Ok(())
 }
