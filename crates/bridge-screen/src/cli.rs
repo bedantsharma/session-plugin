@@ -50,7 +50,8 @@ pub enum Command {
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Set a unit's label: on-task, detour or drift (overrides the agent and heuristic).
+    /// Set a unit's label: on-task, detour, requested (you asked for it) or drift
+    /// (overrides the agent and heuristic).
     Label {
         /// A unique prefix of a live session id.
         session: String,
@@ -220,6 +221,9 @@ pub enum LabelArg {
     OnTask,
     Detour,
     Drift,
+    /// You asked for this work in the session: never drift.
+    #[value(alias = "asked", alias = "asked-for")]
+    Requested,
 }
 
 #[derive(Debug, Subcommand)]

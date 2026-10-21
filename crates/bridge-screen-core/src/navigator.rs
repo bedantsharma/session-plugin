@@ -183,11 +183,10 @@ pub fn note_sent_draft(
 }
 
 /// Asking the agent to label a unit it finished.
-pub const LABEL_REQUEST: &str =
-    "bridge-screen: label your last unit — on-task, detour or drift — with label_unit (one call).";
+pub const LABEL_REQUEST: &str = "bridge-screen: label your last unit — on-task, detour, drift, or requested (the owner asked for this in this session) — with label_unit (one call).";
 
 /// The same, when the heuristic flagged the unit as possible drift.
-pub const DRIFT_REQUEST: &str = "bridge-screen: possible drift in your last unit. Label it — on-task, detour or drift — with label_unit (one call).";
+pub const DRIFT_REQUEST: &str = "bridge-screen: possible drift in your last unit. Label it — on-task, detour, drift, or requested (the owner asked for this in this session) — with label_unit (one call).";
 
 /// What a hook should record and say after its own events.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -234,9 +233,22 @@ fn labeled(
     })
 }
 
+/// The declared label of a unit inside a detour: `requested` when the owner asked for the
+/// detour, else `detour`.
+fn declared_label(conn: &Connection, detour_id: &str) -> Result<Label> {
+    Ok(
+        if get_detour(conn, detour_id)?.is_some_and(|d| d.requested) {
+            Label::Requested
+        } else {
+            Label::Detour
+        },
+    )
+}
+
 /// After `unit_stopped` (spec §7.2): label the unit, or ask the agent to.
 ///
-/// - a detour was open during the unit → `detour`, declared;
+/// - a detour the owner asked for was open during the unit → `requested`, declared;
+/// - another detour was open during the unit → `detour`, declared;
 /// - score below the lower cut-off (or no plan to score against) → `on_task`, heuristic;
 /// - otherwise ask with a [`NoteKind::LabelRequest`] through `Stop` (above the upper
 ///   cut-off it is first `drift_flagged`). The request is the only Stop continuation:
@@ -254,12 +266,12 @@ pub fn label_at_stop(
         return Ok(step);
     }
     let score = unit.drift_score;
-    if unit.detour_id.is_some() {
+    if let Some(detour_id) = &unit.detour_id {
         let heuristic = score.and_then(|s| th.heuristic(s));
         step.events.push(labeled(
             session,
             unit,
-            Label::Detour,
+            declared_label(conn, detour_id)?,
             LabelSource::Declared,
             score,
             heuristic,
@@ -333,7 +345,8 @@ pub fn label_at_stop(
 }
 
 /// When a new prompt arrives and the last finished unit is still waiting for its label,
-/// the heuristic labels it (`detour` if one was open, `drift` if flagged, else `on_task`).
+/// the heuristic labels it (`requested` or `detour` if a detour was open, `drift` if
+/// flagged, else `on_task`).
 pub fn label_left_unlabeled(
     conn: &Connection,
     session: &Session,
@@ -355,8 +368,8 @@ pub fn label_left_unlabeled(
         return Ok(None);
     };
     let heuristic = unit.drift_score.and_then(|s| th.heuristic(s));
-    let (label, source) = if unit.detour_id.is_some() {
-        (Label::Detour, LabelSource::Declared)
+    let (label, source) = if let Some(detour_id) = &unit.detour_id {
+        (declared_label(conn, detour_id)?, LabelSource::Declared)
     } else if unit.flagged {
         (Label::Drift, LabelSource::Heuristic)
     } else {

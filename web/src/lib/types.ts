@@ -202,6 +202,7 @@ export interface SessionDrill {
   units: UnitRow[]
   split: {
     on_task_s: number
+    requested_s: number
     drift_s: number
     unlabeled_s: number
     detours: { label: string; reason: string; secs: number }[]

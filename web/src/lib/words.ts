@@ -53,7 +53,7 @@ const SOURCE: Record<string, string> = {
   owner: 'owner',
 }
 
-/** A unit label in words: "✓ On task · agent", "↷ Detour · auto", "Unlabelled". */
+/** A unit label in words: "✓ On task · agent", "★ Asked for · agent", "Unlabelled". */
 export function unitWord(label: string | null, source: string | null): Word {
   const suffix = source ? ` · ${SOURCE[source] ?? source}` : ''
   switch (label) {
@@ -63,6 +63,8 @@ export function unitWord(label: string | null, source: string | null): Word {
       return { icon: '↷', text: `Detour${suffix}`, tone: 'warn' }
     case 'drift':
       return { icon: '▲', text: `Drift${suffix}`, tone: 'bad' }
+    case 'requested':
+      return { icon: '★', text: `Asked for${suffix}`, tone: 'ok' }
     default:
       return { icon: '', text: 'Unlabelled', tone: 'muted' }
   }

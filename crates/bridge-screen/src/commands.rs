@@ -500,6 +500,7 @@ fn label_cmd(prefix: &str, unit_no: i64, label: LabelArg) -> Result<()> {
         LabelArg::OnTask => Label::OnTask,
         LabelArg::Detour => Label::Detour,
         LabelArg::Drift => Label::Drift,
+        LabelArg::Requested => Label::Requested,
     };
     let action = OwnerAction::Label {
         session: prefix.to_string(),

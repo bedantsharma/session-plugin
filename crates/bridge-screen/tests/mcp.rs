@@ -78,6 +78,19 @@ fn lists_three_tools_with_schemas() {
         edit["inputSchema"].to_string().contains("set_estimate"),
         "plan_edit schema should describe the ops: {edit}"
     );
+    let label = tools.iter().find(|t| t["name"] == "label_unit").unwrap();
+    assert!(
+        label["inputSchema"]["properties"]["label"]
+            .to_string()
+            .contains("requested")
+            || label["inputSchema"].to_string().contains("\"requested\""),
+        "{label}"
+    );
+    let start = tools.iter().find(|t| t["name"] == "start_detour").unwrap();
+    assert!(
+        start["inputSchema"]["properties"]["requested_by_owner"].is_object(),
+        "{start}"
+    );
 }
 
 #[test]

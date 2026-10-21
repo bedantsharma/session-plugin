@@ -509,31 +509,37 @@ fn cut(text: &str, max: usize) -> String {
     short
 }
 
-/// The navigator light in words — `on task`, `detour 25m`, `drift ⚠ 40m` — plus the
-/// current detour and a `⚠` when the agent disagreed with the heuristic.
-fn nav_text(conn: &Connection, s: &Session) -> Result<(String, bool)> {
+/// The navigator light in words — `on task`, `asked for`, `detour 25m`, `drift ⚠ 40m` —
+/// plus the current detour and a `⚠` when the agent disagreed with the heuristic. Also
+/// whether the last unit is drift and whether the open detour is one the owner asked for.
+fn nav_text(conn: &Connection, s: &Session) -> Result<(String, bool, bool)> {
     let last = session::units(conn, &s.session_id)?
         .into_iter()
         .rev()
         .find(|u| u.stopped_at.is_some());
     let away = s.away_secs / 60;
     let drifting = last.as_ref().is_some_and(|u| u.label == Some(Label::Drift));
+    let detour = match &s.current_detour {
+        Some(id) => tangent::get_detour(conn, id)?,
+        None => None,
+    };
+    let requested = detour.as_ref().is_some_and(|d| d.requested);
     let mut text = if s.current_detour.is_none() && drifting {
         format!("drift ⚠ {away}m")
+    } else if requested && s.away_secs == 0 {
+        "asked for".to_string()
     } else if s.current_detour.is_some() || s.away_secs > 0 {
         format!("detour {away}m")
     } else {
         "on task".to_string()
     };
-    if let Some(id) = &s.current_detour
-        && let Some(d) = tangent::get_detour(conn, id)?
-    {
+    if let Some(d) = &detour {
         let _ = write!(text, " · {} \"{}\"", d.label(), cut(&d.reason, 30));
     }
     if !drifting && last.is_some_and(|u| u.disagreement) {
         text.push_str(" ⚠");
     }
-    Ok((text, drifting))
+    Ok((text, drifting, requested))
 }
 
 /// A checkpoint was asked for and missed, or the briefing found the session unstable.
@@ -615,7 +621,10 @@ struct Facts {
     nav: String,
     drifting: bool,
     task: Option<NodeRef>,
+    /// An open detour the owner didn't ask for (asked-for work raises no alarm).
     has_detour: bool,
+    /// The open detour is work the owner asked for.
+    requested: bool,
     /// An open question: (source, since).
     question: Option<(String, String)>,
     /// A permission prompt or a form blocks the session (Claude idle at the prompt
@@ -627,7 +636,7 @@ struct Facts {
 }
 
 fn facts(conn: &Connection, s: &Session) -> Result<Facts> {
-    let (nav, drifting) = nav_text(conn, s)?;
+    let (nav, drifting, requested) = nav_text(conn, s)?;
     let task = match &s.active_task {
         Some(id) => Some(node_ref(conn, &s.repo_id, id)?),
         None => None,
@@ -641,7 +650,8 @@ fn facts(conn: &Connection, s: &Session) -> Result<Facts> {
         nav,
         drifting,
         task,
-        has_detour: s.current_detour.is_some(),
+        has_detour: s.current_detour.is_some() && !requested,
+        requested,
         question: open_question(conn, &s.session_id)?,
         blocking_wait: wait.filter(|(kind, _)| kind != "idle_prompt"),
         red,
@@ -704,7 +714,11 @@ fn session_items(
             format!("{}{on_task}", f.nav),
             since.as_deref(),
         );
-        red.actions = drift_actions(&s.session_id, f.has_detour, s.active_task.as_deref());
+        red.actions = drift_actions(
+            &s.session_id,
+            s.current_detour.is_some(),
+            s.active_task.as_deref(),
+        );
         items.push(red);
     }
     let ago = |since: &str| age(now, Some(since)).unwrap_or(0) / 60;
@@ -741,6 +755,8 @@ fn looks(s: &Session, f: &Facts, rest: Option<&Rest>) -> (Light, &'static str, &
             (Light::Amber, "drift")
         } else if f.has_detour || s.away_secs > 0 || f.red {
             (Light::Amber, "detour")
+        } else if f.requested {
+            (Light::Green, "asked for")
         } else {
             (Light::Green, "on task")
         }

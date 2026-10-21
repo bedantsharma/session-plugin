@@ -725,3 +725,42 @@ fn project_and_session_rows_carry_forecast_and_cost() {
     let live = row(&g, "live0001").cost.as_ref().unwrap();
     assert_eq!(live.usd, Some(6.0));
 }
+
+#[test]
+fn asked_for_work_stays_green_with_no_queue_item() {
+    let mut s = store();
+    start(&mut s, "ask00001", 0);
+    claim(&mut s, "ask00001", 0, "1.1");
+    ev(&mut s, "ask00001", 10, "prompt", json!({"chars": 1}));
+    ev(
+        &mut s,
+        "ask00001",
+        20,
+        "detour_opened",
+        json!({"detour_id": "D1", "reason": "add a licence", "blocks": "1.1",
+               "resume_cue": "back to the form", "requested": true}),
+    );
+    ev(
+        &mut s,
+        "ask00001",
+        4000,
+        "unit_stopped",
+        json!({"score": 0.95}),
+    );
+    ev(
+        &mut s,
+        "ask00001",
+        4000,
+        "unit_labeled",
+        json!({"unit_no": 1, "label": "requested", "source": "declared"}),
+    );
+    ev(&mut s, "ask00001", 4010, "prompt", json!({"chars": 1}));
+    let g = glance_at(&s, 4100);
+    let r = row(&g, "ask00001");
+    assert_eq!(
+        (r.light, r.light_word.as_str()),
+        (Light::Green, "asked for")
+    );
+    assert!(r.nav_text.starts_with("asked for"), "{}", r.nav_text);
+    assert_eq!(g.needs_you_count, 0, "{:?}", kinds(&g));
+}

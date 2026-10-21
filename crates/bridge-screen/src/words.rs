@@ -38,6 +38,7 @@ pub fn unit_label(label: Option<Label>, source: Option<LabelSource>) -> String {
         Some(Label::OnTask) => format!("✓ On task{suffix}"),
         Some(Label::Detour) => format!("↷ Detour{suffix}"),
         Some(Label::Drift) => format!("▲ Drift{suffix}"),
+        Some(Label::Requested) => format!("★ Asked for{suffix}"),
         None => "Unlabelled".to_string(),
     }
 }
@@ -75,6 +76,10 @@ mod tests {
         assert_eq!(l(Label::OnTask, LabelSource::Owner), "✓ On task · owner");
         assert_eq!(l(Label::Detour, LabelSource::Declared), "↷ Detour · agent");
         assert_eq!(l(Label::Drift, LabelSource::Heuristic), "▲ Drift · auto");
+        assert_eq!(
+            l(Label::Requested, LabelSource::Declared),
+            "★ Asked for · agent"
+        );
         assert_eq!(unit_label(None, None), "Unlabelled");
         assert_eq!(mins(20), "<1 min");
         assert_eq!(mins(360), "6 min");

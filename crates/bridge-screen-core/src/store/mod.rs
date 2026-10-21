@@ -188,6 +188,9 @@ fn migrate(conn: &mut Connection) -> Result<()> {
     if current < 8 {
         tx.execute_batch(schema::V8)?;
     }
+    if current < 9 {
+        tx.execute_batch(schema::V9)?;
+    }
     tx.execute(
         "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
         [SCHEMA_VERSION.to_string()],
@@ -483,7 +486,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(version, "8");
+        assert_eq!(version, super::SCHEMA_VERSION.to_string());
         let s = crate::session::get(store.conn(), "s").unwrap().unwrap();
         assert_eq!(s.active_secs, 42);
         let set = crate::verify::settings(store.conn(), "r").unwrap();
@@ -495,6 +498,44 @@ mod tests {
                 .unwrap();
             assert_eq!(n, 0, "{table}");
         }
+    }
+
+    #[test]
+    fn migrates_v8_database_to_v9_keeping_detours() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            for v in [
+                super::schema::V1,
+                super::schema::V2,
+                super::schema::V3,
+                super::schema::V4,
+                super::schema::V5,
+                super::schema::V6,
+                super::schema::V7,
+                super::schema::V8,
+            ] {
+                conn.execute_batch(v).unwrap();
+            }
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('schema_version', '8')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO detours (detour_id, session_id, repo_id, no, reason, resume_cue,
+                                      opened_at)
+                 VALUES ('D1', 's', 'r', 1, 'ci', 'back', 't0')",
+                [],
+            )
+            .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let d = crate::tangent::get_detour(store.conn(), "D1")
+            .unwrap()
+            .unwrap();
+        assert_eq!((d.reason.as_str(), d.requested), ("ci", false));
     }
 
     #[test]

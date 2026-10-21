@@ -334,6 +334,8 @@ pub struct UnitRow {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TimeSplit {
     pub on_task_s: i64,
+    /// Work the owner asked for in the session ("asked for"): never drift.
+    pub requested_s: i64,
     pub drift_s: i64,
     pub unlabeled_s: i64,
     /// Per detour: (label, reason, seconds).
@@ -410,6 +412,7 @@ fn timeline(conn: &Connection, id: &str) -> Result<(Vec<UnitRow>, TimeSplit)> {
     let mut labels: HashMap<String, (String, String)> = HashMap::new();
     let mut split = TimeSplit {
         on_task_s: 0,
+        requested_s: 0,
         drift_s: 0,
         unlabeled_s: 0,
         detours: Vec::new(),
@@ -436,6 +439,7 @@ fn timeline(conn: &Connection, id: &str) -> Result<(Vec<UnitRow>, TimeSplit)> {
         match (u.label, &detour) {
             (Some(Label::OnTask), _) => split.on_task_s += u.active_secs,
             (Some(Label::Drift), _) => split.drift_s += u.active_secs,
+            (Some(Label::Requested), _) => split.requested_s += u.active_secs,
             (Some(Label::Detour), Some((label, _))) => {
                 if let Some(d) = per_detour.values_mut().find(|d| &d.label == label) {
                     d.secs += u.active_secs;

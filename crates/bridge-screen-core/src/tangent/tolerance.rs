@@ -42,7 +42,12 @@ pub fn evaluate(
     now: Timestamp,
 ) -> Result<NavEval> {
     let mut away = (session.away_secs - session.ack_away_secs).max(0);
-    if session.current_detour.is_some()
+    // Live time inside a detour counts only when the owner didn't ask for it.
+    let away_detour = match &session.current_detour {
+        Some(id) => super::get_detour(conn, id)?.is_some_and(|d| !d.requested),
+        None => false,
+    };
+    if away_detour
         && let Some(unit) = session::current_unit(conn, &session.session_id)?
         && let Ok(start) = unit.started_at.parse::<Timestamp>()
     {
@@ -83,7 +88,7 @@ pub fn evaluate(
 }
 
 /// The last finished unit is labelled drift (by the agent, the owner or the heuristic
-/// fallback), had no declared detour, and the owner hasn't said "continue" since. A flagged
+/// fallback; an asked-for unit never is), had no declared detour, and the owner hasn't said "continue" since. A flagged
 /// unit the agent calls on-task is not drift: the disagreement is recorded, never argued
 /// (spec §7.2).
 fn last_unit_drift(conn: &Connection, session: &Session) -> Result<bool> {

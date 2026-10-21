@@ -1,6 +1,6 @@
 //! SQL schema. Version 1 is the first released schema; later versions append migrations.
 
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 pub const V1: &str = r"
 CREATE TABLE meta (
@@ -398,4 +398,10 @@ CREATE TABLE forecast_history (
 );
 
 CREATE INDEX forecast_history_repo ON forecast_history (repo_id, ts);
+";
+
+/// Version 9: the polish round — a detour the owner asked for (`requested`, from
+/// `detour_opened`; never drift or away time).
+pub const V9: &str = r"
+ALTER TABLE detours ADD COLUMN requested INTEGER NOT NULL DEFAULT 0;
 ";

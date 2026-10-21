@@ -44,7 +44,7 @@ const drill: SessionDrill = {
       tokens_text: null,
     },
   ],
-  split: { on_task_s: 360, drift_s: 0, unlabeled_s: 30, detours: [] },
+  split: { on_task_s: 360, requested_s: 0, drift_s: 0, unlabeled_s: 30, detours: [] },
   suspended: [],
   checkpoints: [],
   leftovers: [

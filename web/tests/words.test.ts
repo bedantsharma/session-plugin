@@ -33,6 +33,8 @@ describe('owner-facing words', () => {
     expect(t('drift', 'owner')).toBe('▲ Drift · owner')
     expect(t(null, null)).toBe('Unlabelled')
     expect(unitWord('drift', 'agent').tone).toBe('bad')
+    expect(t('requested', 'declared')).toBe('★ Asked for · agent')
+    expect(unitWord('requested', 'owner').tone).toBe('ok')
   })
 
   it('gives each session state a word and a shape', () => {

@@ -147,6 +147,10 @@ pub struct StartDetourInput {
     /// The task this detour blocks; defaults to your active task.
     #[serde(default)]
     pub blocks: Option<String>,
+    /// true when the owner asked for this work in this session (e.g. "also add a
+    /// licence"): it is then never counted as drift or time away from the task.
+    #[serde(default)]
+    pub requested_by_owner: bool,
 }
 
 /// Close a detour and get the resume cue of the work it suspended.
@@ -177,7 +181,8 @@ pub struct ResumeInput {
 #[serde(deny_unknown_fields)]
 pub struct LabelUnitInput {
     /// "on_task" if it advanced your task, "detour" if it wasn't the task but blocked it,
-    /// "drift" if it did neither.
+    /// "requested" if it wasn't the task but the owner asked for it in this session,
+    /// "drift" if it did none of these.
     pub label: Label,
     /// One line on why.
     pub why: String,
@@ -493,7 +498,7 @@ impl Bridge {
     }
 
     #[tool(
-        description = "Open a detour before tangent work that isn't your task but blocks it (a broken build, a missing dependency). Give a one-line reason and a resume_cue: the next action on the work you are suspending and the file or test it concerns. Close it with close_detour when done."
+        description = "Open a detour before tangent work that isn't your task but blocks it (a broken build, a missing dependency), or that the owner asked for in this session (set requested_by_owner: true; it is then never drift). Give a one-line reason and a resume_cue: the next action on the work you are suspending and the file or test it concerns. Close it with close_detour when done."
     )]
     async fn start_detour(
         &self,
@@ -520,7 +525,7 @@ impl Bridge {
     }
 
     #[tool(
-        description = "Label your last unit of work when bridge-screen asks: on_task, detour or drift, with a one-line why. Be honest: drift is information for the owner, not blame. Calling it again corrects the label."
+        description = "Label your last unit of work when bridge-screen asks: on_task, detour, requested (the owner asked for it in this session) or drift, with a one-line why. Be honest: drift is information for the owner, not blame. Calling it again corrects the label."
     )]
     async fn label_unit(
         &self,
@@ -861,6 +866,7 @@ impl Bridge {
                 reason: input.reason.clone(),
                 resume_cue: input.resume_cue.clone(),
                 blocks: input.blocks.clone(),
+                requested: input.requested_by_owner,
                 actor: Actor::default(),
             },
         )
