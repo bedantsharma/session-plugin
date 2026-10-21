@@ -774,7 +774,12 @@ pub fn scan(
     let mut out = Vec::new();
     let mut due = Vec::new();
     let mut read: u64 = 0;
-    for path in files.into_iter().take(budget.files) {
+    // Unchanged files only cost a stat; the file budget counts the ones to read, so a
+    // folder with more files than the budget is worked through over several scans.
+    for path in files {
+        if due.len() >= budget.files {
+            break;
+        }
         let f = match facts(root, &path) {
             Ok(f) => f,
             Err(e) => {

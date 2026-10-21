@@ -613,6 +613,29 @@ fn changed_baseline_file_without_a_match_needs_a_link() {
 }
 
 #[test]
+fn files_over_the_budget_wait_for_the_next_scan() {
+    let mut r = Repo::new();
+    for i in 0..25 {
+        r.write(
+            &format!("p{i:02}.md"),
+            &plan_text(&format!("Plan {i:02}"), &[("T", &[])]),
+        );
+    }
+    let imported = |out: &[ImportOutcome]| {
+        out.iter()
+            .filter(|o| matches!(o, ImportOutcome::Imported { .. }))
+            .count()
+    };
+    // At most 20 files are read per scan; the unchanged ones don't use up the budget.
+    assert_eq!(imported(&r.scan()), 20);
+    assert_eq!(imported(&r.scan()), 5);
+    assert_eq!(r.scan(), vec![]);
+    // A change to the last file is still picked up.
+    r.write("p24.md", &plan_text("Plan 24", &[("T", &[]), ("U", &[])]));
+    assert_eq!(imported(&r.scan()), 1);
+}
+
+#[test]
 fn into_links_a_file_to_a_milestone() {
     let mut r = Repo::new();
     let ectx = EditContext {
