@@ -4,7 +4,8 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
 
 ## Layout
 
-- `crates/bridge-screen-core/` — core library (store, plan, session, navigator, …; spec §4.2)
+- `crates/bridge-screen-core/` — core library (store, plan, session, navigator, …; spec §4.2);
+  `plan/rollup.rs` — a milestone's and the goal's status from their tasks, derived when read
   - `tangent/` — detours, suspended items and resume cues, unit labels, away time and the
     tolerance band (§7.1–7.4); `drift.rs` — the pure drift-score heuristic (§7.2);
     `navigator.rs` — note candidates, priority, one-note-per-unit and repeat limits, and the
@@ -25,7 +26,8 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
     L2–L4 and the owner's verdict (`ladder.rs`), the bounded L2 test re-run with
     process-group kill (`rerun.rs`, never from a hook), staleness at SessionStart and its
     briefing note (`stale.rs`), nudges and owner escalation (`nudge.rs`), status
-    derivation and done%/claimed% (`mod.rs`), schema v5 views (`project.rs`)
+    derivation and done%/claimed% (`mod.rs`), schema v5 views (`project.rs`), the owner
+    taking a verdict back (`withdraw.rs`)
   - `decision/` — decisions with supersede chains, duplicate merging and the capture ask
     (§8.6)
   - `telemetry/` — transcript usage (§9.2): the bounded reader (`read.rs`: cursor, whole
@@ -62,7 +64,8 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
   palette tokens once in `src/app.css`; `tests/` (vitest), `e2e/` (Playwright)
 - `docs/superpowers/` — specs and implementation plans
 - `docs/lead/` — the owner's living docs: intent, project map, current state, decision log,
-  glossary (see "Reporting to the owner")
+  glossary (see "Reporting to the owner"), and `message-audit.md` (every owner-facing message,
+  before and after; codes that must never reach a screen are in `web/src/lib/jargon.json`)
 
 ## Commands
 
@@ -76,7 +79,8 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
 - MCP server: `bridge-screen mcp` (stdio; Claude Code starts it through the plugin)
 - Status: `bridge-screen status`; plugin registration: `bridge-screen install [--dev | --no-plugin]`
 - Owner answers: `bridge-screen drift <session-prefix> continue|make-task|stop [--reason R] [--parent P --title T]`,
-  `bridge-screen label <session-prefix> <unit_no> on-task|detour|drift`
+  `bridge-screen label <session-prefix> <unit_no> on-task|detour|drift|requested` (`requested`,
+  alias `asked-for`: work the owner asked for — never drift)
 - Recovery: `bridge-screen resolve <leftover-id|prefix>… adopt|resume|undo [-C DIR]`;
   `bridge-screen squash [-C DIR] [--onto BASE] [--dry-run]`
 - Config: `bridge-screen config [-C DIR]` (shows the repo's tuned drift thresholds and test
@@ -84,7 +88,8 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
   `bridge-screen config set test-command "<cmd>" | test-timeout <secs> | publish-reports never|ask [-C DIR]`,
   `bridge-screen config unset test-command|test-timeout|publish-reports [-C DIR]` (owner only)
 - Verification and decisions: `bridge-screen verify <task> [--broken "<note>"] [--level N] [-C DIR]`
-  (the owner's verdict), `bridge-screen decisions [-C DIR] [--task ID] [--all]`
+  (the owner's verdict), `bridge-screen verify <task> --withdraw [-C DIR]` (take back the owner's
+  newest sign-off or "broken"; owner only — the MCP refuses it), `bridge-screen decisions [-C DIR] [--task ID] [--all]`
 - Cost and forecast: `bridge-screen usage [-C DIR] [--session PREFIX] [--task ID] [--by model|task|session|agent]`,
   `bridge-screen usage --catch-up [-C DIR]` (reads every known transcript of the repo to the end;
   owner-run, never a hook), `bridge-screen forecast [-C DIR]`; prices under `[prices."<model>"]`
@@ -136,6 +141,7 @@ Shapes: a problem card (headline, why it matters, what's going on, why it happen
 - `current-state.md` — overwrite (don't append), dated, after each merge or working day.
 - `decision-log.md` — add an entry for every choice someone will later ask "why?" about; never delete, mark "Superseded by #N".
 - `glossary.md` — add every new project term the first time it appears in a report.
+- `message-audit.md` — add a row when a new owner-facing message appears or changes.
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
