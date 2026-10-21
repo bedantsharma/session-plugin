@@ -92,13 +92,17 @@ pub fn read_new(path: &Path, from: u64, max: u64) -> Result<ReadOut> {
     })
 }
 
+/// The longest line the owner's catch-up reads before skipping it like a hook does.
+pub const MAX_CATCH_UP_LINE: u64 = 256 * 1024 * 1024;
+
 /// Read `path` from `from` to its last whole line, in slices (for the owner's catch-up;
-/// never from a hook). Replies are deduplicated across slices.
+/// never from a hook). Replies are deduplicated across slices. A line too long for a
+/// hook's slice is read whole here (up to [`MAX_CATCH_UP_LINE`]).
 pub fn read_to_end(path: &Path, from: u64) -> Result<ReadOut> {
-    let mut out = read_new(path, from, MAX_HOOK_BYTES)?;
+    let mut out = slice(path, from)?;
     let mut seen: HashSet<String> = out.replies.iter().map(|r| r.message_id.clone()).collect();
     while out.more {
-        let next = read_new(path, out.offset_after, MAX_HOOK_BYTES)?;
+        let next = slice(path, out.offset_after)?;
         if next.offset_after == out.offset_after {
             break; // only a line still being written is left
         }
@@ -112,6 +116,18 @@ pub fn read_to_end(path: &Path, from: u64) -> Result<ReadOut> {
         );
     }
     Ok(out)
+}
+
+/// One catch-up slice: a hook-sized read, widened while a single line overflows it.
+fn slice(path: &Path, from: u64) -> Result<ReadOut> {
+    let mut max = MAX_HOOK_BYTES;
+    loop {
+        let out = read_new(path, from, max)?;
+        if !out.skipped_long_line || 2 * max > MAX_CATCH_UP_LINE {
+            return Ok(out);
+        }
+        max *= 2;
+    }
 }
 
 /// The fields bridge-screen reads from a transcript line; everything else (the message

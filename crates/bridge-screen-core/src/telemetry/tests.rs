@@ -531,3 +531,20 @@ fn odd_lines_still_count() {
     let ids: Vec<&str> = out.replies.iter().map(|r| r.message_id.as_str()).collect();
     assert_eq!(ids, ["m3", "m2", "m4"]);
 }
+
+/// A reply line longer than a hook may read (a big tool input) is skipped by the hooks,
+/// but the owner's catch-up reads it.
+#[test]
+fn catch_up_reads_a_reply_line_too_long_for_a_hook() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.jsonl");
+    let pad = "x".repeat(usize::try_from(3 * MAX_HOOK_BYTES).unwrap());
+    let long = line("big", &at(5), 9).replace("SECRET reply text", &pad);
+    write(&path, &(long + &line("m2", &at(6), 1)));
+    let hook = read_new(&path, 0, MAX_HOOK_BYTES).unwrap();
+    assert!(hook.skipped_long_line);
+    let all = read_to_end(&path, 0).unwrap();
+    let ids: Vec<&str> = all.replies.iter().map(|r| r.message_id.as_str()).collect();
+    assert_eq!(ids, ["big", "m2"]);
+    assert!(!all.more);
+}
