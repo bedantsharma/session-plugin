@@ -187,6 +187,8 @@ export interface UnitRow {
   detour: string | null
   files: number
   disagreement: boolean
+  tokens: number
+  tokens_text: string | null
 }
 
 export interface SessionDrill {
@@ -217,6 +219,7 @@ export interface SessionDrill {
   handoff_note: { in_flight: string; if_then: string[]; ts: string } | null
   readback: string
   owner_answers: { ts: string; answer: string; reason: string | null }[]
+  cost: CostRow | null
 }
 
 export interface Decision {
@@ -249,7 +252,63 @@ export interface TaskDrill {
   }[]
   actors: { agent_type: string | null; model: string | null }[]
   retries: number
-  usage: unknown | null
+  usage: TaskUsage | null
+  steps: { id: string; title: string; status: string; current: boolean }[]
+  /** Actual ÷ estimate, once done. */
+  ratio: number | null
+}
+
+export interface CostSplit {
+  label: string
+  tokens: number
+  tokens_text: string
+  cost_text: string
+}
+
+export interface TaskUsage {
+  total: CostRow
+  by_model: CostSplit[]
+  by_agent: CostSplit[]
+}
+
+export interface CalibrationPoint {
+  task_id: string
+  title: string
+  estimate_min: number
+  actual_min: number
+  ratio: number
+  model: string
+  completed_at: string
+}
+
+export interface Price {
+  input: number
+  output: number
+  cache_read: number
+  cache_write_5m: number
+  cache_write_1h: number
+}
+
+export interface CalibrationDrill {
+  repo_id: string
+  name: string
+  min_points: number
+  model_points: number
+  models: {
+    model: string
+    name: string
+    points: CalibrationPoint[]
+    median_ratio: number
+    text: string
+    own: boolean
+  }[]
+  pooled: CalibrationPoint[]
+  pooled_text: string | null
+  forecast: ForecastRow
+  history: (Forecast & { ts: string })[]
+  prices: { model: string; name: string; price: Price; source: string }[]
+  unpriced_models: string[]
+  notes: string[]
 }
 
 export interface HistoryPage {

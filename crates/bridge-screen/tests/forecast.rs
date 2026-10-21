@@ -132,7 +132,11 @@ fn forecast_cli_says_the_range_and_its_basis() {
     let name = seeded(&env, 3);
     let text = run(&env, &["forecast"]);
     assert!(text.starts_with(&format!("{name}: likely by ")), "{text}");
-    assert!(text.contains("could take until"), "{text}");
+    // Two dates, or one when both chances land on the same day.
+    assert!(
+        text.contains("could take until") || text.contains("90% chance by then too"),
+        "{text}"
+    );
     assert!(
         text.contains("(50% / 90% chance, based on how long verified tasks actually took)"),
         "{text}"

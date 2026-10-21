@@ -739,7 +739,7 @@ impl Actor for StoreActor {
         match target {
             Target::Item(_) => vec!["press a to act on it".into()],
             Target::Session(id) => {
-                match view::drill::session(s.conn(), id, now) {
+                match view::drill::session(s.conn(), id, &self.cfg, now) {
                     Ok(Some(d)) => {
                         let mut out = vec![format!(
                             "{} units · on task {} · drift {} · read-back {}",

@@ -537,6 +537,12 @@ pub fn short_date(date: &str, this_year: i16) -> String {
 pub fn range_text(f: &Forecast, now: Timestamp, tz: &TimeZone) -> String {
     let year = now.to_zoned(tz.clone()).year();
     match f.dates() {
+        Some((p50, p90)) if p50 == p90 => {
+            format!(
+                "likely by {} · 90% chance by then too",
+                short_date(p50, year)
+            )
+        }
         Some((p50, p90)) => format!(
             "likely by {} · could take until {}",
             short_date(p50, year),

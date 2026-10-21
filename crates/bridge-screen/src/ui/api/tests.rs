@@ -349,6 +349,37 @@ async fn drill_endpoints_return_the_models() {
         serde_json::from_str::<Value>(&body).unwrap()["tuned"],
         false
     );
+    let (s, body) = f.get("/api/calibration/r1").await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let calib: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(calib["name"], "shop");
+    assert_eq!(calib["min_points"], 3);
+    assert_eq!(calib["forecast"]["p50_date"], Value::Null);
+    assert!(calib["prices"].as_array().unwrap().len() > 3);
+}
+
+#[tokio::test]
+async fn the_calibration_route_needs_the_token_and_host() {
+    let f = Fixture::new();
+    let (s, _) = f
+        .send(
+            Request::get("/api/calibration/r1")
+                .header("host", HOST)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, _) = f
+        .send(
+            Request::get("/api/calibration/r1")
+                .header("host", "evil.test:4321")
+                .header("authorization", format!("Bearer {TOKEN}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

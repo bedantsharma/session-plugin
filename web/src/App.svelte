@@ -13,6 +13,7 @@
   import TaskView from '$lib/drill/Task.svelte'
   import HistoryView from '$lib/drill/History.svelte'
   import TuningView from '$lib/drill/Tuning.svelte'
+  import CalibrationView from '$lib/drill/Calibration.svelte'
   import type { Glance, OwnerAction } from '$lib/types'
 
   type Screen =
@@ -22,6 +23,7 @@
     | { kind: 'task'; repo: string; id: string }
     | { kind: 'history'; repo: string }
     | { kind: 'tuning'; repo: string }
+    | { kind: 'calibration'; repo: string }
 
   const MAX_PROJECTS = 5
   const MAX_SESSIONS = 8
@@ -122,6 +124,7 @@
           onOpenTask={(repo, id) => (screen = { kind: 'task', repo, id })}
           onOpenHistory={(repo) => (screen = { kind: 'history', repo })}
           onOpenTuning={(repo) => (screen = { kind: 'tuning', repo })}
+          onOpenCalibration={(repo) => (screen = { kind: 'calibration', repo })}
         />
       {:else if screen.kind === 'session'}
         <SessionView {client} id={screen.id} {version} />
@@ -131,6 +134,8 @@
         <HistoryView {client} repo={screen.repo} />
       {:else if screen.kind === 'tuning'}
         <TuningView {client} repo={screen.repo} {version} {act} />
+      {:else if screen.kind === 'calibration'}
+        <CalibrationView {client} repo={screen.repo} {version} />
       {/if}
     </div>
   {:else if glance}

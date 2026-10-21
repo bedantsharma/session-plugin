@@ -1,5 +1,5 @@
-// Screenshots for the owner's review (not a pass/fail check): the glance, a project and a
-// session at 1440×900, the glance at 1280×720 and the desktop card, saved to
+// Screenshots for the owner's review (not a pass/fail check): the glance, a project, its
+// calibration and a session at 1440×900, the glance at 1280×720 and the desktop card, saved to
 // test-results/screens/ (git-ignored, never committed).
 import { mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -9,7 +9,9 @@ import { serve } from './serve'
 
 const OUT = 'test-results/screens'
 
-test('screenshots: glance, project, session, a 1280×720 glance and the card', async ({ page }) => {
+test('screenshots: glance, project, calibration, session, a 1280×720 glance and the card', async ({
+  page,
+}) => {
   mkdirSync(OUT, { recursive: true })
   await page.setViewportSize({ width: 1440, height: 900 })
   // The owner's theme; the light theme follows the system the same way.
@@ -18,6 +20,7 @@ test('screenshots: glance, project, session, a 1280×720 glance and the card', a
     {
       repo: 'r1',
       name: 'shop',
+      finished: 4,
       milestones: [
         // The seed's own task is "1".
         { id: '2', title: 'Accounts and sign-in', hill: 'downhill' },
@@ -41,6 +44,11 @@ test('screenshots: glance, project, session, a 1280×720 glance and the card', a
     await page.locator('[data-project="r1"]').getByRole('button', { name: 'shop' }).click()
     await expect(page.getByRole('heading', { level: 2, name: /shop/ })).toBeVisible()
     await page.screenshot({ path: `${OUT}/project.png`, fullPage: true })
+
+    await page.getByRole('button', { name: 'Calibration' }).click()
+    await expect(page.getByRole('heading', { level: 2, name: /Calibration/ })).toBeVisible()
+    await expect(page.getByTestId('calibration-forecast')).toContainText('likely by')
+    await page.screenshot({ path: `${OUT}/calibration.png`, fullPage: true })
 
     await page.getByRole('button', { name: '← Glance' }).click()
     await page

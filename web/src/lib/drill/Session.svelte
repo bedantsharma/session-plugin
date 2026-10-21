@@ -42,7 +42,7 @@
     ended: { icon: '○', text: 'Ended', tone: 'muted' },
   }
   // Fixed columns from 1024 px; below, a row wraps to a primary line and a metadata line.
-  const COLS = 'lg:grid lg:grid-cols-[3rem_4.5rem_4.5rem_11rem_4rem_minmax(0,1fr)]'
+  const COLS = 'lg:grid lg:grid-cols-[3rem_4.5rem_4.5rem_4rem_11rem_4rem_minmax(0,1fr)]'
 </script>
 
 {#if m.error}
@@ -60,6 +60,9 @@
       <Chip tone={st.tone} icon={st.icon} text={st.text} live={d.state === 'working'} />
       <span class="ml-auto text-row tabular-nums">{mins(active)} active</span>
     </div>
+    {#if d.cost}
+      <p class="text-meta tabular-nums" data-testid="session-cost">{d.cost.summary}</p>
+    {/if}
     <div class="flex flex-wrap gap-x-4 gap-y-1 text-meta text-muted">
       {#if d.task}<span>{d.task.id} {d.task.title}</span>{/if}
       {#if d.branch}<span class="font-mono">{d.branch}</span>{/if}
@@ -117,6 +120,7 @@
         <span role="columnheader">#</span>
         <span role="columnheader">Time</span>
         <span role="columnheader" class="text-right">Length</span>
+        <span role="columnheader" class="text-right">Tokens</span>
         <span role="columnheader">Label</span>
         <span role="columnheader">Task</span>
         <span role="columnheader">Files · score</span>
@@ -134,6 +138,9 @@
           <span role="cell" class="font-mono text-muted">#{u.unit_no}</span>
           <span role="cell" class="text-muted tabular-nums">{hhmm(u.started_at)}</span>
           <span role="cell" class="text-right tabular-nums">{mins(u.active_s)}</span>
+          <span role="cell" class="text-right text-muted tabular-nums" data-testid="unit-tokens"
+            >{u.tokens_text ?? '—'}</span
+          >
           <span role="cell" class="whitespace-nowrap"
             ><Chip tone={w.tone} icon={w.icon} text={w.text} /></span
           >

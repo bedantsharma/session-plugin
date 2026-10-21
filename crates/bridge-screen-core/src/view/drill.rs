@@ -1,6 +1,8 @@
 //! Drill-down models (spec §10.2): a project's plan tree and scope line, a session's
-//! timeline, a task's decisions and verification evidence, the raw history and the
-//! drift-tuning changes. Read-only, like the glance; `now` is a parameter.
+//! timeline with its tokens, a task's decisions, verification evidence, cost and retries,
+//! the raw history, the drift-tuning changes, and the calibration behind the forecast.
+//! Read-only, like the glance; `now` is a parameter. Money is computed here, at read
+//! time, from the configured prices.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -9,16 +11,18 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use serde_json::Value;
 
-use super::{ActionSpec, NodeRef, Tone, button, short};
-use crate::config::Config;
+use super::{ActionSpec, CostRow, ForecastRow, NodeRef, Tone, button, cost_of, short};
+use crate::config::{Config, Price};
 use crate::decision::{self, Decision};
 use crate::error::Result;
+use crate::forecast::{self, HistoryPoint, Point};
 use crate::handoff::{self, HandoffNote, LeftoverAction, LeftoverState, ReadbackState};
 use crate::owner::OwnerAction;
 use crate::plan::{Hill, NodeKind, NodeStatus, PlanNode, load_tree};
 use crate::session::{self, SessionState};
 use crate::store::{Actor, OWNER_SESSION, repo_name};
 use crate::tangent::{self, Label, LabelSource};
+use crate::telemetry::{self, Scope};
 use crate::verify::{self, Verification};
 
 /// Most points a scope line carries.
@@ -320,6 +324,10 @@ pub struct UnitRow {
     pub detour: Option<String>,
     pub files: usize,
     pub disagreement: bool,
+    /// Tokens of the replies in this unit (0 when none were recorded).
+    pub tokens: u64,
+    /// `12k`; `None` without tokens.
+    pub tokens_text: Option<String>,
 }
 
 /// Where a session's time went.
@@ -393,6 +401,8 @@ pub struct SessionDrill {
     pub handoff_note: Option<HandoffNote>,
     pub readback: ReadbackState,
     pub owner_answers: Vec<OwnerAnswer>,
+    /// Tokens and cost of the whole session; `None` before any usage.
+    pub cost: Option<CostRow>,
 }
 
 /// The session's units and where their time went.
@@ -445,6 +455,8 @@ fn timeline(conn: &Connection, id: &str) -> Result<(Vec<UnitRow>, TimeSplit)> {
             detour: detour.map(|(l, _)| l),
             files: u.files.len(),
             disagreement: u.disagreement,
+            tokens: 0,
+            tokens_text: None,
         });
     }
     split.detours = per_detour.into_values().collect();
@@ -515,12 +527,24 @@ fn owner_answers(conn: &Connection, repo: &str, id: &str) -> Result<Vec<OwnerAns
         .collect::<rusqlite::Result<_>>()?)
 }
 
-pub fn session(conn: &Connection, id: &str, now: Timestamp) -> Result<Option<SessionDrill>> {
+pub fn session(
+    conn: &Connection,
+    id: &str,
+    cfg: &Config,
+    now: Timestamp,
+) -> Result<Option<SessionDrill>> {
     let _ = now;
     let Some(s) = session::get(conn, id)? else {
         return Ok(None);
     };
-    let (units, split) = timeline(conn, id)?;
+    let (mut units, split) = timeline(conn, id)?;
+    let per_unit = telemetry::session_by_unit(conn, id)?;
+    for u in &mut units {
+        if let Some(t) = per_unit.get(&u.unit_no).copied().filter(|t| *t > 0) {
+            u.tokens = t;
+            u.tokens_text = Some(telemetry::tokens_text(t));
+        }
+    }
     let mut suspended = Vec::new();
     for item in tangent::suspended(conn, id)? {
         suspended.push(SuspendedRow {
@@ -564,6 +588,7 @@ pub fn session(conn: &Connection, id: &str, now: Timestamp) -> Result<Option<Ses
         suspended,
         leftovers,
         readback: s.readback,
+        cost: super::cost_row(conn, &Scope::Session(id.to_string()), cfg)?,
     }))
 }
 
@@ -589,11 +614,130 @@ pub struct TaskDrill {
     pub actors: Vec<ActorRow>,
     /// Units on the task after its latest failed verification.
     pub retries: usize,
-    /// Tokens and cost arrive with sub-project 7; always `None` for now.
-    pub usage: Option<Value>,
+    /// Tokens and cost, by model and by agent type; `None` before any usage.
+    pub usage: Option<TaskUsage>,
+    /// Its subtasks, the current one marked (spec §9.2).
+    pub steps: Vec<StepRow>,
+    /// Actual ÷ estimate, once it is done (L2 or above) and both are known.
+    pub ratio: Option<f64>,
 }
 
-pub fn task(conn: &Connection, repo: &str, id: &str) -> Result<TaskDrill> {
+/// One line of a cost split: who or what, its tokens and its cost.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CostSplit {
+    /// `Opus 5.5`, `Main agent`, `Explore`.
+    pub label: String,
+    pub tokens: u64,
+    pub tokens_text: String,
+    /// `$3.90`, or `cost unknown` for a model without a price.
+    pub cost_text: String,
+}
+
+/// A task's tokens and cost.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TaskUsage {
+    pub total: CostRow,
+    pub by_model: Vec<CostSplit>,
+    pub by_agent: Vec<CostSplit>,
+}
+
+/// A subtask of the task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StepRow {
+    pub id: String,
+    pub title: String,
+    pub status: NodeStatus,
+    /// The one being worked on now (or, with nobody on one, the first not done).
+    pub current: bool,
+}
+
+fn split_line(
+    label: String,
+    counts: &telemetry::Counts,
+    model: Option<&str>,
+    cfg: &Config,
+) -> CostSplit {
+    let tokens = counts.total();
+    let cost_text = match model {
+        Some(m) => match crate::config::price_for(&cfg.prices, m) {
+            Some(p) => telemetry::usd_text(telemetry::priced(counts, p)),
+            None => "cost unknown".to_string(),
+        },
+        None => String::new(),
+    };
+    CostSplit {
+        label,
+        tokens,
+        tokens_text: telemetry::tokens_text(tokens),
+        cost_text,
+    }
+}
+
+/// A task's usage, split by model and by agent type.
+fn task_usage(conn: &Connection, repo: &str, id: &str, cfg: &Config) -> Result<Option<TaskUsage>> {
+    let scope = Scope::Task {
+        repo: repo.to_string(),
+        id: id.to_string(),
+    };
+    let tokens = telemetry::totals(conn, &scope)?;
+    if tokens.is_empty() {
+        return Ok(None);
+    }
+    let by_model = tokens
+        .by_model
+        .iter()
+        .map(|(m, c)| split_line(telemetry::model_text(m), c, Some(m), cfg))
+        .collect();
+    // Per agent type, priced per model within it.
+    let filter = telemetry::Filter {
+        session: None,
+        task: Some(id.to_string()),
+    };
+    let mut by_agent = Vec::new();
+    for (agent, t) in telemetry::split(conn, repo, &filter, telemetry::SplitBy::Agent)? {
+        let row = cost_of(&t, cfg);
+        by_agent.push(CostSplit {
+            label: agent.unwrap_or_else(|| "Main agent".to_string()),
+            tokens: row.tokens,
+            tokens_text: row.tokens_text,
+            cost_text: row.text,
+        });
+    }
+    Ok(Some(TaskUsage {
+        total: cost_of(&tokens, cfg),
+        by_model,
+        by_agent,
+    }))
+}
+
+/// The task's subtasks in plan order, the current one marked.
+fn steps(conn: &Connection, repo: &str, id: &str) -> Result<Vec<StepRow>> {
+    let kids: Vec<PlanNode> = load_tree(conn, repo, false)?
+        .into_iter()
+        .filter(|n| n.parent_id.as_deref() == Some(id) && n.kind == NodeKind::Subtask)
+        .collect();
+    let held: HashSet<String> = session::list_live(conn, Some(repo))?
+        .into_iter()
+        .filter_map(|s| s.active_task)
+        .collect();
+    let done = |s: NodeStatus| matches!(s, NodeStatus::L2 | NodeStatus::L3 | NodeStatus::L4);
+    let current = kids
+        .iter()
+        .find(|n| held.contains(&n.id))
+        .or_else(|| kids.iter().find(|n| !done(n.status)))
+        .map(|n| n.id.clone());
+    Ok(kids
+        .into_iter()
+        .map(|n| StepRow {
+            current: current.as_deref() == Some(n.id.as_str()),
+            id: n.id,
+            title: n.title,
+            status: n.status,
+        })
+        .collect())
+}
+
+pub fn task(conn: &Connection, repo: &str, id: &str, cfg: &Config) -> Result<TaskDrill> {
     let node = crate::plan::get_node(conn, repo, id)?;
     let mut decisions = Vec::new();
     for d in decision::list(conn, repo, Some(id), false)? {
@@ -658,18 +802,32 @@ pub fn task(conn: &Connection, repo: &str, id: &str) -> Result<TaskDrill> {
         }
         None => 0,
     };
+    let active_secs = session::task_time(conn, repo, id)?.map_or(0, |(secs, _)| secs);
+    let estimate = node
+        .as_ref()
+        .and_then(|n| n.estimate_min)
+        .filter(|e| *e > 0);
+    let finished = node
+        .as_ref()
+        .is_some_and(|n| matches!(n.status, NodeStatus::L2 | NodeStatus::L3 | NodeStatus::L4));
+    #[allow(clippy::cast_precision_loss)] // seconds of work, small
+    let ratio = estimate
+        .filter(|_| finished && active_secs > 0)
+        .map(|e| active_secs as f64 / 60.0 / f64::from(e));
     Ok(TaskDrill {
         repo_id: repo.to_string(),
         id: id.to_string(),
         title: node.as_ref().map(|n| n.title.clone()).unwrap_or_default(),
         status: node.as_ref().map(|n| n.status),
         estimate_min: node.as_ref().and_then(|n| n.estimate_min),
-        actual_min: session::task_time(conn, repo, id)?.map_or(0, |(secs, _)| secs / 60),
+        actual_min: active_secs / 60,
         decisions,
         verifications: verify::verifications(conn, repo, id)?,
         actors,
         retries,
-        usage: None,
+        usage: task_usage(conn, repo, id, cfg)?,
+        steps: steps(conn, repo, id)?,
+        ratio,
     })
 }
 
@@ -850,6 +1008,120 @@ pub fn tuning(conn: &Connection, repo: &str, cfg: &Config) -> Result<TuningDrill
                 Tone::Neutral,
             )
         }),
+    })
+}
+
+/// One model's calibration.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ModelCalibration {
+    pub model: String,
+    /// `Opus 5.5`.
+    pub name: String,
+    pub points: Vec<Point>,
+    pub median_ratio: f64,
+    /// `tasks take 1.8× their estimate`.
+    pub text: String,
+    /// It has enough points to be used on its own; until then the forecast uses every
+    /// model's points together.
+    pub own: bool,
+}
+
+/// A configured price and where it came from.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PriceRow {
+    pub model: String,
+    pub name: String,
+    pub price: Price,
+    /// `default` or `yours`.
+    pub source: String,
+}
+
+/// The calibration drill-down (spec §10.2): ratios per model, the forecast's history
+/// and the prices in use.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CalibrationDrill {
+    pub repo_id: String,
+    pub name: String,
+    /// Finished tasks needed before there are dates.
+    pub min_points: usize,
+    /// Points a model needs to be used on its own.
+    pub model_points: usize,
+    pub models: Vec<ModelCalibration>,
+    /// Every point, oldest first.
+    pub pooled: Vec<Point>,
+    /// `tasks take 1.8× their estimate`, over every point; `None` without points.
+    pub pooled_text: Option<String>,
+    pub forecast: ForecastRow,
+    /// Recorded forecasts, oldest first (the convergence band).
+    pub history: Vec<HistoryPoint>,
+    pub prices: Vec<PriceRow>,
+    /// Models with tokens in this repo and no price.
+    pub unpriced_models: Vec<String>,
+    /// `No price for gpt-x: add one under [prices] in config.toml.`
+    pub notes: Vec<String>,
+}
+
+/// `tasks take 1.8× their estimate`.
+fn ratio_text(r: f64) -> String {
+    let t = format!("{r:.1}");
+    let t = t.strip_suffix(".0").unwrap_or(&t);
+    format!("tasks take {t}× their estimate")
+}
+
+pub fn calibration(
+    conn: &Connection,
+    repo: &str,
+    cfg: &Config,
+    now: Timestamp,
+) -> Result<CalibrationDrill> {
+    let cal = forecast::calibration(conn, repo, now)?;
+    let ratios = |pts: &[Point]| pts.iter().map(|p| p.ratio).collect::<Vec<_>>();
+    let models = cal
+        .by_model
+        .iter()
+        .map(|(m, pts)| {
+            let median = forecast::median(&ratios(pts));
+            ModelCalibration {
+                model: m.clone(),
+                name: telemetry::model_text(m),
+                points: pts.clone(),
+                median_ratio: median,
+                text: ratio_text(median),
+                own: pts.len() >= forecast::MODEL_POINTS,
+            }
+        })
+        .collect();
+    let pooled_text =
+        (!cal.pooled.is_empty()).then(|| ratio_text(forecast::median(&ratios(&cal.pooled))));
+    let used = telemetry::totals(conn, &Scope::Repo(repo.to_string()))?;
+    let unpriced_models = telemetry::cost(&used, &cfg.prices).unpriced_models;
+    let notes = unpriced_models
+        .iter()
+        .map(|m| format!("No price for {m}: add one under [prices] in config.toml."))
+        .collect();
+    let prices = cfg
+        .prices
+        .iter()
+        .map(|(m, p)| PriceRow {
+            model: m.clone(),
+            name: telemetry::model_text(m),
+            price: *p,
+            source: cfg.price_source(m).unwrap_or("yours").to_string(),
+        })
+        .collect();
+    Ok(CalibrationDrill {
+        repo_id: repo.to_string(),
+        name: repo_name(conn, repo)?.unwrap_or_else(|| repo.to_string()),
+        min_points: forecast::MIN_POINTS,
+        model_points: forecast::MODEL_POINTS,
+        models,
+        pooled: cal.pooled,
+        pooled_text,
+        forecast: super::forecast_row(conn, repo, now)?,
+        history: forecast::history(conn, repo)?,
+        prices,
+        unpriced_models,
+        notes,
     })
 }
 

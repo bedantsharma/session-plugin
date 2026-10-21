@@ -367,3 +367,25 @@ fn words_for_the_forecast() {
     );
     assert_eq!(compact_range(&refused, now, &utc()), None);
 }
+
+#[test]
+fn one_date_reads_as_one_date() {
+    let now: Timestamp = "2026-10-21T12:00:00Z".parse().unwrap();
+    let f = Forecast {
+        p50_hours: 1.0,
+        p90_hours: 1.2,
+        p50_date: Some("2026-10-25".into()),
+        p90_date: Some("2026-10-25".into()),
+        remaining_min: 60,
+        unestimated: 0,
+        points: 4,
+        hours_per_day: Some(2.0),
+        reason: None,
+        mean_ratio: None,
+    };
+    assert_eq!(
+        range_text(&f, now, &utc()),
+        "likely by Oct 25 · 90% chance by then too"
+    );
+    assert_eq!(compact_range(&f, now, &utc()).as_deref(), Some("Oct 25"));
+}
