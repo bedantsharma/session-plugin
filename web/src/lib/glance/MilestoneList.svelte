@@ -7,7 +7,7 @@
   import ProgressBar from './ProgressBar.svelte'
   import Chip from '$lib/ui/Chip.svelte'
   import { changed } from '$lib/changed'
-  import { hillWord } from '$lib/words'
+  import { milestoneHill, rollupWord } from '$lib/words'
   import type { ProjectRow } from '$lib/types'
 
   let { project, limit = 6 }: { project: ProjectRow; limit?: number } = $props()
@@ -32,7 +32,8 @@
     class="-mt-2 grid grid-cols-1 gap-x-3 sm:grid-cols-[2.5rem_minmax(0,28rem)_minmax(7rem,12rem)_3rem_auto]"
   >
     {#each milestones as m (m.id)}
-      {@const hill = hillWord(m.hill, m.done_pct)}
+      {@const hill = milestoneHill(m)}
+      {@const roll = rollupWord(m.status)}
       <li
         class="-mx-2 grid grid-cols-[2.5rem_minmax(0,1fr)_3rem] items-center gap-x-3 rounded-lg px-2 py-1.5 sm:col-span-5 sm:h-9 sm:grid-cols-subgrid sm:py-0"
         data-milestone={m.id}
@@ -56,6 +57,7 @@
         <span
           class="col-span-2 col-start-2 flex flex-wrap items-center gap-1.5 sm:col-span-1 sm:col-start-auto"
         >
+          {#if roll}<Chip tone={roll.tone} icon={roll.icon} text={roll.text} />{/if}
           {#if hill}<Chip tone={hill.tone} icon={hill.icon} text={hill.text} tip={hill.tip} />{/if}
           {#if m.stuck}
             <Chip tone="warn" icon="!" text={`stuck · ${m.stuck_sessions} sessions`} />

@@ -7,10 +7,14 @@
   import { changed } from '$lib/changed'
   import ProgressBar from './ProgressBar.svelte'
   import type { ProjectRow } from '$lib/types'
+  import Chip from '$lib/ui/Chip.svelte'
+  import { rollupWord } from '$lib/words'
 
   let { project, onOpen }: { project: ProjectRow; onOpen?: (repo: string) => void } = $props()
 
-  const complete = $derived(project.milestones.filter((m) => m.done_pct >= 100).length)
+  const complete = $derived(
+    project.milestones.filter((m) => m.status === 'done' || m.done_pct >= 100).length,
+  )
 </script>
 
 <li
@@ -25,7 +29,14 @@
         onclick={() => onOpen?.(project.repo_id)}>{project.name}</button
       >
       {#if project.goal}
-        <span class="truncate text-meta text-muted">{project.goal.title}</span>
+        {@const goalDone = rollupWord(project.goal_status)}
+        <span class="flex items-center gap-2 truncate text-meta text-muted"
+          >{project.goal.title}{#if goalDone}<Chip
+              tone={goalDone.tone}
+              icon={goalDone.icon}
+              text={goalDone.text}
+            />{/if}</span
+        >
       {/if}
     </div>
     <div class="flex shrink-0 flex-col items-end" data-testid="progress-text">

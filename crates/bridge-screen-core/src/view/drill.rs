@@ -41,6 +41,9 @@ pub struct TreeNode {
     pub title: String,
     pub intent: Option<String>,
     pub status: NodeStatus,
+    /// A parent's status from its tasks (spec §10: derived, never stored); `None` for a
+    /// leaf, which shows its own `status`.
+    pub rollup: Option<crate::plan::Rollup>,
     pub hill: Option<Hill>,
     /// A verification it depended on went stale.
     pub stale: bool,
@@ -102,9 +105,12 @@ pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectD
     let marks = verify::plan_marks(conn, repo)?;
     let actual = actual_minutes(conn, repo)?;
     let decisions = decision_counts(conn, repo)?;
-    let tree = load_tree(conn, repo, false)?
+    let nodes = load_tree(conn, repo, false)?;
+    let rolled = crate::plan::rollups(&nodes);
+    let tree = nodes
         .into_iter()
         .map(|n: PlanNode| TreeNode {
+            rollup: rolled.get(&n.id).copied(),
             stale: marks.get(&n.id).is_some_and(|m| m == "stale"),
             owner_checked: marks.get(&n.id).is_some_and(|m| m == "✓owner"),
             actual_min: actual.get(&n.id).copied().unwrap_or(0),

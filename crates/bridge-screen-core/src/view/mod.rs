@@ -74,6 +74,8 @@ pub struct ProjectRow {
     pub repo_id: String,
     pub name: String,
     pub goal: Option<NodeRef>,
+    /// The goal's status from every task (derived, never stored); `None` without a goal.
+    pub goal_status: Option<crate::plan::Rollup>,
     pub done_pct: u32,
     pub claimed_pct: u32,
     pub unestimated: usize,
@@ -194,6 +196,8 @@ pub fn forecast_row_in(
 pub struct MilestoneRow {
     pub id: String,
     pub title: String,
+    /// From its tasks (derived, never stored): `done` once every task passed its tests.
+    pub status: crate::plan::Rollup,
     pub hill: Option<Hill>,
     pub done_pct: u32,
     pub claimed_pct: u32,
@@ -1226,6 +1230,7 @@ fn stuck_for(
 }
 
 fn milestones(conn: &Connection, repo_id: &str, tree: &[PlanNode]) -> Result<Vec<MilestoneRow>> {
+    let rolled = crate::plan::rollups(tree);
     let mut out = Vec::new();
     for m in tree.iter().filter(|n| n.kind == NodeKind::Milestone) {
         let under = descendants(tree, &m.id);
@@ -1234,6 +1239,10 @@ fn milestones(conn: &Connection, repo_id: &str, tree: &[PlanNode]) -> Result<Vec
         out.push(MilestoneRow {
             id: m.id.clone(),
             title: m.title.clone(),
+            status: rolled
+                .get(&m.id)
+                .copied()
+                .unwrap_or(crate::plan::Rollup::Todo),
             hill: m.hill,
             done_pct,
             claimed_pct,
@@ -1298,10 +1307,17 @@ pub fn glance(conn: &Connection, cfg: &Config, now: Timestamp) -> Result<Glance>
             Some(_) => Some(forecast_row(conn, &repo_id, now)?),
             None => None,
         };
+        let goal_status = goal.as_ref().map(|g| {
+            crate::plan::rollups(&tree)
+                .get(&g.id)
+                .copied()
+                .unwrap_or(crate::plan::Rollup::Todo)
+        });
         projects.push(ProjectRow {
             repo_id: repo_id.clone(),
             name,
             goal,
+            goal_status,
             done_pct: p.done_pct,
             claimed_pct: p.claimed_pct,
             unestimated: p.unestimated,

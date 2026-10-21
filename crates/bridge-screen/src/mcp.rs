@@ -1363,16 +1363,47 @@ fn agent_status(
         let what = tangent::item_display(conn, &s.repo_id, &item)?;
         let _ = writeln!(out, "Suspended: {what} — on return: {}", item.resume_cue);
     }
+    plan_status(conn, s, &mut out)?;
+    Ok(out)
+}
+
+/// The goal with its rolled-up status, the milestones, the forecast and what's next.
+fn plan_status(
+    conn: &rusqlite::Connection,
+    s: &Session,
+    out: &mut String,
+) -> bridge_screen_core::error::Result<()> {
     match get_node(conn, &s.repo_id, "G")?.filter(|g| g.status != NodeStatus::Dropped) {
         Some(goal) => {
-            let _ = writeln!(out, "Goal: {}", goal.title);
+            let tree = load_tree(conn, &s.repo_id, false)?;
+            let rolled = bridge_screen_core::plan::rollups(&tree);
+            let _ = writeln!(
+                out,
+                "Goal: {} ({})",
+                goal.title,
+                crate::words::status(bridge_screen_core::plan::shown_status(&goal, &rolled))
+            );
+            let milestones: Vec<String> = tree
+                .iter()
+                .filter(|n| n.kind == NodeKind::Milestone)
+                .map(|n| {
+                    format!(
+                        "{} {}",
+                        n.id,
+                        crate::words::status(bridge_screen_core::plan::shown_status(n, &rolled))
+                    )
+                })
+                .collect();
+            if !milestones.is_empty() {
+                let _ = writeln!(out, "Milestones: {}", milestones.join(" · "));
+            }
             let f = view::forecast_row(conn, &s.repo_id, jiff::Timestamp::now())?;
             if f.compact.is_some() {
                 let _ = writeln!(out, "Forecast: {} ({})", f.text, f.basis);
             } else {
                 let _ = writeln!(out, "Forecast: {}", f.text);
             }
-            let next: Vec<String> = load_tree(conn, &s.repo_id, false)?
+            let next: Vec<String> = tree
                 .into_iter()
                 .filter(|n| {
                     matches!(n.kind, NodeKind::Task | NodeKind::Subtask)
@@ -1389,7 +1420,7 @@ fn agent_status(
         }
         None => out.push_str("No plan yet — ask the owner whether to create one."),
     }
-    Ok(out)
+    Ok(())
 }
 
 /// `Cost so far: this session $1.20 (340k tokens) · task 2.3 $0.80 (200k tokens)`.

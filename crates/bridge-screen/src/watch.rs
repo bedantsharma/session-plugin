@@ -503,9 +503,12 @@ fn project_lines(app: &App, row: usize, width: usize, narrow: bool) -> Vec<Line<
         (format!(" {pct}{claimed}{extra}"), sel),
     ];
     for m in &p.milestones {
-        let hill = crate::words::hill(m.hill, m.done_pct)
+        let mut hill = crate::words::milestone_hill(m)
             .map(|(icon, word)| format!(" {icon} {word}"))
             .unwrap_or_default();
+        if let Some(mark) = crate::words::rollup_mark(m.status) {
+            let _ = write!(hill, " {mark}");
+        }
         spans.push((
             format!("  {} {}%{hill}", m.id, m.done_pct),
             role(c, Color::Yellow),
@@ -790,7 +793,9 @@ impl Actor for StoreActor {
                             "  ".repeat(n.depth),
                             n.id,
                             n.title,
-                            n.status.as_str()
+                            crate::words::status(
+                                n.rollup.map_or_else(|| n.status.as_str(), |r| r.as_str())
+                            )
                         )
                     })
                     .collect(),

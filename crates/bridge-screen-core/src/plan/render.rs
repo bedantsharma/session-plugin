@@ -10,11 +10,13 @@ pub fn render_text(nodes: &[PlanNode]) -> String {
     render_annotated(nodes, &HashMap::new())
 }
 
-/// [`render_text`] with a marker after a node's status (`stale`, `✓owner`).
+/// [`render_text`] with a marker after a node's status (`stale`, `✓owner`). A parent shows
+/// the roll-up of its tasks (`done`, `in_progress`, …), never its stored `todo`.
 pub fn render_annotated<S: BuildHasher>(
     nodes: &[PlanNode],
     marks: &HashMap<String, String, S>,
 ) -> String {
+    let rolled = super::rollup::rollups(nodes);
     let mut out = String::new();
     for node in nodes {
         let indent = "  ".repeat(node.depth);
@@ -23,7 +25,7 @@ pub fn render_annotated<S: BuildHasher>(
             "{indent}{}  {}  [{}]",
             node.id,
             node.title,
-            node.status.as_str()
+            super::rollup::shown_status(node, &rolled)
         );
         if let Some(mark) = marks.get(&node.id) {
             let _ = write!(out, " {mark}");
@@ -97,6 +99,20 @@ G  Ship bridge-screen  [todo]
         assert_eq!(
             super::render_annotated(&[t], &marks),
             "1.1  Schema  [l4] ✓owner\n"
+        );
+    }
+
+    #[test]
+    fn parents_show_their_roll_up() {
+        let goal = n("G", NodeKind::Goal, "Ship", 0);
+        let mut m = n("1", NodeKind::Milestone, "Core", 1);
+        m.parent_id = Some("G".into());
+        let mut t = n("1.1", NodeKind::Task, "Schema", 2);
+        t.parent_id = Some("1".into());
+        t.status = NodeStatus::L4;
+        assert_eq!(
+            render_text(&[goal, m, t]),
+            "G  Ship  [done]\n  1  Core  [done]\n    1.1  Schema  [l4]\n"
         );
     }
 

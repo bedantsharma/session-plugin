@@ -12,7 +12,7 @@
   import { changed } from '$lib/changed'
   import { hhmm } from '$lib/format'
   import { motion } from '$lib/motion.svelte'
-  import { hillWord, sessionWord } from '$lib/words'
+  import { milestoneHill, rollupWord, sessionWord } from '$lib/words'
   import type { ActionSpec, Glance, NeedsYou } from '$lib/types'
   import { applyTheme, type CardHost, type ToolResult } from './host'
 
@@ -234,7 +234,8 @@
             {#if openMilestones[p.repo_id]}
               <ul class="grid grid-cols-[2rem_minmax(0,1fr)_5rem_2.5rem_auto] gap-x-2 pb-2">
                 {#each p.milestones as m (m.id)}
-                  {@const hill = hillWord(m.hill, m.done_pct)}
+                  {@const hill = milestoneHill(m)}
+                  {@const roll = rollupWord(m.status)}
                   <li
                     class="col-span-5 grid min-h-8 grid-cols-subgrid items-center text-xs"
                     data-milestone={m.id}
@@ -251,6 +252,7 @@
                       >{m.done_pct}%</span
                     >
                     <span class="flex gap-1">
+                      {#if roll}<Chip tone={roll.tone} icon={roll.icon} text={roll.text} />{/if}
                       {#if hill}<Chip
                           tone={hill.tone}
                           icon={hill.icon}

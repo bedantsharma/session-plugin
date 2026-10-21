@@ -80,6 +80,7 @@ export function project(over: Partial<ProjectRow> = {}): ProjectRow {
     repo_id: 'r1',
     name: 'shop',
     goal: { id: 'G', title: 'Online shop' },
+    goal_status: 'in_progress',
     done_pct: 62,
     claimed_pct: 14,
     unestimated: 0,
@@ -87,6 +88,7 @@ export function project(over: Partial<ProjectRow> = {}): ProjectRow {
       {
         id: '1',
         title: 'Accounts',
+        status: 'in_progress',
         hill: 'uphill',
         done_pct: 40,
         claimed_pct: 0,
@@ -96,6 +98,7 @@ export function project(over: Partial<ProjectRow> = {}): ProjectRow {
       {
         id: '2',
         title: 'Cart',
+        status: 'in_progress',
         hill: 'downhill',
         done_pct: 80,
         claimed_pct: 0,

@@ -153,7 +153,8 @@ fn unbound_call_falls_back_to_the_project_session() {
     let mut mcp = Mcp::start(&env, &env.repo_path());
     let (is_error, text) = mcp.call("status", &json!({}));
     assert!(!is_error, "{text}");
-    assert!(text.contains("Goal: Ship"), "{text}");
+    assert!(text.contains("Goal: Ship (to do)"), "{text}");
+    assert!(text.contains("Milestones: 1 to do"), "{text}");
 }
 
 #[test]

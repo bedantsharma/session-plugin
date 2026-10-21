@@ -3,8 +3,9 @@
 //! the model, the API and the agent's tool inputs keep `uphill`/`downhill` and
 //! `on_task`/`detour`/`drift`.
 
-use bridge_screen_core::plan::Hill;
+use bridge_screen_core::plan::{Hill, Rollup};
 use bridge_screen_core::tangent::{Label, LabelSource};
+use bridge_screen_core::view::MilestoneRow;
 
 /// A milestone's hill as an icon and a word, or `None` when there is none or the
 /// milestone is finished.
@@ -15,6 +16,26 @@ pub fn hill(hill: Option<Hill>, done_pct: u32) -> Option<(&'static str, &'static
     match hill? {
         Hill::Uphill => Some(("?", "exploring")),
         Hill::Downhill => Some(("→", "executing")),
+    }
+}
+
+/// A milestone's hill word, hidden once it is done by % or by its tasks.
+pub fn milestone_hill(m: &MilestoneRow) -> Option<(&'static str, &'static str)> {
+    let pct = if m.status == Rollup::Done {
+        100
+    } else {
+        m.done_pct
+    };
+    hill(m.hill, pct)
+}
+
+/// A finished or troubled milestone (or goal) as a short mark: `✓ done`,
+/// `✗ needs attention`; nothing otherwise.
+pub fn rollup_mark(r: Rollup) -> Option<&'static str> {
+    match r {
+        Rollup::Done => Some("✓ done"),
+        Rollup::NeedsAttention => Some("✗ needs attention"),
+        Rollup::Todo | Rollup::InProgress => None,
     }
 }
 
@@ -43,6 +64,25 @@ pub fn unit_label(label: Option<Label>, source: Option<LabelSource>) -> String {
     }
 }
 
+/// A plan node's status code (a task's own, or a parent's roll-up) in plain words.
+pub fn status(code: &str) -> &'static str {
+    match code {
+        "todo" => "to do",
+        "active" => "being worked on",
+        "claimed" => "said done, not checked yet",
+        "l1" => "code written, tests not run",
+        "l2" => "tests pass",
+        "l3" => "tried end to end",
+        "l4" => "you checked it",
+        "failed" => "failed a check",
+        "dropped" => "dropped",
+        "in_progress" => "in progress",
+        "done" => "done",
+        "needs_attention" => "needs attention",
+        _ => "unknown",
+    }
+}
+
 /// `<1 min`, `6 min`.
 pub fn mins(secs: i64) -> String {
     if secs < 60 {
@@ -66,6 +106,14 @@ mod tests {
             hill_tip(Hill::Uphill),
             "Unknowns remain — this % may still change"
         );
+    }
+
+    #[test]
+    fn statuses_read_as_words() {
+        assert_eq!(status("l2"), "tests pass");
+        assert_eq!(status("done"), "done");
+        assert_eq!(status("needs_attention"), "needs attention");
+        assert_eq!(status("in_progress"), "in progress");
     }
 
     #[test]

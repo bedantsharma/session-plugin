@@ -194,9 +194,10 @@
     <ul class="flex flex-col border-y border-line" aria-label="Plan tree">
       {#each m.data.tree as n (n.id)}
         {#if !hidden(n)}
-          {@const look = statusWord(n.status)}
+          {@const look = statusWord(n.rollup ?? n.status)}
           {@const p = progress(n)}
-          {@const hill = n.kind === 'milestone' ? hillWord(n.hill, p.done) : null}
+          {@const hill =
+            n.kind === 'milestone' ? hillWord(n.hill, n.rollup === 'done' ? 100 : p.done) : null}
           {@const parent = parents.has(n.id)}
           <li class="border-b border-line last:border-b-0" data-node={n.id}>
             <Collapsible.Root bind:open={() => !!intentOpen[n.id], (v) => (intentOpen[n.id] = v)}>

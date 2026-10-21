@@ -26,6 +26,18 @@ export function hillWord(hill: string | null, donePct: number): Word | null {
   return null
 }
 
+/** A finished or troubled parent (milestone or goal) as a chip; null otherwise. */
+export function rollupWord(status: string | null | undefined): Word | null {
+  if (status === 'done') return { icon: '✓', text: 'done', tone: 'ok' }
+  if (status === 'needs_attention') return { icon: '✗', text: 'needs attention', tone: 'bad' }
+  return null
+}
+
+/** A milestone's hill chip: hidden once the milestone is done, by % or by its tasks. */
+export function milestoneHill(m: { hill: string | null; done_pct: number; status?: string }) {
+  return hillWord(m.hill, m.status === 'done' ? 100 : m.done_pct)
+}
+
 /** A session's status chip: the state in words with a distinct shape per state. */
 export function sessionWord(s: Pick<SessionRow, 'state_label' | 'light' | 'light_word'>): Word {
   const tone: ChipTone = s.light === 'green' ? 'ok' : s.light === 'amber' ? 'warn' : 'bad'
@@ -135,6 +147,9 @@ export const STATUS: Record<string, { icon: string; word: string; cls: string }>
   l3: { icon: '✓', word: 'L3 checked', cls: 'text-ok' },
   l4: { icon: '✓', word: 'L4 owner-checked', cls: 'text-ok' },
   failed: { icon: '✗', word: 'failed', cls: 'text-bad' },
+  in_progress: { icon: '◔', word: 'in progress', cls: 'text-clay' },
+  done: { icon: '✓', word: 'done', cls: 'text-ok' },
+  needs_attention: { icon: '✗', word: 'needs attention', cls: 'text-bad' },
   dropped: { icon: '–', word: 'dropped', cls: 'text-muted' },
 }
 

@@ -25,6 +25,7 @@ const drill = (scope: ProjectDrill['scope']): ProjectDrill => ({
       title: 'Ship shop',
       intent: 'People can use it.',
       status: 'todo',
+      rollup: 'in_progress',
       hill: null,
       stale: false,
       owner_checked: false,
@@ -86,6 +87,19 @@ describe('Project drill', () => {
       'Scope 45 min · done 5 min',
     )
     expect(container.querySelector('.scope-chart')).toBeNull()
+  })
+
+  it('a parent shows its roll-up, not its stored to do', async () => {
+    const d = drill([])
+    d.tree[0] = { ...d.tree[0], rollup: 'done' }
+    const { container } = render(Project, props(d))
+    const goal = await vi.waitFor(() => {
+      const el = container.querySelector('[data-node="G"]')
+      if (!el) throw new Error('not yet')
+      return el
+    })
+    expect(goal).toHaveTextContent('done')
+    expect(goal).not.toHaveTextContent('to do')
   })
 
   it('the intent is behind a labelled control', async () => {
