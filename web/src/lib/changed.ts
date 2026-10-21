@@ -5,6 +5,9 @@
 export function changed(node: HTMLElement, opts: { value: unknown; cls?: string }) {
   let last = JSON.stringify(opts.value)
   let cls = opts.cls ?? 'flash'
+  // With Motion off no animation runs, so no animationend comes: a timer takes the class
+  // off too, or turning Motion back on would flash every row that once changed.
+  let timer: ReturnType<typeof setTimeout> | undefined
   const done = (e: AnimationEvent) => {
     if (e.target === node) node.classList.remove(cls)
   }
@@ -18,10 +21,14 @@ export function changed(node: HTMLElement, opts: { value: unknown; cls?: string 
         // Restart the animation if it is still running.
         void node.offsetWidth
         node.classList.add(cls)
+        const on = cls
+        clearTimeout(timer)
+        timer = setTimeout(() => node.classList.remove(on), 2000)
       }
       last = v
     },
     destroy() {
+      clearTimeout(timer)
       node.removeEventListener('animationend', done)
     },
   }

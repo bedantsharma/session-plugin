@@ -28,4 +28,19 @@ describe('change cues', () => {
     const later = container.querySelector('[data-item="question:later"]')!
     expect(later.className).toContain('arrive')
   })
+
+  it('takes the class off even when no animation ran (Motion off)', () => {
+    vi.useFakeTimers()
+    try {
+      const node = document.createElement('div')
+      const a = changed(node, { value: 1 })
+      a.update({ value: 2 })
+      expect(node.classList.contains('flash')).toBe(true)
+      vi.advanceTimersByTime(2000)
+      expect(node.classList.contains('flash')).toBe(false)
+      a.destroy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
