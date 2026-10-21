@@ -7,6 +7,9 @@
 //! reaches a view table.
 
 pub mod drill;
+pub mod groups;
+
+pub use groups::{BranchGroup, GroupRepo, branch_groups};
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
@@ -46,6 +49,8 @@ pub struct Glance {
     pub needs_you_count: usize,
     /// More than [`ESCALATE_ABOVE`] items.
     pub escalated: bool,
+    /// The same branch with live sessions in two or more repos (spec §10.1).
+    pub branch_groups: Vec<BranchGroup>,
 }
 
 impl Glance {
@@ -54,6 +59,8 @@ impl Glance {
     pub fn for_repo(mut self, repo_id: &str) -> Self {
         self.projects.retain(|p| p.repo_id == repo_id);
         self.needs_you.retain(|i| i.repo_id == repo_id);
+        self.branch_groups
+            .retain(|g| g.repos.iter().any(|r| r.repo_id == repo_id));
         self.live_sessions = self.projects.iter().map(|p| p.sessions.len()).sum();
         self.needs_you_count = self.needs_you.len();
         self.escalated = self.needs_you_count > ESCALATE_ABOVE;
@@ -1400,6 +1407,7 @@ pub fn glance(conn: &Connection, cfg: &Config, now: Timestamp) -> Result<Glance>
         as_of: now.to_string(),
         last_event_pos: last_event_pos(conn)?,
         live_sessions: live.len(),
+        branch_groups: branch_groups(conn, &projects)?,
         projects,
         needs_you: queue,
         needs_you_count: count,
