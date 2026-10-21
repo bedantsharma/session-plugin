@@ -114,9 +114,13 @@ export interface SessionRow {
   rank: number
 }
 
+/** A parent's status from its tasks, derived when read. */
+export type Rollup = 'todo' | 'in_progress' | 'done' | 'needs_attention'
+
 export interface MilestoneRow {
   id: string
   title: string
+  status: Rollup
   hill: 'uphill' | 'downhill' | null
   done_pct: number
   claimed_pct: number
@@ -128,6 +132,7 @@ export interface ProjectRow {
   repo_id: string
   name: string
   goal: NodeRef | null
+  goal_status: Rollup | null
   done_pct: number
   claimed_pct: number
   unestimated: number
@@ -157,6 +162,7 @@ export interface TreeNode {
   title: string
   intent: string | null
   status: string
+  rollup: Rollup | null
   hill: string | null
   stale: boolean
   owner_checked: boolean
@@ -202,6 +208,7 @@ export interface SessionDrill {
   units: UnitRow[]
   split: {
     on_task_s: number
+    requested_s: number
     drift_s: number
     unlabeled_s: number
     detours: { label: string; reason: string; secs: number }[]
@@ -252,6 +259,8 @@ export interface TaskDrill {
   }[]
   actors: { agent_type: string | null; model: string | null }[]
   retries: number
+  /** "Take back sign-off": the owner's newest verdict still in force. */
+  withdraw: ActionSpec | null
   usage: TaskUsage | null
   steps: { id: string; title: string; status: string; current: boolean }[]
   /** Actual ÷ estimate, once done. */

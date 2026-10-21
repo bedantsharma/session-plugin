@@ -7,6 +7,7 @@
 - **Unit (of work):** one round of an agent's work, from your prompt to the agent stopping.
 - **Active time:** time an agent actually worked, minus time waiting on you or on permission prompts.
 - **On task / detour / drift:** what a unit was. On task advances the task; a detour isn't the task but blocks it; drift does neither.
+- **Asked for (code: `requested`):** a unit or detour that isn't the task but that you asked for in the session ("also add a licence"). Never counted as drift or time away; the agent declares it, and you can relabel any unit.
 - **Tolerance band:** how much detour or drift time is normal before you're told (at least 15 min, or 20% of the task's estimate).
 - **Resume cue:** a one-line note an agent leaves when it sets work aside, saying exactly where to pick up.
 - **Needs you (queue):** things a session is blocked on until you act. The red count on every screen.
@@ -20,6 +21,8 @@
 - **Done% / claimed%:** share of estimated work verified at L2 or above / claimed but not yet verified.
 - **Exploring / executing (also called uphill / downhill, from hill charts):** a milestone with unknowns left (its % may change) / one where the path is clear (its % is reliable).
 - **Stuck:** a milestone whose progress hasn't moved over three sessions that worked on it.
+- **Take back sign-off (withdraw):** undoing your last verdict on a task — a sign-off, or a "broken" — so it goes back to where it was before. Only you can do it (`bridge-screen verify <task> --withdraw` or the button on the task page).
+- **Roll-up (milestone / goal status):** a milestone or the goal reads done, in progress, needs attention or to do, worked out from its tasks every time you look.
 - **Owner action:** anything you do from a screen or the CLI (answer a drift, sign off, resolve a leftover); recorded like everything else.
 - **Tokens:** the units of text a model reads and writes; what usage is billed in. Cached reads are cheap, cache writes cost a little more than plain input.
 - **Cost (per task, session, project):** tokens times the prices in your config, worked out when you look (never stored); "unknown" when a model has no price.

@@ -85,6 +85,43 @@ describe('desktop card', () => {
     await waitFor(() => expect(screen.getByText('● All clear')).toBeInTheDocument())
   })
 
+  it('"Make it a task" opens its own row with short fields, Create task and Cancel', async () => {
+    const host = new FakeHost()
+    host.replies = [
+      { content: [{ type: 'text', text: 'Detour D1 is now task 1.3.' }] },
+      { structuredContent: glance([]), _meta: { 'bridge-screen/nonce': 'n2' } },
+    ]
+    render(Card, { host })
+    host.push(result())
+    await screen.findByRole('button', { name: 'Make it a task' })
+    // Hidden until asked for.
+    expect(screen.queryByPlaceholderText('Under (e.g. 10)')).toBeNull()
+    expect(screen.queryByTestId('task-form')).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Make it a task' }))
+    const row = screen.getByTestId('task-form')
+    expect(screen.getByPlaceholderText('Under (e.g. 10)')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Task title')).toBeInTheDocument()
+    const create = screen.getByRole('button', { name: 'Create task' })
+    expect(create).toBeDisabled()
+    expect(row).toContainElement(screen.getByRole('button', { name: 'Cancel' }))
+    // Cancel closes it without sending anything.
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByTestId('task-form')).toBeNull()
+    expect(host.calls).toEqual([])
+    // Filled in, Create task sends the answer with both fields.
+    await userEvent.click(screen.getByRole('button', { name: 'Make it a task' }))
+    await userEvent.clear(screen.getByPlaceholderText('Under (e.g. 10)'))
+    await userEvent.type(screen.getByPlaceholderText('Under (e.g. 10)'), '1')
+    await userEvent.type(screen.getByPlaceholderText('Task title'), 'Fix the CI cache')
+    await userEvent.click(screen.getByRole('button', { name: 'Create task' }))
+    expect(host.calls[0][0]).toBe('owner_action')
+    expect(host.calls[0][1]).toMatchObject({
+      action: { kind: 'drift', answer: 'make_task', parent: '1', title: 'Fix the CI cache' },
+      nonce: 'n1',
+    })
+    await waitFor(() => expect(screen.queryByTestId('task-form')).toBeNull())
+  })
+
   it('shows a refusal without refreshing it away', async () => {
     const host = new FakeHost()
     host.replies = [{ isError: true, content: [{ type: 'text', text: 'already resolved: x' }] }]

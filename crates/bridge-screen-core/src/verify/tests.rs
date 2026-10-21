@@ -717,3 +717,140 @@ mod rerun_tests {
         );
     }
 }
+
+fn by_owner(id: &str, task: &str, level: i64) -> Value {
+    json!({"verif_id": id, "task_id": task, "level": level, "sha": "a", "files": [],
+           "evidence": "verified by the owner", "by": "owner"})
+}
+
+#[test]
+fn withdraw_restores_previous_status() {
+    let mut s = store();
+    let claim = |t: &str| json!({"task_id": t, "mode": "auto", "confidence": 0.9});
+    let done = |t: &str| json!({"task_id": t, "evidence": "done"});
+    script(
+        &mut s,
+        &[
+            // 1.1: tests passed (L2), then the owner's L4.
+            ("r", "s1", 10, "task_claimed", claim("1.1")),
+            ("r", "s1", 11, "claimed_done", done("1.1")),
+            (
+                "r",
+                "s1",
+                12,
+                "verified",
+                verified("v1", "1.1", 2, "a", &[]),
+            ),
+            ("r", "owner", 13, "verified", by_owner("v2", "1.1", 4)),
+            // 1.2: claimed done, then the owner's L4 straight away.
+            ("r", "s1", 14, "task_claimed", claim("1.2")),
+            ("r", "s1", 15, "claimed_done", done("1.2")),
+            ("r", "owner", 16, "verified", by_owner("v3", "1.2", 4)),
+            // 1.3: the owner's L4 with nothing before it, nobody holding it.
+            ("r", "owner", 17, "verified", by_owner("v4", "1.3", 4)),
+            // 1.4.1: held by the live session s1 (its last claim), the owner's L4.
+            ("r", "s1", 18, "task_claimed", claim("1.4.1")),
+            ("r", "owner", 19, "verified", by_owner("v5", "1.4.1", 4)),
+        ],
+    );
+    assert_eq!(status(&s, "r", "1.1"), NodeStatus::L4);
+    let line = withdraw(&mut s, "r", "1.1", None).unwrap();
+    assert!(
+        line.starts_with("Took back your sign-off on 1.1 T1.1"),
+        "{line}"
+    );
+    assert_eq!(status(&s, "r", "1.1"), NodeStatus::L2);
+    // A second withdraw finds nothing of the owner's left: stale, nothing recorded.
+    let before = crate::store::read_all(s.conn(), Some("r")).unwrap().len();
+    let err = withdraw(&mut s, "r", "1.1", None).unwrap_err();
+    assert!(matches!(err, crate::error::Error::Stale(_)), "{err}");
+    assert!(
+        err.to_string().contains("nothing to withdraw on 1.1"),
+        "{err}"
+    );
+    assert_eq!(
+        crate::store::read_all(s.conn(), Some("r")).unwrap().len(),
+        before
+    );
+
+    withdraw(&mut s, "r", "1.2", None).unwrap();
+    assert_eq!(status(&s, "r", "1.2"), NodeStatus::Claimed);
+    withdraw(&mut s, "r", "1.3", None).unwrap();
+    assert_eq!(status(&s, "r", "1.3"), NodeStatus::Todo);
+    withdraw(&mut s, "r", "1.4.1", None).unwrap();
+    assert_eq!(status(&s, "r", "1.4.1"), NodeStatus::Active);
+
+    // The owner's "broken" taken back: what it wiped counts again.
+    script(
+        &mut s,
+        &[(
+            "r",
+            "owner",
+            30,
+            "verification_failed",
+            json!({"task_id": "1.1", "level": 4, "evidence": "login breaks", "by": "owner"}),
+        )],
+    );
+    assert_eq!(status(&s, "r", "1.1"), NodeStatus::Failed);
+    let line = withdraw(&mut s, "r", "1.1", None).unwrap();
+    assert!(line.contains("\"broken\""), "{line}");
+    assert_eq!(status(&s, "r", "1.1"), NodeStatus::L2);
+    assert!(withdraw(&mut s, "r", "1.1", None).is_err());
+    let states: Vec<VerifState> = verifications(s.conn(), "r", "1.1")
+        .unwrap()
+        .iter()
+        .map(|v| v.state)
+        .collect();
+    assert_eq!(states, vec![VerifState::Current, VerifState::Withdrawn]);
+    // The forecast's history is never rewritten by a withdraw.
+    let n: i64 = s
+        .conn()
+        .query_row("SELECT count(*) FROM forecast_history", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 0);
+    // Rebuild gives the same views.
+    let dump = |s: &Store| {
+        let mut st = s
+            .conn()
+            .prepare("SELECT verif_id, state, failed_by, failed_from FROM verifications ORDER BY verif_id")
+            .unwrap();
+        let rows: Vec<(String, String, Option<String>, Option<String>)> = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let statuses: Vec<String> = ["1.1", "1.2", "1.3", "1.4.1"]
+            .iter()
+            .map(|t| status(s, "r", t).as_str().to_string())
+            .collect();
+        (rows, statuses)
+    };
+    let before = dump(&s);
+    s.rebuild().unwrap();
+    assert_eq!(dump(&s), before);
+}
+
+#[test]
+fn a_double_click_on_take_back_is_stale() {
+    let mut s = store();
+    script(
+        &mut s,
+        &[
+            ("r", "owner", 10, "verified", by_owner("v1", "1.1", 4)),
+            ("r", "owner", 11, "verified", by_owner("v2", "1.1", 4)),
+        ],
+    );
+    // The screen showed v2; the first click takes it back.
+    let w = withdrawable(s.conn(), "r", "1.1").unwrap().unwrap();
+    assert_eq!(w.verification_id, "v2");
+    withdraw(&mut s, "r", "1.1", Some("v2")).unwrap();
+    // The second click (same page, same v2) must not take back the older v1 too.
+    let before = crate::store::read_all(s.conn(), Some("r")).unwrap().len();
+    let err = withdraw(&mut s, "r", "1.1", Some("v2")).unwrap_err();
+    assert!(matches!(err, crate::error::Error::Stale(_)), "{err}");
+    assert_eq!(
+        crate::store::read_all(s.conn(), Some("r")).unwrap().len(),
+        before
+    );
+    assert_eq!(status(&s, "r", "1.1"), NodeStatus::L4);
+}

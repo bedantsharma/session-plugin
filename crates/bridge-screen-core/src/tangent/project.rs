@@ -33,6 +33,9 @@ pub struct DetourOpened {
     #[serde(default)]
     pub blocks: Option<String>,
     pub resume_cue: String,
+    /// The owner asked for this work (spec §7.1 "asked for"); absent in older events.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub requested: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -273,8 +276,9 @@ fn detour_opened(tx: &Transaction, event: &Event, d: &DetourOpened) -> Result<()
     )?;
     tx.execute(
         "INSERT OR IGNORE INTO detours (detour_id, session_id, repo_id, no, blocks_task, reason,
-                                        resume_cue, opened_at, opened_unit, parent_detour)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                                        resume_cue, opened_at, opened_unit, parent_detour,
+                                        requested)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             d.detour_id,
             sid,
@@ -285,7 +289,8 @@ fn detour_opened(tx: &Transaction, event: &Event, d: &DetourOpened) -> Result<()
             d.resume_cue,
             event.ts,
             open_unit,
-            parent
+            parent,
+            d.requested
         ],
     )?;
     set_current_detour(tx, sid, Some(&d.detour_id))?;
@@ -354,8 +359,18 @@ fn unit_labeled(tx: &Transaction, event: &Event, d: &UnitLabeled) -> Result<()> 
     )?;
     // Training signal for auto-tuning (spec §7.6): every owner label, and every agent
     // label the heuristic didn't already give (including the band where it can't tell).
-    let sample = d.source == LabelSource::Owner
-        || (d.source == LabelSource::Agent && d.heuristic != Some(d.label));
+    // Asked-for work is neither on-task nor drift evidence: never a sample.
+    let sample = d.label != Label::Requested
+        && (d.source == LabelSource::Owner
+            || (d.source == LabelSource::Agent && d.heuristic != Some(d.label)));
+    if d.label == Label::Requested {
+        // Relabelled as asked for (e.g. the owner correcting a "drift"): the unit's earlier
+        // samples were evidence about the wrong question; tuning forgets them.
+        tx.execute(
+            "DELETE FROM drift_samples WHERE repo_id = ?1 AND unit_ref = ?2",
+            params![event.repo_id, format!("{sid}:{}", d.unit_no)],
+        )?;
+    }
     if let Some(score) = score.filter(|_| sample) {
         tx.execute(
             "INSERT INTO drift_samples (repo_id, unit_ref, score, label, source, ts)
@@ -374,8 +389,9 @@ fn unit_labeled(tx: &Transaction, event: &Event, d: &UnitLabeled) -> Result<()> 
 }
 
 /// Away time is the run of most recent labelled units that are not on-task (unlabelled
-/// units are still waiting for their label and are skipped). Recomputed from the units,
-/// so a late label or a correction lands in the right place.
+/// units are still waiting for their label, and asked-for units are work the owner wanted:
+/// both are skipped, neither adding to nor ending the run). Recomputed from the units, so
+/// a late label or a correction lands in the right place.
 fn recompute_away(tx: &Transaction, session_id: &str) -> Result<()> {
     let mut stmt = tx.prepare_cached(
         "SELECT started_at, active_secs, label FROM units
@@ -387,7 +403,7 @@ fn recompute_away(tx: &Transaction, session_id: &str) -> Result<()> {
     while let Some(row) = rows.next()? {
         let label: Option<String> = row.get(2)?;
         match label.as_deref().and_then(Label::parse) {
-            None => {}
+            None | Some(Label::Requested) => {}
             Some(Label::OnTask) => break,
             Some(_) => {
                 away += row.get::<_, i64>(1)?;

@@ -268,7 +268,9 @@ Two rules decide what moves to the archive and is compressed:
 
 ### 7.1 Labels
 
-Every unit gets exactly one label: **on-task**, **detour** (not the task, but it blocks the task) or **drift** (neither advances nor blocks the task). Tangents are never blocked and never handed to another agent.
+Every unit gets exactly one label: **on-task**, **detour** (not the task, but it blocks the task), **requested** ("asked for": not the task, but the owner asked for it in this session) or **drift** (none of these). Tangents are never blocked and never handed to another agent.
+
+*Requested* (polish round, 2026-10-21): the agent declares it — `start_detour` with `requested_by_owner: true` labels the detour's units `requested` at Stop, and `label_unit`/`bridge-screen label` accept `requested` — or the owner relabels. It is never detected from prompt text (prompts are never stored). A requested unit adds no away time, never turns a session amber or red, raises no drift question or needs-you item, is never a tuning sample, and shows as "Asked for" on the screens.
 
 ### 7.2 Two layers
 
@@ -379,6 +381,8 @@ No LLM is called from hooks. Judgement comes from the agent itself, through `lab
 - **Unverified items** (L0–L1 older than one session) lead the next briefing. After two ignored nudges they appear in the needs-you queue.
 - `verification_failed` sets the task back to active and makes the session status unstable.
 
+- **Taking back a sign-off** (polish round): the owner's newest verdict still in force — a sign-off, or a "broken" while the task is still failed — can be withdrawn (`bridge-screen verify <task> --withdraw`, or "Take back sign-off" on the task drill-down; owner only, the agent's tools can't). `verification_withdrawn` marks the sign-off `withdrawn`, or restores what the "broken" wiped; the status is recomputed: the highest remaining level, else claimed, else active (a live session holds it) or to-do. A second withdraw is refused as stale. The forecast's history is not rewritten.
+
 ### 8.6 Decisions
 
 - **When they're captured:** at task completion (Stop note), before compaction (`PreCompact` sets a flag, and the next note asks), and at clean session end (with the handoff note).
@@ -416,6 +420,7 @@ No LLM is called from hooks. Judgement comes from the agent itself, through `lab
 - **One row per project:** done% bar in clay, a lighter clay segment for claimed%, hill pill (amber uphill, green downhill), P50 and P90 dates.
 - **One line per live session**, with a status light (green on task, amber detour or waiting, red needs you), the active task or detour, and the wait target.
 - **Branch groups:** same-named branches across repos, with a combined %.
+- **Parents show a roll-up** (polish round): a milestone and the goal read *done* when every live task under them passed its tests (L2+, the done% test), *needs attention* when one failed, *in progress* once any work started, else *to do*. Derived when read, never stored; adding a task to a finished milestone makes it *in progress* again. A done milestone shows no hill word.
 
 ### 10.2 Drill-downs (click to expand)
 

@@ -74,6 +74,8 @@ pub struct ProjectRow {
     pub repo_id: String,
     pub name: String,
     pub goal: Option<NodeRef>,
+    /// The goal's status from every task (derived, never stored); `None` without a goal.
+    pub goal_status: Option<crate::plan::Rollup>,
     pub done_pct: u32,
     pub claimed_pct: u32,
     pub unestimated: usize,
@@ -194,6 +196,8 @@ pub fn forecast_row_in(
 pub struct MilestoneRow {
     pub id: String,
     pub title: String,
+    /// From its tasks (derived, never stored): `done` once every task passed its tests.
+    pub status: crate::plan::Rollup,
     pub hill: Option<Hill>,
     pub done_pct: u32,
     pub claimed_pct: u32,
@@ -246,12 +250,12 @@ impl FlagKind {
     /// How the flag reads on a session line.
     pub fn text(self) -> &'static str {
         match self {
-            Self::CheckpointMissed => "checkpoint missed",
-            Self::HandoffUnstable => "handoff unstable",
-            Self::SquashFailed => "squash failed",
-            Self::CheckpointPending => "checkpoint pending",
-            Self::ReadbackPending => "read-back pending",
-            Self::VerifyPending => "verify pending",
+            Self::CheckpointMissed => "didn't save its work when asked",
+            Self::HandoffUnstable => "started from an unclear handoff",
+            Self::SquashFailed => "couldn't tidy its commits",
+            Self::CheckpointPending => "work not saved yet",
+            Self::ReadbackPending => "hasn't confirmed it understood the handoff yet",
+            Self::VerifyPending => "said done, not checked yet",
         }
     }
 }
@@ -509,31 +513,37 @@ fn cut(text: &str, max: usize) -> String {
     short
 }
 
-/// The navigator light in words — `on task`, `detour 25m`, `drift ⚠ 40m` — plus the
-/// current detour and a `⚠` when the agent disagreed with the heuristic.
-fn nav_text(conn: &Connection, s: &Session) -> Result<(String, bool)> {
+/// The navigator light in words — `on task`, `asked for`, `detour 25m`, `drift ⚠ 40m` —
+/// plus the current detour and a `⚠` when the agent disagreed with the heuristic. Also
+/// whether the last unit is drift and whether the open detour is one the owner asked for.
+fn nav_text(conn: &Connection, s: &Session) -> Result<(String, bool, bool)> {
     let last = session::units(conn, &s.session_id)?
         .into_iter()
         .rev()
         .find(|u| u.stopped_at.is_some());
     let away = s.away_secs / 60;
     let drifting = last.as_ref().is_some_and(|u| u.label == Some(Label::Drift));
+    let detour = match &s.current_detour {
+        Some(id) => tangent::get_detour(conn, id)?,
+        None => None,
+    };
+    let requested = detour.as_ref().is_some_and(|d| d.requested);
     let mut text = if s.current_detour.is_none() && drifting {
         format!("drift ⚠ {away}m")
+    } else if requested && s.away_secs == 0 {
+        "asked for".to_string()
     } else if s.current_detour.is_some() || s.away_secs > 0 {
         format!("detour {away}m")
     } else {
         "on task".to_string()
     };
-    if let Some(id) = &s.current_detour
-        && let Some(d) = tangent::get_detour(conn, id)?
-    {
+    if let Some(d) = &detour {
         let _ = write!(text, " · {} \"{}\"", d.label(), cut(&d.reason, 30));
     }
     if !drifting && last.is_some_and(|u| u.disagreement) {
         text.push_str(" ⚠");
     }
-    Ok((text, drifting))
+    Ok((text, drifting, requested))
 }
 
 /// A checkpoint was asked for and missed, or the briefing found the session unstable.
@@ -615,7 +625,10 @@ struct Facts {
     nav: String,
     drifting: bool,
     task: Option<NodeRef>,
+    /// An open detour the owner didn't ask for (asked-for work raises no alarm).
     has_detour: bool,
+    /// The open detour is work the owner asked for.
+    requested: bool,
     /// An open question: (source, since).
     question: Option<(String, String)>,
     /// A permission prompt or a form blocks the session (Claude idle at the prompt
@@ -627,7 +640,7 @@ struct Facts {
 }
 
 fn facts(conn: &Connection, s: &Session) -> Result<Facts> {
-    let (nav, drifting) = nav_text(conn, s)?;
+    let (nav, drifting, requested) = nav_text(conn, s)?;
     let task = match &s.active_task {
         Some(id) => Some(node_ref(conn, &s.repo_id, id)?),
         None => None,
@@ -641,12 +654,25 @@ fn facts(conn: &Connection, s: &Session) -> Result<Facts> {
         nav,
         drifting,
         task,
-        has_detour: s.current_detour.is_some(),
+        has_detour: s.current_detour.is_some() && !requested,
+        requested,
         question: open_question(conn, &s.session_id)?,
         blocking_wait: wait.filter(|(kind, _)| kind != "idle_prompt"),
         red,
         red_open: red && !drift_answered(conn, s)?,
     })
+}
+
+/// `40 minutes`, `3 hours`, `2 days`.
+fn ago_words(secs: i64) -> String {
+    let (n, unit) = if secs < 3600 {
+        (secs / 60, "minute")
+    } else if secs < 86_400 {
+        (secs / 3600, "hour")
+    } else {
+        (secs / 86_400, "day")
+    };
+    format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
 }
 
 /// A drift-red item's title: "b1 · far off its task (40 min)", the time away when known.
@@ -704,7 +730,11 @@ fn session_items(
             format!("{}{on_task}", f.nav),
             since.as_deref(),
         );
-        red.actions = drift_actions(&s.session_id, f.has_detour, s.active_task.as_deref());
+        red.actions = drift_actions(
+            &s.session_id,
+            s.current_detour.is_some(),
+            s.active_task.as_deref(),
+        );
         items.push(red);
     }
     let ago = |since: &str| age(now, Some(since)).unwrap_or(0) / 60;
@@ -741,6 +771,8 @@ fn looks(s: &Session, f: &Facts, rest: Option<&Rest>) -> (Light, &'static str, &
             (Light::Amber, "drift")
         } else if f.has_detour || s.away_secs > 0 || f.red {
             (Light::Amber, "detour")
+        } else if f.requested {
+            (Light::Green, "asked for")
         } else {
             (Light::Green, "on task")
         }
@@ -873,8 +905,8 @@ fn drift_actions(session: &str, has_detour: bool, task: Option<&str>) -> Vec<Act
             *parent = task.and_then(|t| t.rsplit_once('.').map(|(p, _)| p.to_string()));
         }
         make.inputs = vec![
-            input("parent", "parent (milestone or task id)", true),
-            input("title", "title", true),
+            input("parent", "Under (e.g. 10)", true),
+            input("title", "Task title", true),
         ];
         out.push(make);
     }
@@ -901,6 +933,10 @@ fn verify_items(
             .query_row(params![repo_id, task], |r| r.get(0))
             .optional()?;
         let level = verify::current_level(conn, repo_id, &task)?;
+        let claimed = crate::handoff::latest_claim(conn, repo_id, &task)?
+            .and_then(|c| age(now, Some(&c.ts)))
+            .map(|secs| format!(" {} ago", ago_words(secs)))
+            .unwrap_or_default();
         let node = NodeRef {
             id: task.clone(),
             title,
@@ -921,9 +957,14 @@ fn verify_items(
             repo_id: repo_id.to_string(),
             repo_name: repo_name.to_string(),
             session_id: None,
-            title: format!("Verify {}", node_text(&node)),
+            title: format!("Check {}", node_text(&node)),
             detail: format!(
-                "claimed done (L{level}), nudged twice without a check · does it work?"
+                "The agent said it was done{claimed}{} and nobody has checked it. Check it, or ask the agent to.",
+                if level >= 1 {
+                    " (the code is there; tests not run)"
+                } else {
+                    ""
+                }
             ),
             task: Some(node),
             files: Vec::new(),
@@ -1001,11 +1042,18 @@ fn leftover_items(
             session_id: Some(from.clone()),
             task,
             title: format!(
-                "S {} left {n} uncommitted file{}",
+                "S {} stopped with {n} unsaved file{}",
                 short(&from),
                 if n == 1 { "" } else { "s" }
             ),
-            detail: format!("suggested: {} · in {wt}{on}", suggested.as_str()),
+            detail: format!(
+                "suggested: {} · in {wt}{on}",
+                match suggested {
+                    LeftoverAction::Adopt => "adopt (commit it)",
+                    LeftoverAction::Resume => "resume (carry on with it)",
+                    LeftoverAction::Undo => "undo (put it aside, recoverable)",
+                }
+            ),
             files,
             actions: vec![
                 button(
@@ -1210,6 +1258,7 @@ fn stuck_for(
 }
 
 fn milestones(conn: &Connection, repo_id: &str, tree: &[PlanNode]) -> Result<Vec<MilestoneRow>> {
+    let rolled = crate::plan::rollups(tree);
     let mut out = Vec::new();
     for m in tree.iter().filter(|n| n.kind == NodeKind::Milestone) {
         let under = descendants(tree, &m.id);
@@ -1218,6 +1267,10 @@ fn milestones(conn: &Connection, repo_id: &str, tree: &[PlanNode]) -> Result<Vec
         out.push(MilestoneRow {
             id: m.id.clone(),
             title: m.title.clone(),
+            status: rolled
+                .get(&m.id)
+                .copied()
+                .unwrap_or(crate::plan::Rollup::Todo),
             hill: m.hill,
             done_pct,
             claimed_pct,
@@ -1282,10 +1335,17 @@ pub fn glance(conn: &Connection, cfg: &Config, now: Timestamp) -> Result<Glance>
             Some(_) => Some(forecast_row(conn, &repo_id, now)?),
             None => None,
         };
+        let goal_status = goal.as_ref().map(|g| {
+            crate::plan::rollups(&tree)
+                .get(&g.id)
+                .copied()
+                .unwrap_or(crate::plan::Rollup::Todo)
+        });
         projects.push(ProjectRow {
             repo_id: repo_id.clone(),
             name,
             goal,
+            goal_status,
             done_pct: p.done_pct,
             claimed_pct: p.claimed_pct,
             unestimated: p.unestimated,

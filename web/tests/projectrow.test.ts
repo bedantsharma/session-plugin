@@ -24,10 +24,9 @@ describe('ProjectRow', () => {
     const exploring = container.querySelector('[data-milestone="1"]')!
     expect(exploring).toHaveTextContent('exploring')
     expect(exploring).not.toHaveTextContent('uphill')
-    expect(exploring.querySelector('[title]')).toHaveAttribute(
-      'title',
-      'Unknowns remain — this % may still change',
-    )
+    const chip = exploring.querySelector('[aria-describedby]')!
+    expect(chip).toHaveAttribute('tabindex', '0')
+    expect(chip).toHaveAccessibleDescription('Unknowns remain — this % may still change')
     expect(screen.getByTestId('exploring-pct').className).toContain('text-muted')
     expect(exploring).toHaveTextContent('stuck · 3 sessions')
     const executing = container.querySelector('[data-milestone="2"]')!
@@ -40,6 +39,20 @@ describe('ProjectRow', () => {
     p.milestones[1] = { ...p.milestones[1], done_pct: 100 }
     const { container } = render(ProjectRow, { project: p })
     expect(container.querySelector('[data-milestone="2"]')).not.toHaveTextContent('executing')
+    expect(screen.getByTestId('progress-caption')).toHaveTextContent('1 of 2 milestones complete')
+  })
+
+  it('a milestone whose tasks all passed reads done, with no hill; so does the goal', () => {
+    const p = project({ goal_status: 'done' })
+    p.milestones[0] = { ...p.milestones[0], status: 'done', done_pct: 0 }
+    p.milestones[1] = { ...p.milestones[1], status: 'needs_attention' }
+    const { container } = render(ProjectRow, { project: p })
+    const m1 = container.querySelector('[data-milestone="1"]')!
+    expect(m1).toHaveTextContent('done')
+    expect(m1).not.toHaveTextContent('exploring')
+    expect(m1).not.toHaveTextContent('to do')
+    expect(container.querySelector('[data-milestone="2"]')).toHaveTextContent('needs attention')
+    expect(screen.getByText('Online shop').parentElement ?? document.body).toHaveTextContent('done')
     expect(screen.getByTestId('progress-caption')).toHaveTextContent('1 of 2 milestones complete')
   })
 

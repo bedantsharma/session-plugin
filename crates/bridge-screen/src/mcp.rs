@@ -147,6 +147,10 @@ pub struct StartDetourInput {
     /// The task this detour blocks; defaults to your active task.
     #[serde(default)]
     pub blocks: Option<String>,
+    /// true when the owner asked for this work in this session (e.g. "also add a
+    /// licence"): it is then never counted as drift or time away from the task.
+    #[serde(default)]
+    pub requested_by_owner: bool,
 }
 
 /// Close a detour and get the resume cue of the work it suspended.
@@ -177,7 +181,8 @@ pub struct ResumeInput {
 #[serde(deny_unknown_fields)]
 pub struct LabelUnitInput {
     /// "on_task" if it advanced your task, "detour" if it wasn't the task but blocked it,
-    /// "drift" if it did neither.
+    /// "requested" if it wasn't the task but the owner asked for it in this session,
+    /// "drift" if it did none of these.
     pub label: Label,
     /// One line on why.
     pub why: String,
@@ -384,6 +389,8 @@ impl Bridge {
 
     fn open(&self) -> Result<Store, String> {
         self.home.ensure().map_err(msg)?;
+        // A newer data format (bridge-screen upgraded while this session was open) comes
+        // back as the tool's result text, telling the agent to start a new session.
         Store::open(&self.home.db_path()).map_err(msg)
     }
 
@@ -493,7 +500,7 @@ impl Bridge {
     }
 
     #[tool(
-        description = "Open a detour before tangent work that isn't your task but blocks it (a broken build, a missing dependency). Give a one-line reason and a resume_cue: the next action on the work you are suspending and the file or test it concerns. Close it with close_detour when done."
+        description = "Open a detour before tangent work that isn't your task but blocks it (a broken build, a missing dependency), or that the owner asked for in this session (set requested_by_owner: true; it is then never drift). Give a one-line reason and a resume_cue: the next action on the work you are suspending and the file or test it concerns. Close it with close_detour when done."
     )]
     async fn start_detour(
         &self,
@@ -520,7 +527,7 @@ impl Bridge {
     }
 
     #[tool(
-        description = "Label your last unit of work when bridge-screen asks: on_task, detour or drift, with a one-line why. Be honest: drift is information for the owner, not blame. Calling it again corrects the label."
+        description = "Label your last unit of work when bridge-screen asks: on_task, detour, requested (the owner asked for it in this session) or drift, with a one-line why. Be honest: drift is information for the owner, not blame. Calling it again corrects the label."
     )]
     async fn label_unit(
         &self,
@@ -861,6 +868,7 @@ impl Bridge {
                 reason: input.reason.clone(),
                 resume_cue: input.resume_cue.clone(),
                 blocks: input.blocks.clone(),
+                requested: input.requested_by_owner,
                 actor: Actor::default(),
             },
         )
@@ -1081,6 +1089,14 @@ impl Bridge {
 
     fn do_owner_action(&self, args: &Args<OwnerActionInput>) -> Result<String, String> {
         let input = args.parsed.as_ref().map_err(Clone::clone)?;
+        // Taking a sign-off back is the owner's alone: the CLI or the dashboard, never
+        // through the agent's server (spec §8.5).
+        if matches!(input.action, OwnerAction::Withdraw { .. }) {
+            return Err(
+                "refused: taking back a sign-off is done on the dashboard or with `bridge-screen verify <task> --withdraw`; nothing was recorded"
+                    .into(),
+            );
+        }
         if !self.nonce_valid(&input.nonce) {
             return Err(
                 "refused: owner_action answers clicks on the progress card only (its nonce is missing, wrong or expired); nothing was recorded"
@@ -1355,16 +1371,47 @@ fn agent_status(
         let what = tangent::item_display(conn, &s.repo_id, &item)?;
         let _ = writeln!(out, "Suspended: {what} — on return: {}", item.resume_cue);
     }
+    plan_status(conn, s, &mut out)?;
+    Ok(out)
+}
+
+/// The goal with its rolled-up status, the milestones, the forecast and what's next.
+fn plan_status(
+    conn: &rusqlite::Connection,
+    s: &Session,
+    out: &mut String,
+) -> bridge_screen_core::error::Result<()> {
     match get_node(conn, &s.repo_id, "G")?.filter(|g| g.status != NodeStatus::Dropped) {
         Some(goal) => {
-            let _ = writeln!(out, "Goal: {}", goal.title);
+            let tree = load_tree(conn, &s.repo_id, false)?;
+            let rolled = bridge_screen_core::plan::rollups(&tree);
+            let _ = writeln!(
+                out,
+                "Goal: {} ({})",
+                goal.title,
+                crate::words::status(bridge_screen_core::plan::shown_status(&goal, &rolled))
+            );
+            let milestones: Vec<String> = tree
+                .iter()
+                .filter(|n| n.kind == NodeKind::Milestone)
+                .map(|n| {
+                    format!(
+                        "{} {}",
+                        n.id,
+                        crate::words::status(bridge_screen_core::plan::shown_status(n, &rolled))
+                    )
+                })
+                .collect();
+            if !milestones.is_empty() {
+                let _ = writeln!(out, "Milestones: {}", milestones.join(" · "));
+            }
             let f = view::forecast_row(conn, &s.repo_id, jiff::Timestamp::now())?;
             if f.compact.is_some() {
                 let _ = writeln!(out, "Forecast: {} ({})", f.text, f.basis);
             } else {
                 let _ = writeln!(out, "Forecast: {}", f.text);
             }
-            let next: Vec<String> = load_tree(conn, &s.repo_id, false)?
+            let next: Vec<String> = tree
                 .into_iter()
                 .filter(|n| {
                     matches!(n.kind, NodeKind::Task | NodeKind::Subtask)
@@ -1381,7 +1428,7 @@ fn agent_status(
         }
         None => out.push_str("No plan yet — ask the owner whether to create one."),
     }
-    Ok(out)
+    Ok(())
 }
 
 /// `Cost so far: this session $1.20 (340k tokens) · task 2.3 $0.80 (200k tokens)`.

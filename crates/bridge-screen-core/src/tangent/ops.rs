@@ -109,6 +109,9 @@ pub struct StartRequest {
     pub resume_cue: String,
     /// Defaults to the session's active task.
     pub blocks: Option<String>,
+    /// The owner asked for this work in the session: its units are labelled `requested`,
+    /// never drift, and its time is never away time.
+    pub requested: bool,
     pub actor: Actor,
 }
 
@@ -149,6 +152,7 @@ pub fn start_detour(store: &mut Store, req: &StartRequest) -> Result<Started> {
                 reason,
                 blocks: blocks.clone(),
                 resume_cue: cue.clone(),
+                requested: req.requested,
             },
             blocks.as_deref(),
         )?;

@@ -16,7 +16,7 @@ pub enum Error {
     #[error("git failed: {0}")]
     Git(String),
     #[error(
-        "database schema version {found} is newer than this bridge-screen supports ({supported}); upgrade bridge-screen"
+        "bridge-screen was updated while this session was open. Start a new Claude session to keep using it (data format {found}; this session's copy understands up to {supported})."
     )]
     SchemaTooNew { found: i64, supported: i64 },
     #[error("could not find a home directory; set BRIDGE_SCREEN_HOME")]

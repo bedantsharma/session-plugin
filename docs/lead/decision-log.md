@@ -86,3 +86,33 @@ Choices someone will later ask "why?" about. Newest last. Entries are never dele
 **Context:** Prices change and defaults can be wrong; stored dollar amounts would freeze mistakes.
 **Decision:** Only token counts are recorded; every screen prices them from `config.toml` at read time. Defaults come from the claude-api pricing reference (taken 2026-10-21); a model with no price shows "unknown", never $0. Haiku 5.5 is left out (its price changes above 100K-token prompts), and fast-mode replies are kept apart as "<model> (fast)" with no default price (the reference gives no fast cache rates), so neither is ever shown at a wrong rate.
 **Consequences:** Fixing a price fixes all past costs. Costs for unpriced models (Haiku 5.5, fast mode) stay "unknown" — or make a total read "≥ $X" — until you add a price.
+
+## #18 Asked-for work is declared, not guessed — Accepted — 2026-10-21
+**Context:** Work you asked for (a licence, docs) was flagged as drift and turned sessions red three times in one day. bridge-screen never stores your prompts, so it can't read what you asked for.
+**Decision:** A new label, "asked for" (`requested`): the agent declares it when opening the detour (`requested_by_owner`) or labels the unit; you can relabel any unit. It is never drift, never time away, never a tuning sample.
+**Consequences:** No more false alarms for asked-for work, as long as agents declare it honestly; real drift right after still turns red.
+
+## #19 Milestone and goal status are worked out, never stored — Accepted — 2026-10-21
+**Context:** Finished milestones and the goal kept showing "to do", because only tasks get a status.
+**Decision:** Their status is computed from their tasks each time a screen reads it (done when every task passed its tests; needs attention if one failed). Nothing new is written to the plan.
+**Consequences:** Adding a task to a finished milestone makes it "in progress" again by itself; a rebuild has nothing extra to reproduce.
+
+## #20 Only you can take back a sign-off — Accepted — 2026-10-21
+**Context:** A wrong ✓ couldn't be undone; "broken" is a different claim.
+**Decision:** `bridge-screen verify <task> --withdraw` and the task page's "Take back sign-off" button take back your newest verdict (a sign-off, or a "broken" while the task is still failed) and restore the state before it exactly. The agent's tools refuse it, even with a card code. The forecast history isn't rewritten.
+**Consequences:** One wrong click is recoverable; each withdraw is recorded like any other action. A task nobody holds goes back to "to do" (before, the status was left as it was).
+
+## #21 Plain words on screens; one list of banned codes — Accepted — 2026-10-21
+**Context:** Screens used bridge-screen's own terms ("checkpoint missed", "L1", "read-back pending").
+**Decision:** Every owner-facing message was rewritten (`docs/lead/message-audit.md`). Codes stay inside the program; a single list (`web/src/lib/jargon.json`) is tested against the glance, `status`, `watch`, the dashboard and the card. The raw History page is exempt on purpose. The built bundle itself isn't scanned (its code holds the codes as map keys); the tests check what the components render instead.
+**Consequences:** New screen text that leaks a code fails the tests.
+
+## #22 A replaced transcript is recognised by its first bytes — Superseded by #23 — 2026-10-21
+**Context:** A transcript replaced by one as long or longer kept its old reading position, so new usage was missed.
+**Decision:** The reading position is stored with the file's identity: its inode and a short hash (8 bytes of SHA-256) of its first 256 bytes or fewer. A different identity means start again from the top; message ids keep anything from counting twice. The hash can't be turned back into text.
+**Consequences:** One extra 256-byte read per transcript per stop; a file under 256 bytes that is still growing is re-read from the top (cheap, no double counting).
+
+## #23 A replaced transcript is recognised without reading it — Accepted — 2026-10-21
+**Context:** #22 hashed the first 256 bytes of each transcript. Those bytes are message text, and the rule is that bridge-screen reads only ids, model names, token counts and timestamps from a transcript — a hash still means reading the text.
+**Decision:** The file's identity comes from its metadata only: device, inode and creation time (where the file system records one). A file deleted and written again, or renamed over, gets a new identity and is read again from the top; message ids keep anything from counting twice.
+**Consequences:** No transcript text is read for this. A file rewritten in place (same file, new contents) keeps its identity; it is still caught when it gets shorter, but not when it is rewritten as long or longer. Claude Code only appends to transcripts, so this isn't expected in practice. No extra read per stop.

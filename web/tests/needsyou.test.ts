@@ -92,7 +92,7 @@ describe('NeedsYou', () => {
     expect(act).not.toHaveBeenCalled()
     const dialog = await screen.findByRole('dialog')
     expect(dialog).toBeInTheDocument()
-    await userEvent.type(screen.getByLabelText('title'), 'Fix the CI cache')
+    await userEvent.type(screen.getByLabelText('Task title'), 'Fix the CI cache')
     await userEvent.click(screen.getAllByRole('button', { name: 'Make it a task' }).at(-1)!)
     expect(act).toHaveBeenCalledWith({
       kind: 'drift',

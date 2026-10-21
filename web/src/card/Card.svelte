@@ -12,7 +12,7 @@
   import { changed } from '$lib/changed'
   import { hhmm } from '$lib/format'
   import { motion } from '$lib/motion.svelte'
-  import { hillWord, sessionWord } from '$lib/words'
+  import { milestoneHill, rollupWord, sessionWord } from '$lib/words'
   import type { ActionSpec, Glance, NeedsYou } from '$lib/types'
   import { applyTheme, type CardHost, type ToolResult } from './host'
 
@@ -29,6 +29,13 @@
   let refreshing = $state(false)
   let root = $state<HTMLElement | null>(null)
   let openMilestones = $state<Record<string, boolean>>({})
+  /** Per item: the action whose form is open (one that needs inputs, e.g. "Make it a task"). */
+  let form = $state<Record<string, string | null>>({})
+
+  /** An action that needs answers first opens its own row instead of sending. */
+  const needsForm = (spec: ActionSpec) => spec.inputs.some((i) => i.required)
+  const submitLabel = (spec: ActionSpec) =>
+    spec.action.answer === 'make_task' ? 'Create task' : spec.label
 
   function take(r: ToolResult) {
     if (r.structuredContent && typeof r.structuredContent === 'object') {
@@ -66,7 +73,10 @@
       })
       const text = r.content?.find((c) => c.type === 'text')?.text ?? ''
       messages[item.id] = { ok: !r.isError, text }
-      if (!r.isError) await refresh()
+      if (!r.isError) {
+        form[item.id] = null
+        await refresh()
+      }
     } catch (e) {
       messages[item.id] = { ok: false, text: (e as Error).message }
     } finally {
@@ -82,7 +92,7 @@
 
   // Tell the host how big the card is after each render.
   $effect(() => {
-    void [glance, messages, pending, openMilestones]
+    void [glance, messages, pending, openMilestones, form]
     void tick().then(() => {
       if (root) host.sizeChanged(Math.ceil(root.scrollWidth), Math.ceil(root.scrollHeight))
     })
@@ -153,26 +163,64 @@
               <div class="line-clamp-2 text-xs text-muted">{item.detail}</div>
             </div>
             {#if item.actions.length}
+              {@const open = item.actions.find((a) => a.label === form[item.id])}
               <div class="flex flex-wrap items-center gap-2">
                 {#each item.actions as spec (spec.label)}
-                  {#each spec.inputs as inp (inp.name)}
+                  {#if needsForm(spec)}
+                    <ActionButton
+                      label={spec.label}
+                      tone={spec.tone}
+                      compact
+                      disabled={!!pending[item.id] || open === spec}
+                      onclick={() => (form[item.id] = spec.label)}
+                    />
+                  {:else}
+                    {#each spec.inputs as inp (inp.name)}
+                      <input
+                        class="h-8 w-40 min-w-0 rounded-lg border border-edge bg-surface px-2 text-sm"
+                        placeholder={inp.label}
+                        aria-label={`${spec.label}: ${inp.label}`}
+                        bind:value={inputs[`${item.id}:${inp.name}`]}
+                      />
+                    {/each}
+                    <ActionButton
+                      label={spec.label}
+                      tone={spec.tone}
+                      compact
+                      disabled={!!pending[item.id]}
+                      pending={pending[item.id] === spec.label}
+                      onclick={() => click(item, spec)}
+                    />
+                  {/if}
+                {/each}
+              </div>
+              {#if open}
+                <div class="flex w-full flex-wrap items-center gap-2" data-testid="task-form">
+                  {#each open.inputs as inp (inp.name)}
                     <input
-                      class="h-8 w-40 rounded-lg border border-edge bg-surface px-2 text-sm"
+                      class="h-8 min-w-32 flex-1 rounded-lg border border-edge bg-surface px-2 text-sm"
                       placeholder={inp.label}
-                      aria-label={`${spec.label}: ${inp.label}`}
+                      aria-label={`${open.label}: ${inp.label}`}
                       bind:value={inputs[`${item.id}:${inp.name}`]}
                     />
                   {/each}
                   <ActionButton
-                    label={spec.label}
-                    tone={spec.tone}
+                    label={submitLabel(open)}
+                    tone="primary"
                     compact
-                    disabled={!!pending[item.id] || missing(item, spec)}
-                    pending={pending[item.id] === spec.label}
-                    onclick={() => click(item, spec)}
+                    disabled={!!pending[item.id] || missing(item, open)}
+                    pending={pending[item.id] === open.label}
+                    onclick={() => click(item, open)}
                   />
-                {/each}
-              </div>
+                  <ActionButton
+                    label="Cancel"
+                    tone="neutral"
+                    compact
+                    disabled={!!pending[item.id]}
+                    onclick={() => (form[item.id] = null)}
+                  />
+                </div>
+              {/if}
             {:else if item.respond_in}
               <div class="text-xs text-muted">
                 answer in <span class="font-mono">S {item.respond_in.session_short}</span>
@@ -234,7 +282,8 @@
             {#if openMilestones[p.repo_id]}
               <ul class="grid grid-cols-[2rem_minmax(0,1fr)_5rem_2.5rem_auto] gap-x-2 pb-2">
                 {#each p.milestones as m (m.id)}
-                  {@const hill = hillWord(m.hill, m.done_pct)}
+                  {@const hill = milestoneHill(m)}
+                  {@const roll = rollupWord(m.status)}
                   <li
                     class="col-span-5 grid min-h-8 grid-cols-subgrid items-center text-xs"
                     data-milestone={m.id}
@@ -251,6 +300,7 @@
                       >{m.done_pct}%</span
                     >
                     <span class="flex gap-1">
+                      {#if roll}<Chip tone={roll.tone} icon={roll.icon} text={roll.text} />{/if}
                       {#if hill}<Chip
                           tone={hill.tone}
                           icon={hill.icon}

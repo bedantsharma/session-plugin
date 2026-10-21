@@ -282,6 +282,7 @@ fn detour_close_and_task_switch_make_a_checkpoint_due() {
         reason: "CI cache is broken".into(),
         resume_cue: "rerun the login test".into(),
         blocks: None,
+        requested: false,
         actor: Actor::default(),
     };
     tangent::start_detour(&mut store(&env), &started).unwrap();

@@ -158,7 +158,7 @@ fn sessions_grouped_by_project_needs_you_first() {
 bridge-screen · 4 live sessions · 2 projects
 api  no plan yet
   S apis00  idle      (no task)             2 units · 2m · on task
-shop  goal: Online shop  · done 0% · claimed 0% · 2 unestimated · forecast needs 3 more finished tasks
+shop  goal: Online shop  · done 0% · claimed 0% · 2 tasks without an estimate · forecast needs 3 more finished tasks
   S work00  working   2 Login form          3 units · 18m · on task
   S idle00  idle      (no task)             0 units · 0m · on task
   S wait00  idle      (no task)             1 unit  · 2m · on task
@@ -365,9 +365,9 @@ fn checkpoints_read_back_and_leftovers_show() {
         "\
 bridge-screen · 3 live sessions · 1 project
 shop  no plan yet
-  leftovers: 3 open (1 report-only)
-  S miss0c  idle      (no task)             0 units · 0m · on task · checkpoint missed
-  S pend0b  idle      (no task)             0 units · 0m · on task · checkpoint pending · read-back pending
+  unsaved work from ended sessions: 3 files (1 of them for information only)
+  S miss0c  idle      (no task)             0 units · 0m · on task · didn't save its work when asked
+  S pend0b  idle      (no task)             0 units · 0m · on task · work not saved yet · hasn't confirmed it understood the handoff yet
   S ok000a  idle      (no task)             0 units · 0m · on task
 "
     );
@@ -488,13 +488,13 @@ fn status_from_glance_matches_every_kind() {
 6 need you
 bridge-screen · 5 live sessions · 1 project
 shop  goal: Online shop  · done 0% · claimed 100% · forecast needs 3 more finished tasks
-  leftovers: 1 open (0 report-only)
+  unsaved work from ended sessions: 1 file (0 of them for information only)
   S red00a  needs you (no task)             1 unit  · 40m · drift ⚠ 40m
   S ask0ff  needs you (no task)             1 unit  · 1m · on task · asked you a question
   S perm0c  needs you (no task)             0 units · 0m · on task
   S perm0b  needs you (no task)             0 units · 0m · on task
-  needs you: verify 1 Cart — bridge-screen verify 1 (or --broken \"…\")
-  S ver00d  idle      (no task)             0 units · 0m · on task · verify pending: 1
+  needs you: check 1 Cart — then `bridge-screen verify 1` (or --broken \"what's wrong\")
+  S ver00d  idle      (no task)             0 units · 0m · on task · said done, not checked yet: 1
 "
     );
 }

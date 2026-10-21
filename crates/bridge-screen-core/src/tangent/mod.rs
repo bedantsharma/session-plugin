@@ -4,8 +4,9 @@
 //! A **detour** is work that isn't the task but blocks it. Opening one suspends the current
 //! item (the task, or the detour it was opened inside) with a resume cue written at that
 //! moment; any suspended item can be resumed later, in any order. Every unit gets one
-//! **label** — on-task, detour or drift — and the time of consecutive units that are not
-//! on-task is the session's **away time**.
+//! **label** — on-task, detour, drift or requested ("asked for": the owner asked for it) —
+//! and the time of consecutive units that are neither on-task nor asked for is the
+//! session's **away time**.
 
 pub mod ops;
 pub mod project;
@@ -40,6 +41,10 @@ pub enum Label {
     Detour,
     /// Neither advances nor blocks the task.
     Drift,
+    /// Not this task, but the owner asked for it in this session: never drift, never away
+    /// time, never a tuning sample.
+    #[serde(alias = "asked", alias = "asked-for", alias = "asked_for")]
+    Requested,
 }
 
 impl Label {
@@ -48,15 +53,17 @@ impl Label {
             Self::OnTask => "on_task",
             Self::Detour => "detour",
             Self::Drift => "drift",
+            Self::Requested => "requested",
         }
     }
 
-    /// How people write it: `on-task`, `detour`, `drift`.
+    /// How people write it: `on-task`, `detour`, `drift`, `requested`.
     pub fn display(self) -> &'static str {
         match self {
             Self::OnTask => "on-task",
             Self::Detour => "detour",
             Self::Drift => "drift",
+            Self::Requested => "requested",
         }
     }
 
@@ -65,6 +72,7 @@ impl Label {
             "on_task" | "on-task" => Some(Self::OnTask),
             "detour" => Some(Self::Detour),
             "drift" => Some(Self::Drift),
+            "requested" | "asked" | "asked-for" | "asked_for" => Some(Self::Requested),
             _ => None,
         }
     }
@@ -237,6 +245,9 @@ pub struct Detour {
     pub outcome: Option<String>,
     pub active_secs: i64,
     pub promoted_task: Option<String>,
+    /// The owner asked for this work in the session (`start_detour` with
+    /// `requested_by_owner`): its time is never away time and its units never drift.
+    pub requested: bool,
 }
 
 impl Detour {
@@ -268,7 +279,8 @@ pub struct Focus {
 }
 
 const DETOUR_COLUMNS: &str = "detour_id, session_id, repo_id, no, blocks_task, reason, resume_cue,
-     opened_at, opened_unit, parent_detour, closed_at, outcome, active_secs, promoted_task";
+     opened_at, opened_unit, parent_detour, closed_at, outcome, active_secs, promoted_task,
+     requested";
 
 const ITEM_COLUMNS: &str =
     "item_id, session_id, kind, ref_id, resume_cue, by_detour, suspended_at, resumed_at";
@@ -289,6 +301,7 @@ fn read_detour(r: &Row) -> rusqlite::Result<Detour> {
         outcome: r.get(11)?,
         active_secs: r.get(12)?,
         promoted_task: r.get(13)?,
+        requested: r.get(14)?,
     })
 }
 

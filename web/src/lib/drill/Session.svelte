@@ -29,7 +29,11 @@
   const detourS = $derived(m.data ? m.data.split.detours.reduce((a, d) => a + d.secs, 0) : 0)
   const total = $derived(
     m.data
-      ? m.data.split.on_task_s + m.data.split.drift_s + m.data.split.unlabeled_s + detourS || 1
+      ? m.data.split.on_task_s +
+          m.data.split.requested_s +
+          m.data.split.drift_s +
+          m.data.split.unlabeled_s +
+          detourS || 1
       : 1,
   )
   const active = $derived(m.data ? m.data.units.reduce((a, u) => a + u.active_s, 0) : 0)
@@ -80,9 +84,10 @@
       <div
         class="flex h-2.5 w-full overflow-hidden rounded-full bg-line"
         role="img"
-        aria-label={`On task ${mins(d.split.on_task_s)}, detour ${mins(detourS)}, drift ${mins(d.split.drift_s)}, unlabelled ${mins(d.split.unlabeled_s)}`}
+        aria-label={`On task ${mins(d.split.on_task_s)}, asked for ${mins(d.split.requested_s)}, detour ${mins(detourS)}, drift ${mins(d.split.drift_s)}, unlabelled ${mins(d.split.unlabeled_s)}`}
       >
         <div class="bar-fill h-full bg-ok" style:width={pct(d.split.on_task_s)}></div>
+        <div class="bar-fill h-full bg-ok opacity-60" style:width={pct(d.split.requested_s)}></div>
         <div class="bar-fill h-full bg-warn" style:width={pct(detourS)}></div>
         <div class="bar-fill h-full bg-bad" style:width={pct(d.split.drift_s)}></div>
       </div>
@@ -90,6 +95,12 @@
         <li class="flex items-center gap-2">
           <span class="size-3 rounded-full bg-ok"></span>On task {mins(d.split.on_task_s)}
         </li>
+        {#if d.split.requested_s > 0}
+          <li class="flex items-center gap-2">
+            <span class="size-3 rounded-full bg-ok opacity-60"></span>Asked for
+            {mins(d.split.requested_s)}
+          </li>
+        {/if}
         <li class="flex items-center gap-2">
           <span class="size-3 rounded-full bg-warn"></span>Detour {mins(detourS)}
           {#each d.split.detours as dt (dt.label)}
@@ -235,7 +246,9 @@
     </section>
   {/if}
 
-  <p class="text-meta text-muted" data-testid="readback">Read-back: {readbackWord(d.readback)}</p>
+  <p class="text-meta text-muted" data-testid="readback">
+    Handoff understood: {readbackWord(d.readback)}
+  </p>
 {:else}
   <p class="text-row text-muted">Loading…</p>
 {/if}

@@ -6,7 +6,8 @@
   import type { Client } from '$lib/api'
   import { hhmm } from '$lib/format'
   import type { TaskDrill } from '$lib/types'
-  import { statusWord } from '$lib/words'
+  import ActionButton from '$lib/glance/ActionButton.svelte'
+  import { statusWord, verificationWord } from '$lib/words'
   import { useModel } from './useModel.svelte'
 
   let { client, repo, id, version }: { client: Client; repo: string; id: string; version: number } =
@@ -17,6 +18,17 @@
     () => `/api/task/${encodeURIComponent(repo)}/${encodeURIComponent(id)}`,
     () => version,
   )
+
+  let pending = $state(false)
+  let reply = $state<{ ok: boolean; text: string } | null>(null)
+
+  async function takeBack(action: TaskDrill['withdraw']) {
+    if (!action || pending) return
+    pending = true
+    const res = await client.act(action.action)
+    pending = false
+    reply = res.ok ? { ok: true, text: res.reply } : { ok: false, text: res.error }
+  }
 </script>
 
 {#if m.error}
@@ -125,7 +137,23 @@
   </section>
 
   <section class="flex flex-col gap-3">
-    <h3 class="text-base font-semibold">Verification</h3>
+    <div class="flex flex-wrap items-center gap-3">
+      <h3 class="text-base font-semibold">Verification</h3>
+      {#if t.withdraw}
+        <ActionButton
+          label={t.withdraw.label}
+          tone={t.withdraw.tone}
+          compact
+          {pending}
+          onclick={() => takeBack(t.withdraw)}
+        />
+      {/if}
+    </div>
+    {#if reply}
+      <p class={['text-meta', reply.ok ? 'text-muted' : 'text-warn']} role="status">
+        {reply.text}
+      </p>
+    {/if}
     <ul class="flex flex-col divide-y divide-line border-y border-line">
       {#each t.verifications as v (v.verif_id)}
         <li
@@ -135,7 +163,7 @@
           ]}
         >
           <span class="text-row">
-            L{v.level} by {v.by}{v.rerun ? ` (re-run ${v.rerun})` : ''} · {v.state}
+            {verificationWord(v)}
           </span>
           <span class="text-meta text-muted">
             <span class="font-mono">{v.sha.slice(0, 8)}</span> · {hhmm(v.ts)} · {v.evidence}

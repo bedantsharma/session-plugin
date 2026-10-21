@@ -5,11 +5,13 @@ pub mod ops;
 pub mod project;
 pub mod query;
 pub mod render;
+pub mod rollup;
 
 pub use model::{Hill, NodeKind, NodeStatus, PlanNode};
 pub use ops::{EditContext, EditOutcome, PlanError, PlanOp, plan_edit, plan_edit_in};
 pub use query::{get_node, is_in_subtree, load_tree, next_child, would_cycle};
 pub use render::{render_annotated, render_text};
+pub use rollup::{Rollup, is_done, rollup_of, rollups, shown_status};
 
 #[cfg(test)]
 mod tests {

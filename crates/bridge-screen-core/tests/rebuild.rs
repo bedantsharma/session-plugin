@@ -471,6 +471,33 @@ fn tangent_script() -> Vec<(&'static str, i64, &'static str, Value)> {
             json!({"unit_no": 3, "label": "drift", "source": "owner",
             "score": 0.1, "heuristic": "on_task"}),
         ),
+        ("s1", 151, "prompt", json!({"chars": 3})),
+        (
+            "s1",
+            152,
+            "detour_opened",
+            json!({"detour_id": "D3", "reason": "add a licence", "blocks": "2",
+            "resume_cue": "back to 2", "requested": true}),
+        ),
+        (
+            "s1",
+            155,
+            "unit_stopped",
+            json!({"unit_no": 4, "score": 0.9}),
+        ),
+        (
+            "s1",
+            155,
+            "unit_labeled",
+            json!({"unit_no": 4, "label": "requested", "source": "declared",
+            "score": 0.9, "heuristic": "drift"}),
+        ),
+        (
+            "s1",
+            156,
+            "branch_changed",
+            json!({"branch": "feat/licence"}),
+        ),
         (
             "owner",
             160,
@@ -521,6 +548,18 @@ fn rebuild_reproduces_tangent_views() {
         before
             .iter()
             .any(|r| r.starts_with("repo_tuning: ") && r.ends_with("|Integer(40)")),
+        "{before:?}"
+    );
+    let store_branch = bridge_screen_core::session::get(s.conn(), "s1")
+        .unwrap()
+        .unwrap()
+        .branch;
+    assert_eq!(store_branch.as_deref(), Some("feat/licence"));
+    // The asked-for detour keeps its flag (the last column).
+    assert!(
+        before
+            .iter()
+            .any(|r| r.starts_with("detours: Text([68, 51])") && r.ends_with("|Integer(1)")),
         "{before:?}"
     );
     s.rebuild().unwrap();

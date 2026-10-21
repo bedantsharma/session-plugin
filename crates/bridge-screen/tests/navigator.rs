@@ -21,9 +21,8 @@ const ON_TASK: &str = "Added validation to the login form and a unit test.";
 const DOCKER: &str = "Rewrote the Dockerfile and the CI workflow caching.";
 const MIDDLE: &str = "Refactored helper scripts.";
 
-const LABEL_REQUEST: &str =
-    "bridge-screen: label your last unit — on-task, detour or drift — with label_unit (one call).";
-const DRIFT_REQUEST: &str = "bridge-screen: possible drift in your last unit. Label it — on-task, detour or drift — with label_unit (one call).";
+const LABEL_REQUEST: &str = "bridge-screen: label your last unit — on-task, detour, drift, or requested (the owner asked for this in this session) — with label_unit (one call).";
+const DRIFT_REQUEST: &str = "bridge-screen: possible drift in your last unit. Label it — on-task, detour, drift, or requested (the owner asked for this in this session) — with label_unit (one call).";
 
 /// A repo with a plan and session `s1` holding 1.1.
 fn setup() -> Env {
@@ -129,6 +128,7 @@ fn declared_detour_wins() {
                 reason: "CI cache is broken".into(),
                 resume_cue: "rerun the login test".into(),
                 blocks: None,
+                requested: false,
                 actor: bridge_screen_core::store::Actor::default(),
             },
         )
@@ -482,6 +482,28 @@ mod tolerance {
     }
 
     #[test]
+    fn label_requested_from_the_cli_is_never_drift() {
+        let env = setup();
+        unit(&env, "s1", &["src/login.rs"], ON_TASK);
+        for word in ["requested", "asked-for"] {
+            let (ok, text) = cli(&env, &["label", "s1", "1", word]);
+            assert!(ok, "{text}");
+            assert_eq!(text, "Labelled unit 1 of s1 as requested.\n");
+        }
+        let u = &units(&env, "s1")[0];
+        assert_eq!(
+            (u.label, u.label_source),
+            (Some(Label::Requested), Some(LabelSource::Owner))
+        );
+        let store = Store::open(&env.db_path()).unwrap();
+        let n: i64 = store
+            .conn()
+            .query_row("SELECT count(*) FROM drift_samples", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "asked-for work is no tuning evidence");
+    }
+
+    #[test]
     fn session_prefix_must_be_unique() {
         let env = Env::new();
         env.hook("session-start", "abc111");
@@ -542,7 +564,7 @@ mod tuning {
         assert_eq!(context_of(&out, "Stop"), LABEL_REQUEST);
         let status = String::from_utf8(env.run(&["status"], "").stdout).unwrap();
         assert!(
-            status.contains("goal: Ship  · done 0% · claimed 0% · 1 unestimated · forecast needs 3 more finished tasks  · tuned drift .10–.70, tolerance 20%"),
+            status.contains("goal: Ship  · done 0% · claimed 0% · 1 task without an estimate · forecast needs 3 more finished tasks  · tuned drift .10–.70, tolerance 20%"),
             "{status}"
         );
     }

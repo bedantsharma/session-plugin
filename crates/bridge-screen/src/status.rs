@@ -133,7 +133,11 @@ fn project(out: &mut String, g: &Glance, p: &ProjectRow, c: bool) {
             p.claimed_pct
         );
         if p.unestimated > 0 {
-            let _ = write!(progress, " · {} unestimated", p.unestimated);
+            let _ = write!(
+                progress,
+                " · {} without an estimate",
+                plural(p.unestimated, "task", "tasks")
+            );
         }
         if let Some(f) = &p.forecast {
             let _ = write!(progress, " · {}", f.short);
@@ -164,8 +168,9 @@ fn project(out: &mut String, g: &Glance, p: &ProjectRow, c: bool) {
     if p.leftovers.open > 0 {
         let _ = writeln!(
             out,
-            "  leftovers: {} open ({} report-only)",
-            p.leftovers.open, p.leftovers.report_only
+            "  unsaved work from ended sessions: {} ({} of them for information only)",
+            plural(p.leftovers.open, "file", "files"),
+            p.leftovers.report_only
         );
     }
     // Needs-you order: red, then questions and waits, then claimed work the owner is asked
@@ -186,7 +191,7 @@ fn project(out: &mut String, g: &Glance, p: &ProjectRow, c: bool) {
         let what = format!("{} {}", task.id, task.title);
         let _ = writeln!(
             out,
-            "  {}: verify {} — bridge-screen verify {} (or --broken \"…\")",
+            "  {}: check {} — then `bridge-screen verify {}` (or --broken \"what's wrong\")",
             paint(c, Role::Red, "needs you"),
             what.trim_end(),
             task.id
@@ -231,7 +236,7 @@ fn session_line(s: &SessionRow, c: bool) -> String {
                 let _ = write!(nav, " · {}", f.kind.text());
             }
             FlagKind::VerifyPending => {
-                let _ = write!(nav, " · verify pending: {}", f.tasks.join(", "));
+                let _ = write!(nav, " · {}: {}", f.kind.text(), f.tasks.join(", "));
             }
         }
     }

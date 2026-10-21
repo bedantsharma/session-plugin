@@ -31,7 +31,7 @@ bridge-screen is one program on the owner's computer that sits next to Claude Co
 - **Lives in:** `crates/bridge-screen/src/mcp.rs`
 
 ### The core (also called `bridge-screen-core`)
-- **Does:** all the rules: the plan tree, sessions and active time, drift scoring, checkpoints and recovery, the verification ladder, decisions, and the read models the screens show.
+- **Does:** all the rules: the plan tree (and each milestone's and the goal's status, worked out from its tasks), sessions and active time, drift scoring (work you asked for never counts), checkpoints and recovery, the verification ladder (including taking a sign-off back), decisions, and the read models the screens show.
 - **Lives in:** `crates/bridge-screen-core/`
 
 ### Telemetry (cost tracking)

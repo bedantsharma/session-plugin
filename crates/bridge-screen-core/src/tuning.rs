@@ -99,7 +99,8 @@ fn samples(conn: &Connection, repo_id: &str) -> Result<Vec<(f64, Label)>> {
     let mut out = Vec::new();
     for row in rows {
         let (score, label) = row?;
-        if let Some(label) = Label::parse(&label) {
+        // Asked-for units are neither on-task nor drift evidence.
+        if let Some(label) = Label::parse(&label).filter(|l| *l != Label::Requested) {
             out.push((score, label));
         }
     }
@@ -266,6 +267,62 @@ mod tests {
 
     fn th(s: &Store) -> Thresholds {
         thresholds(s.conn(), "r", &Config::default()).unwrap()
+    }
+
+    #[test]
+    fn tuning_ignores_requested_units() {
+        let s = Store::open_in_memory().unwrap();
+        add_samples(&s, &[(0.95, "requested"); 5]);
+        add_samples(&s, &[(0.2, "on_task")]);
+        assert_eq!(samples(s.conn(), "r").unwrap(), vec![(0.2, Label::OnTask)]);
+        // The projector never records one in the first place.
+        let mut s = Store::open_in_memory().unwrap();
+        for (kind, data) in [
+            ("session_started", json!({"cwd": "/r", "source": "startup"})),
+            ("prompt", json!({"chars": 1})),
+            ("unit_stopped", json!({"score": 0.9})),
+            (
+                "unit_labeled",
+                json!({"unit_no": 1, "label": "requested", "source": "owner", "score": 0.9}),
+            ),
+        ] {
+            s.append(crate::store::EventDraft::new("r", "s", kind, data))
+                .unwrap();
+        }
+        let n: i64 = s
+            .conn()
+            .query_row("SELECT count(*) FROM drift_samples", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+        // The agent called a unit drift; the owner corrects it to asked for: the drift
+        // sample is forgotten, and a rebuild agrees.
+        for (kind, data) in [
+            ("prompt", json!({"chars": 1})),
+            ("unit_stopped", json!({"score": 0.9})),
+            (
+                "unit_labeled",
+                json!({"unit_no": 2, "label": "drift", "source": "agent", "score": 0.9}),
+            ),
+        ] {
+            s.append(crate::store::EventDraft::new("r", "s", kind, data))
+                .unwrap();
+        }
+        let count = |s: &Store| -> i64 {
+            s.conn()
+                .query_row("SELECT count(*) FROM drift_samples", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(count(&s), 1);
+        s.append(crate::store::EventDraft::new(
+            "r",
+            "s",
+            "unit_labeled",
+            json!({"unit_no": 2, "label": "requested", "source": "owner", "score": 0.9}),
+        ))
+        .unwrap();
+        assert_eq!(count(&s), 0);
+        s.rebuild().unwrap();
+        assert_eq!(count(&s), 0);
     }
 
     #[test]

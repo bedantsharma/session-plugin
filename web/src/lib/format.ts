@@ -1,4 +1,5 @@
 // Small display helpers.
+import { FLAG } from './words'
 
 /** `HH:MM` in local time. */
 export function hhmm(t: number | string | null): string {
@@ -22,14 +23,7 @@ export function minutes(secs: number): string {
 
 /** How a session flag reads, with its age. */
 export function flagText(f: { kind: string; age_s: number | null; tasks?: string[] }): string {
-  const words: Record<string, string> = {
-    checkpoint_missed: 'checkpoint missed',
-    handoff_unstable: 'handoff unstable',
-    squash_failed: 'squash failed',
-    checkpoint_pending: 'checkpoint pending',
-    readback_pending: 'read-back pending',
-    verify_pending: 'verify pending',
-  }
+  const words = FLAG
   const tasks = f.tasks?.length ? `: ${f.tasks.join(', ')}` : ''
   const a = f.age_s === null ? '' : ` · ${age(f.age_s)}`
   return `${words[f.kind] ?? f.kind.replaceAll('_', ' ')}${tasks}${a}`

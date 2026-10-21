@@ -103,6 +103,16 @@ pub enum OwnerAction {
         task: String,
         note: String,
     },
+    /// Take back the owner's newest verdict (sign-off or "broken") on a task.
+    Withdraw {
+        repo: String,
+        task: String,
+        /// The verdict the screen showed (a sign-off's `verif_id` or a "broken"'s event
+        /// id): when it is no longer the newest in force, the click is stale. Left out by
+        /// the CLI, which always takes back the newest.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        verification_id: Option<String>,
+    },
     /// Put the repo's auto-tuned drift thresholds back to the defaults.
     ResetDrift { repo: String },
 }
@@ -248,6 +258,11 @@ pub fn act(store: &mut Store, ctx: &ActCtx, action: &OwnerAction) -> Result<Stri
         } => resolve(store, ctx, repo.as_deref(), leftover_ids, *action),
         OwnerAction::Verify { repo, task, level } => verdict(store, ctx, repo, task, *level, None),
         OwnerAction::Broken { repo, task, note } => verdict(store, ctx, repo, task, 4, Some(note)),
+        OwnerAction::Withdraw {
+            repo,
+            task,
+            verification_id,
+        } => verify::withdraw(store, repo, task, verification_id.as_deref()),
         OwnerAction::ResetDrift { repo } => reset_drift(store, ctx, repo),
     }
 }

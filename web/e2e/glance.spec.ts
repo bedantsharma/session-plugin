@@ -127,3 +127,31 @@ test('no sideways overflow at phone, 1024 and 1100 widths; the columns follow th
     s.stop()
   }
 })
+
+test('the hill tooltip opens with Tab as well as hover', async ({ page }) => {
+  const s = await serve([
+    {
+      repo: 'r1',
+      name: 'shop',
+      milestones: [{ id: '2', title: 'Catalogue and search', hill: 'uphill' }],
+      sessions: [{ id: 'idle001' }],
+    },
+  ])
+  try {
+    await page.goto(s.url)
+    const chip = page.locator('[data-milestone="2"] [aria-describedby]')
+    await expect(chip).toHaveText(/exploring/)
+    const tip = page.locator('[data-milestone="2"] [role="tooltip"]')
+    await expect(tip).toBeHidden()
+    // Tab until the chip has focus.
+    for (let i = 0; i < 40; i++) {
+      await page.keyboard.press('Tab')
+      if (await chip.evaluate((el) => el === document.activeElement)) break
+    }
+    await expect(chip).toBeFocused()
+    await expect(tip).toBeVisible()
+    await expect(chip).toHaveAccessibleDescription('Unknowns remain — this % may still change')
+  } finally {
+    s.stop()
+  }
+})

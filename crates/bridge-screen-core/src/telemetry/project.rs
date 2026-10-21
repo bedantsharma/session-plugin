@@ -66,10 +66,11 @@ fn cursor(tx: &Transaction, event: &Event, d: &Usage) -> Result<()> {
         _ => offset,
     };
     tx.execute(
-        "INSERT INTO transcript_cursors (path, session_id, agent_id, offset)
-         VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT(path) DO UPDATE SET offset = excluded.offset",
-        params![d.path, event.session_id, d.agent_id, new],
+        "INSERT INTO transcript_cursors (path, session_id, agent_id, offset, identity)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(path) DO UPDATE SET offset = excluded.offset,
+             identity = COALESCE(excluded.identity, identity)",
+        params![d.path, event.session_id, d.agent_id, new, d.identity],
     )?;
     Ok(())
 }

@@ -358,7 +358,7 @@ mod tolerance {
     use crate::repo::RepoInfo;
     use crate::session;
     use crate::store::{Actor, Store, append_in};
-    use crate::tangent::{NavState, Thresholds, evaluate, tolerance_secs};
+    use crate::tangent::{Label, LabelSource, NavState, Thresholds, evaluate, tolerance_secs};
     use serde_json::json;
 
     fn th() -> Thresholds {
@@ -645,5 +645,100 @@ mod tolerance {
         ev(&mut s, "prompt", json!({"chars": 1}), 30);
         assert_eq!(step(&mut s, Channel::PromptSubmit, 40).1, None);
         assert_eq!(step(&mut s, Channel::PostToolUse, 40).1, None);
+    }
+
+    /// Run the Stop labelling for unit `n` and record what it decides.
+    fn stop_label(s: &mut Store, n: i64) -> (Vec<String>, Option<String>) {
+        s.write(|tx| {
+            let sess = session::get(tx, "s")?.unwrap();
+            let unit = session::unit(tx, "s", n)?.unwrap();
+            let step = crate::navigator::label_at_stop(tx, &sess, &unit, false, &th())?;
+            let kinds = step.events.iter().map(|e| e.kind.clone()).collect();
+            for e in step.events {
+                append_in(tx, e)?;
+            }
+            Ok((kinds, step.note))
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn requested_work_is_not_drift() {
+        // 1.2 has no estimate: tolerance is the 15-minute floor.
+        let mut s = planned(Some("1.2"));
+        ev(
+            &mut s,
+            "detour_opened",
+            json!({"detour_id": "D1", "reason": "add a licence", "blocks": "1.2",
+                   "resume_cue": "back to 1.2", "requested": true}),
+            0,
+        );
+        ev(
+            &mut s,
+            "item_suspended",
+            json!({"item_id": "I1", "kind": "task", "ref_id": "1.2",
+                   "resume_cue": "back to 1.2", "by_detour": "D1"}),
+            0,
+        );
+        assert!(
+            super::super::get_detour(s.conn(), "D1")
+                .unwrap()
+                .unwrap()
+                .requested
+        );
+        // A live unit inside the asked-for detour, far past 2x tolerance: still green.
+        ev(&mut s, "prompt", json!({"chars": 1}), 0);
+        assert_eq!(eval(&s, 2000), (NavState::Green, 0));
+        // It finishes with a drift-looking score: labelled "requested" at Stop, declared,
+        // with no question to the agent.
+        ev(&mut s, "unit_stopped", json!({"score": 0.95}), 2000);
+        let (kinds, note) = stop_label(&mut s, 1);
+        assert_eq!((kinds, note), (vec!["unit_labeled".to_string()], None));
+        let u = session::unit(s.conn(), "s", 1).unwrap().unwrap();
+        assert_eq!(
+            (u.label, u.label_source),
+            (Some(Label::Requested), Some(LabelSource::Declared))
+        );
+        assert_eq!(eval(&s, 2100), (NavState::Green, 0));
+        assert_eq!(step(&mut s, Channel::PostToolUse, 2100), (vec![], None));
+        // The agent (or owner) labelling a high-score unit "requested": no red, no sample.
+        ev(
+            &mut s,
+            "unit_labeled",
+            json!({"unit_no": 1, "label": "requested", "source": "agent", "heuristic": "drift"}),
+            2100,
+        );
+        assert_eq!(eval(&s, 2100), (NavState::Green, 0));
+        assert_eq!(super::samples(&s), vec![]);
+        // Back to the task; the next unit is real drift: red.
+        ev(
+            &mut s,
+            "detour_closed",
+            json!({"detour_id": "D1", "outcome": "done"}),
+            2200,
+        );
+        ev(&mut s, "item_resumed", json!({"item_id": "I1"}), 2200);
+        ev(&mut s, "prompt", json!({"chars": 1}), 2300);
+        ev(&mut s, "unit_stopped", json!({"score": 0.95}), 2400);
+        ev(
+            &mut s,
+            "unit_labeled",
+            json!({"unit_no": 2, "label": "drift", "source": "agent", "heuristic": "drift"}),
+            2400,
+        );
+        assert_eq!(eval(&s, 2500), (NavState::Red, 100));
+    }
+
+    #[test]
+    fn requested_label_parses_its_aliases() {
+        for s in ["requested", "asked", "asked-for"] {
+            assert_eq!(super::super::Label::parse(s), Some(Label::Requested), "{s}");
+        }
+        let l: Label = serde_json::from_value(json!("asked-for")).unwrap();
+        assert_eq!(l, Label::Requested);
+        assert_eq!(
+            serde_json::to_value(Label::Requested).unwrap(),
+            json!("requested")
+        );
     }
 }

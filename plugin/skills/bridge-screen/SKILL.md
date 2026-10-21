@@ -10,10 +10,6 @@ subtasks), which task each session is on, detours, and agent-active time. Hooks 
 what happens; your part is to say **which task** you are on, **declare tangents**, and
 keep the plan true. It never blocks your work.
 
-Tools (MCP server `bridge-screen`): `claim_task`, `plan_edit`, `status`, `start_detour`,
-`close_detour`, `resume`, `promote_detour`, `label_unit`, `claim_done`, `verify`,
-`log_decision`, `handoff_readback`, `handoff_note`, `resolve_leftover`.
-
 ## 0. Read the briefing; read it back
 
 Each session starts with a `bridge-screen briefing — stable|watcher|unstable`. Unless it
@@ -29,8 +25,8 @@ says…", carry on from what it says.
   `"mode": "confirmed"`.
 - **Nothing fits**: claim a new task under the right parent, estimate in agent-minutes:
   `claim_task {"new_task": {"parent": "2", "title": "Rate-limit login", "estimate_min": 30}, "mode": "auto", "confidence": 0.7}`.
-- Switching work? Claim the new task; the previous one is released. Goals and
-  milestones can't be claimed.
+- Switching work? Claim the new task (the old one is released). Goals and milestones
+  can't be claimed.
 
 ## 2. Keep the plan true with `plan_edit`
 
@@ -59,12 +55,14 @@ tangent to another agent; declare it and do it:
   verbatim. Follow it.
 - `status` lists suspended items; `resume` goes back to any of them (`"1.2"` or `"D1"`).
 - A detour that grows into real work: `promote_detour` with a parent and title.
+- Work the **owner asked for** in this session that isn't your task ("also add a
+  licence"): `start_detour` with `"requested_by_owner": true` — never drift or away time.
 
 ## 4. Labels and navigator notes
 
-Every unit of work is on-task, a detour, or drift (neither advances nor blocks the task).
-When asked, call `label_unit` once with an honest label and a one-line `why` — drift is
-information for the owner, not blame. An **amber** note means you've been away from the
+Each unit is on-task, a detour, `requested` (the owner asked for it this session — not
+your own idea), or drift (none of these). When asked, call `label_unit` once with an
+honest label and a one-line `why`; drift is information for the owner, not blame. An **amber** note means you've been away from the
 task longer than its tolerance: continue only if it still blocks the task. **Red** means
 the owner has been flagged; keep going only if essential, and follow any owner answer.
 
@@ -98,22 +96,23 @@ the owner has been flagged; keep going only if essential, and follow any owner a
 ## 6. Leftovers of dead sessions
 
 The briefing lists uncommitted files a crashed or abandoned session left, each with a
-suggestion. Prefer it: `resolve_leftover {"ids": ["l3f9a2c1"], "action": "undo"}`.
-`adopt` commits them, `resume` claims their task (only in their worktree), `undo` stashes
-them with a snapshot — nothing is lost. Ask the owner when unsure. Leftovers marked
-report-only belong to a live session, or to a crashed one in another worktree that may
-only be waiting for its owner (for 24 h): leave them alone.
+suggestion: `resolve_leftover {"ids": ["l3f9a2c1"], "action": "undo"}`. `adopt` commits,
+`resume` claims their task (in their worktree only), `undo` stashes with a snapshot —
+nothing is lost. Ask the owner when unsure. Report-only leftovers belong to a live
+session or to a crashed one elsewhere that may be waiting for its owner: leave them.
 
 ## 7. Check where things stand
 
-`status` shows your task with its ladder level and next step, unverified claims,
-decisions, cost so far, a pending checkpoint, the read-back state, open leftovers,
-detours and suspended items, the project forecast and the next tasks. When the owner asks how things stand, call
-`show_progress` (its buttons are the owner's: never call `owner_action`). Reports only
-on the owner's explicit request: `progress_report`, show its summary, publish with the
-Artifact tool after they confirm, then `report_published {"url": "…", "scope": "repo"}`.
+`status` shows your task, its level and next step, unverified claims, decisions, cost,
+handoff and leftovers, detours, the forecast and next tasks. When the owner asks how
+things stand, call `show_progress` (its buttons are the owner's: never call
+`owner_action`). Reports only on the owner's request: `progress_report`, show the
+summary, publish with the Artifact tool once they confirm, then `report_published`.
 
-## Notes from bridge-screen
+## Notes from bridge-screen, and telling the owner
 
-Hook notes start with `bridge-screen:`, are short, and end with the one action expected.
-Act on them; don't repeat them back to the owner.
+Hook notes start with `bridge-screen:` and end with the one action expected. Act on
+them; don't repeat them back to the owner. The owner leads but doesn't read code. Report bridge-screen's state as: **effect first**
+in plain words, no codes ("tests pass", not "L2"; "work not saved yet", not "checkpoint
+pending"); the **state** (open / being fixed / done and checked); the **ask** (one
+decision, or "nothing"); **checked vs believed**; **details last** (ids, commands).

@@ -78,6 +78,19 @@ fn lists_three_tools_with_schemas() {
         edit["inputSchema"].to_string().contains("set_estimate"),
         "plan_edit schema should describe the ops: {edit}"
     );
+    let label = tools.iter().find(|t| t["name"] == "label_unit").unwrap();
+    assert!(
+        label["inputSchema"]["properties"]["label"]
+            .to_string()
+            .contains("requested")
+            || label["inputSchema"].to_string().contains("\"requested\""),
+        "{label}"
+    );
+    let start = tools.iter().find(|t| t["name"] == "start_detour").unwrap();
+    assert!(
+        start["inputSchema"]["properties"]["requested_by_owner"].is_object(),
+        "{start}"
+    );
 }
 
 #[test]
@@ -140,7 +153,8 @@ fn unbound_call_falls_back_to_the_project_session() {
     let mut mcp = Mcp::start(&env, &env.repo_path());
     let (is_error, text) = mcp.call("status", &json!({}));
     assert!(!is_error, "{text}");
-    assert!(text.contains("Goal: Ship"), "{text}");
+    assert!(text.contains("Goal: Ship (to do)"), "{text}");
+    assert!(text.contains("Milestones: 1 to do"), "{text}");
 }
 
 #[test]
@@ -1066,4 +1080,27 @@ mod reports {
         );
         assert!(err);
     }
+}
+
+#[test]
+fn a_newer_data_format_tells_the_agent_to_start_a_new_session() {
+    let env = setup();
+    env.hook("session-start", "s1");
+    Store::open(&env.db_path())
+        .unwrap()
+        .conn()
+        .execute(
+            "UPDATE meta SET value = '99' WHERE key = 'schema_version'",
+            [],
+        )
+        .unwrap();
+    let mut mcp = Mcp::start(&env, &env.repo_path());
+    let (_, text) = mcp.call("status", &json!({}));
+    assert!(
+        text.starts_with(
+            "bridge-screen was updated while this session was open. Start a new Claude session"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("data format 99"), "{text}");
 }

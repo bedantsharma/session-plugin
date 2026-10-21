@@ -12,6 +12,7 @@
   import { changed } from '$lib/changed'
   import { hhmm } from '$lib/format'
   import { hillWord, statusWord } from '$lib/words'
+  import { addedGroups, addedText } from '$lib/scope'
   import type { ProjectDrill, ProjectRow, TreeNode } from '$lib/types'
   import { useModel } from './useModel.svelte'
 
@@ -61,13 +62,7 @@
     return Math.max(...times) - Math.min(...times) >= 60_000
   })
   const latest = $derived(m.data?.scope.at(-1))
-  const added = $derived(
-    (m.data?.scope ?? []).flatMap((p, i, all) =>
-      i > 0 && p.total_min > all[i - 1].total_min
-        ? [{ ts: p.ts, by: p.total_min - all[i - 1].total_min }]
-        : [],
-    ),
-  )
+  const added = $derived(addedGroups(m.data?.scope ?? []))
 
   // The tree: chevrons fold a node's children away.
   let folded = $state<Record<string, boolean>>({})
@@ -182,7 +177,7 @@
         {/if}
         {#if added.length}
           <p class="mt-3 text-meta text-muted">
-            Scope added: {added.map((a) => `+${a.by} min at ${hhmm(a.ts)}`).join(' · ')}
+            Scope added: {addedText(added)}
           </p>
         {/if}
       </div>
@@ -194,9 +189,10 @@
     <ul class="flex flex-col border-y border-line" aria-label="Plan tree">
       {#each m.data.tree as n (n.id)}
         {#if !hidden(n)}
-          {@const look = statusWord(n.status)}
+          {@const look = statusWord(n.rollup ?? n.status)}
           {@const p = progress(n)}
-          {@const hill = n.kind === 'milestone' ? hillWord(n.hill, p.done) : null}
+          {@const hill =
+            n.kind === 'milestone' ? hillWord(n.hill, n.rollup === 'done' ? 100 : p.done) : null}
           {@const parent = parents.has(n.id)}
           <li class="border-b border-line last:border-b-0" data-node={n.id}>
             <Collapsible.Root bind:open={() => !!intentOpen[n.id], (v) => (intentOpen[n.id] = v)}>

@@ -385,3 +385,227 @@ fn the_project_line_shows_the_forecast_and_cost_and_sessions_their_cost() {
     );
     assert!(all.contains("0m · $1.20"), "{all}");
 }
+
+/// Every owner-facing string a glance carries: titles, details, words, labels.
+fn screen_strings(v: &serde_json::Value, key: &str, out: &mut Vec<String>) {
+    const SHOWN: &[&str] = &[
+        "title",
+        "detail",
+        "nav_text",
+        "light_word",
+        "state_label",
+        "label",
+        "text",
+        "short",
+        "summary",
+        "basis",
+        "compact",
+        "tuned",
+        "repo_name",
+    ];
+    match v {
+        serde_json::Value::String(s) if SHOWN.contains(&key) => out.push(s.clone()),
+        serde_json::Value::Array(a) => a.iter().for_each(|x| screen_strings(x, key, out)),
+        serde_json::Value::Object(o) => o.iter().for_each(|(k, x)| screen_strings(x, k, out)),
+        _ => {}
+    }
+}
+
+/// A glance with one of everything: drift red, a question, a permission wait, a detour
+/// the owner asked for, an overdue check, leftovers, unsaved work, an unconfirmed
+/// handoff, a done milestone and an exploring one.
+#[allow(clippy::too_many_lines)] // one event per line, as data
+fn busy_glance() -> Glance {
+    let mut s = Store::open_in_memory().unwrap();
+    s.register_repo(&RepoInfo {
+        id: "r1".into(),
+        name: "shop".into(),
+        root: "/code/shop".into(),
+    })
+    .unwrap();
+    let mut ev = |session: &str, secs: i64, kind: &str, data: serde_json::Value| {
+        s.write(|tx| {
+            append_in_at(
+                tx,
+                EventDraft::new("r1", session, kind, data),
+                t0() + SignedDuration::from_secs(secs),
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    };
+    for (id, parent, kind, est) in [
+        ("G", None, "goal", None),
+        ("1", Some("G"), "milestone", None),
+        ("1.1", Some("1"), "task", Some(30)),
+        ("2", Some("G"), "milestone", None),
+        ("2.1", Some("2"), "task", Some(30)),
+        ("2.2", Some("2"), "task", None),
+    ] {
+        ev(
+            "owner",
+            0,
+            "node_added",
+            json!({"id": id, "parent_id": parent, "kind": kind, "title": format!("Part {id}"),
+                   "intent": "why", "estimate_min": est, "expected_files": []}),
+        );
+    }
+    ev(
+        "owner",
+        0,
+        "hill_moved",
+        json!({"id": "2", "hill": "uphill"}),
+    );
+    let start = |ev: &mut dyn FnMut(&str, i64, &str, serde_json::Value), sid: &str, t: i64| {
+        ev(
+            sid,
+            t,
+            "session_started",
+            json!({"cwd": "/w", "source": "startup", "worktree": "/w", "branch": "feat"}),
+        );
+    };
+    // Drift red, far off its task.
+    start(&mut ev, "red0aaaa", 1);
+    ev("red0aaaa", 2, "prompt", json!({}));
+    ev(
+        "red0aaaa",
+        3,
+        "detour_opened",
+        json!({"detour_id": "D1", "reason": "CI cache", "resume_cue": "x"}),
+    );
+    ev("red0aaaa", 2402, "unit_stopped", json!({}));
+    ev(
+        "red0aaaa",
+        2402,
+        "nav_state_changed",
+        json!({"from": "green", "to": "red", "away_secs": 2400}),
+    );
+    // Work the owner asked for.
+    start(&mut ev, "ask0bbbb", 10);
+    ev(
+        "ask0bbbb",
+        10,
+        "task_claimed",
+        json!({"task_id": "2.1", "mode": "auto", "confidence": 0.9}),
+    );
+    ev("ask0bbbb", 11, "prompt", json!({}));
+    ev(
+        "ask0bbbb",
+        12,
+        "detour_opened",
+        json!({"detour_id": "D2", "reason": "add a licence", "resume_cue": "x",
+               "requested": true}),
+    );
+    // A question and a permission wait.
+    start(&mut ev, "que0cccc", 20);
+    ev("que0cccc", 21, "prompt", json!({}));
+    ev("que0cccc", 80, "unit_stopped", json!({}));
+    ev(
+        "que0cccc",
+        80,
+        "owner_question",
+        json!({"unit_no": 1, "source": "turn_end"}),
+    );
+    start(&mut ev, "per0dddd", 30);
+    ev("per0dddd", 31, "prompt", json!({}));
+    ev(
+        "per0dddd",
+        32,
+        "needs_owner",
+        json!({"kind": "permission_prompt"}),
+    );
+    // Unsaved work, a missed save, an unconfirmed handoff, an overdue check.
+    start(&mut ev, "flg0eeee", 40);
+    ev(
+        "flg0eeee",
+        41,
+        "briefed",
+        json!({"status": "unstable", "readback_required": true}),
+    );
+    ev(
+        "flg0eeee",
+        42,
+        "checkpoint_due",
+        json!({"reason": "detour_closed"}),
+    );
+    ev("flg0eeee", 43, "checkpoint_missed", json!({"unit_no": 1}));
+    for (kind, data) in [
+        ("claimed_done", json!({"task_id": "2.2", "evidence": "ok"})),
+        ("verify_nudged", json!({"task_id": "2.2", "level": 0})),
+        ("verify_nudged", json!({"task_id": "2.2", "level": 0})),
+        ("needs_owner", json!({"kind": "verify", "task_id": "2.2"})),
+    ] {
+        ev("flg0eeee", 50, kind, data);
+    }
+    for (id, report_only) in [("l1", false), ("l2", true)] {
+        ev(
+            "flg0eeee",
+            60,
+            "leftover_found",
+            json!({"leftover_id": id, "from_session": "gone0fff", "worktree": "/w",
+                   "path": format!("{id}.rs"), "suggested": "resume",
+                   "report_only": report_only}),
+        );
+    }
+    // A finished milestone.
+    ev(
+        "owner",
+        70,
+        "verified",
+        json!({"verif_id": "v1", "task_id": "1.1", "level": 4, "sha": "a", "files": [],
+               "evidence": "ok", "by": "owner"}),
+    );
+    view::glance(
+        s.conn(),
+        &Config::default(),
+        t0() + SignedDuration::from_secs(3000),
+    )
+    .unwrap()
+}
+
+#[test]
+fn no_jargon_on_screens() {
+    let g = busy_glance();
+    // The scenario really has one of everything.
+    let kinds: Vec<&str> = g.needs_you.iter().map(|i| i.kind.as_str()).collect();
+    for k in [
+        "drift_red",
+        "question",
+        "permission_wait",
+        "verify_overdue",
+        "leftover",
+    ] {
+        assert!(kinds.contains(&k), "{k} missing from {kinds:?}");
+    }
+    let mut shown = Vec::new();
+    screen_strings(&serde_json::to_value(&g).unwrap(), "", &mut shown);
+    // The flags as each screen words them.
+    for p in &g.projects {
+        for s in &p.sessions {
+            shown.extend(s.flags.iter().map(|f| f.kind.text().to_string()));
+        }
+    }
+    let status = crate::status::render(
+        &g,
+        &crate::status::Options {
+            color: false,
+            dashboard: None,
+        },
+    );
+    shown.push(status.clone());
+    let app = App::new(g.clone(), false);
+    let (lines, _) = draw(&app, 160, 60);
+    shown.push(text(&lines));
+    let bad: Vec<(String, Vec<String>)> = shown
+        .iter()
+        .map(|s| (s.clone(), crate::words::jargon_in(s)))
+        .filter(|(_, j)| !j.is_empty())
+        .collect();
+    assert!(bad.is_empty(), "raw codes on screen: {bad:#?}");
+    // The new words are there.
+    assert!(status.contains("asked for"), "{status}");
+    assert!(
+        status.contains("hasn't confirmed it understood the handoff yet"),
+        "{status}"
+    );
+}

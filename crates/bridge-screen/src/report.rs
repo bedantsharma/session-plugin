@@ -197,7 +197,10 @@ fn project_html(
     if !p.milestones.is_empty() {
         html.push_str("<ul>");
         for m in &p.milestones {
-            let hill = match (m.hill, crate::words::hill(m.hill, m.done_pct)) {
+            let mark = crate::words::rollup_mark(m.status)
+                .map(|t| format!(" <span class=\"ok\">{t}</span>"))
+                .unwrap_or_default();
+            let hill = match (m.hill, crate::words::milestone_hill(m)) {
                 (Some(h), Some((icon, word))) => {
                     let class = if word == "exploring" { "warn" } else { "ok" };
                     format!(
@@ -217,7 +220,7 @@ fn project_html(
             };
             let _ = write!(
                 html,
-                "<li>{} {}{hill} — {}%{stuck}</li>",
+                "<li>{} {}{mark}{hill} — {}%{stuck}</li>",
                 esc(&m.id),
                 esc(&m.title),
                 m.done_pct

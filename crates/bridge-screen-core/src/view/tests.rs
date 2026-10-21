@@ -725,3 +725,89 @@ fn project_and_session_rows_carry_forecast_and_cost() {
     let live = row(&g, "live0001").cost.as_ref().unwrap();
     assert_eq!(live.usd, Some(6.0));
 }
+
+#[test]
+fn asked_for_work_stays_green_with_no_queue_item() {
+    let mut s = store();
+    start(&mut s, "ask00001", 0);
+    claim(&mut s, "ask00001", 0, "1.1");
+    ev(&mut s, "ask00001", 10, "prompt", json!({"chars": 1}));
+    ev(
+        &mut s,
+        "ask00001",
+        20,
+        "detour_opened",
+        json!({"detour_id": "D1", "reason": "add a licence", "blocks": "1.1",
+               "resume_cue": "back to the form", "requested": true}),
+    );
+    ev(
+        &mut s,
+        "ask00001",
+        4000,
+        "unit_stopped",
+        json!({"score": 0.95}),
+    );
+    ev(
+        &mut s,
+        "ask00001",
+        4000,
+        "unit_labeled",
+        json!({"unit_no": 1, "label": "requested", "source": "declared"}),
+    );
+    ev(&mut s, "ask00001", 4010, "prompt", json!({"chars": 1}));
+    let g = glance_at(&s, 4100);
+    let r = row(&g, "ask00001");
+    assert_eq!(
+        (r.light, r.light_word.as_str()),
+        (Light::Green, "asked for")
+    );
+    assert!(r.nav_text.starts_with("asked for"), "{}", r.nav_text);
+    assert_eq!(g.needs_you_count, 0, "{:?}", kinds(&g));
+}
+
+#[test]
+fn milestones_and_the_goal_show_their_rolled_up_status() {
+    use crate::plan::Rollup;
+    let mut s = store();
+    start(&mut s, "roll0001", 0);
+    for task in ["1.1", "1.2"] {
+        ev(
+            &mut s,
+            "roll0001",
+            10,
+            "verified",
+            json!({"verif_id": format!("v{task}"), "task_id": task, "level": 2, "sha": "a",
+                   "files": [], "evidence": "ok", "by": "agent"}),
+        );
+    }
+    let p = &glance_at(&s, 20).projects[0];
+    let m1 = p.milestones.iter().find(|m| m.id == "1").unwrap();
+    let m2 = p.milestones.iter().find(|m| m.id == "2").unwrap();
+    assert_eq!((m1.status, m2.status), (Rollup::Done, Rollup::Todo));
+    assert_eq!(p.goal_status, Some(Rollup::InProgress));
+    let tree = drill::project(s.conn(), "r", at(20)).unwrap().tree;
+    let roll = |id: &str| tree.iter().find(|n| n.id == id).unwrap().rollup;
+    assert_eq!(
+        (roll("G"), roll("1"), roll("1.1")),
+        (Some(Rollup::InProgress), Some(Rollup::Done), None)
+    );
+    // Stored statuses are untouched: the roll-up is derived when read.
+    assert_eq!(
+        crate::plan::get_node(s.conn(), "r", "1")
+            .unwrap()
+            .unwrap()
+            .status,
+        NodeStatus::Todo
+    );
+    // A new task under the finished milestone: in progress again.
+    ev(
+        &mut s,
+        "owner",
+        30,
+        "node_added",
+        node("1.3", Some("1"), "task", Some(10)),
+    );
+    let p = &glance_at(&s, 40).projects[0];
+    let m1 = p.milestones.iter().find(|m| m.id == "1").unwrap();
+    assert_eq!(m1.status, Rollup::InProgress);
+}

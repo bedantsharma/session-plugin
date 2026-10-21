@@ -35,7 +35,7 @@ A task claimed done is checked, not taken on trust:
   the exit code; bridge-screen re-runs your test command, set with
   `bridge-screen config set test-command "cargo test"`, within a time limit) → L3
   end-to-end, as the agent drove it → L4 you (`bridge-screen verify <task>`, or
-  `--broken "<note>"`). Every level is tied to a commit; when later commits touch the
+  `--broken "<note>"`; `--withdraw` takes your last verdict back). Every level is tied to a commit; when later commits touch the
   files it depended on, it drops a level at the next session start. Squashing keeps them.
 - **Progress.** `bridge-screen status` shows done% (tasks at L2 or above, by estimate) and
   claimed% separately. Unverified work leads the next briefing and is nudged; after two

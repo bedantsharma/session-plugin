@@ -11,6 +11,7 @@ pub mod nudge;
 pub mod project;
 pub mod rerun;
 pub mod stale;
+pub mod withdraw;
 
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use schemars::JsonSchema;
@@ -25,10 +26,22 @@ pub use l1::{
 pub use ladder::{VerifyOutcome, VerifyRequest, change_setting, owner_verdict, verify};
 pub use nudge::{ESCALATE_AFTER, nudge_drafts, overdue, pending_claims};
 pub use project::{
-    SettingChanged, VERIFY_KINDS, VerificationFailed, VerificationStale, Verified, VerifyNudged,
-    project,
+    SettingChanged, VERIFY_KINDS, VerificationFailed, VerificationStale, VerificationWithdrawn,
+    Verified, VerifyNudged, project,
 };
 pub use stale::{StaleChange, scan_stale, stale_note};
+pub use withdraw::{Withdrawable, withdraw, withdrawable};
+
+/// What a level of the ladder means, in the owner's words (L-codes stay in the model).
+pub fn level_words(level: i64) -> &'static str {
+    match level {
+        ..=0 => "said done, not checked yet",
+        1 => "code written, tests not run",
+        2 => "tests pass",
+        3 => "tried end to end",
+        _ => "you signed it off",
+    }
+}
 
 /// Longest evidence kept, in characters.
 pub const MAX_EVIDENCE: usize = 500;
@@ -116,6 +129,8 @@ pub enum VerifState {
     Stale,
     /// A later attempt failed: it counts for nothing.
     Failed,
+    /// The owner took this sign-off back: it counts for nothing.
+    Withdrawn,
 }
 
 impl VerifState {
@@ -124,6 +139,7 @@ impl VerifState {
             Self::Current => "current",
             Self::Stale => "stale",
             Self::Failed => "failed",
+            Self::Withdrawn => "withdrawn",
         }
     }
 
@@ -132,6 +148,7 @@ impl VerifState {
             "current" => Some(Self::Current),
             "stale" => Some(Self::Stale),
             "failed" => Some(Self::Failed),
+            "withdrawn" => Some(Self::Withdrawn),
             _ => None,
         }
     }
@@ -251,7 +268,8 @@ pub fn top_verification(
 /// - `failed` when this is a `verification_failed`;
 /// - else `l<max level>` of its current and stale rows (a row at 0 counts for nothing);
 /// - else `claimed` when it was claimed done;
-/// - else the status is left alone (todo or active).
+/// - else `active` when a live session holds it, or `todo` (after a withdrawn sign-off or
+///   a verification that dropped to nothing).
 ///
 /// `claim_task` moves `failed` back to `active` (see `plan::project::mark_claimed`).
 pub fn refresh_status(tx: &Transaction, repo_id: &str, task_id: &str, failed: bool) -> Result<()> {
@@ -267,7 +285,17 @@ pub fn refresh_status(tx: &Transaction, repo_id: &str, task_id: &str, failed: bo
                     "SELECT count(*) FROM claims_done WHERE repo_id = ?1 AND task_id = ?2",
                 )?
                 .query_row(params![repo_id, task_id], |r| r.get(0))?;
-            (claimed > 0).then(|| "claimed".to_string())
+            if claimed > 0 {
+                Some("claimed".to_string())
+            } else {
+                let held: i64 = tx
+                    .prepare_cached(
+                        "SELECT count(*) FROM sessions
+                         WHERE repo_id = ?1 AND active_task = ?2 AND state != 'ended'",
+                    )?
+                    .query_row(params![repo_id, task_id], |r| r.get(0))?;
+                Some(if held > 0 { "active" } else { "todo" }.to_string())
+            }
         }
     };
     if let Some(status) = status {

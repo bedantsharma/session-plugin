@@ -41,6 +41,9 @@ pub struct TreeNode {
     pub title: String,
     pub intent: Option<String>,
     pub status: NodeStatus,
+    /// A parent's status from its tasks (spec §10: derived, never stored); `None` for a
+    /// leaf, which shows its own `status`.
+    pub rollup: Option<crate::plan::Rollup>,
     pub hill: Option<Hill>,
     /// A verification it depended on went stale.
     pub stale: bool,
@@ -102,9 +105,12 @@ pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectD
     let marks = verify::plan_marks(conn, repo)?;
     let actual = actual_minutes(conn, repo)?;
     let decisions = decision_counts(conn, repo)?;
-    let tree = load_tree(conn, repo, false)?
+    let nodes = load_tree(conn, repo, false)?;
+    let rolled = crate::plan::rollups(&nodes);
+    let tree = nodes
         .into_iter()
         .map(|n: PlanNode| TreeNode {
+            rollup: rolled.get(&n.id).copied(),
             stale: marks.get(&n.id).is_some_and(|m| m == "stale"),
             owner_checked: marks.get(&n.id).is_some_and(|m| m == "✓owner"),
             actual_min: actual.get(&n.id).copied().unwrap_or(0),
@@ -334,6 +340,8 @@ pub struct UnitRow {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TimeSplit {
     pub on_task_s: i64,
+    /// Work the owner asked for in the session ("asked for"): never drift.
+    pub requested_s: i64,
     pub drift_s: i64,
     pub unlabeled_s: i64,
     /// Per detour: (label, reason, seconds).
@@ -410,6 +418,7 @@ fn timeline(conn: &Connection, id: &str) -> Result<(Vec<UnitRow>, TimeSplit)> {
     let mut labels: HashMap<String, (String, String)> = HashMap::new();
     let mut split = TimeSplit {
         on_task_s: 0,
+        requested_s: 0,
         drift_s: 0,
         unlabeled_s: 0,
         detours: Vec::new(),
@@ -436,6 +445,7 @@ fn timeline(conn: &Connection, id: &str) -> Result<(Vec<UnitRow>, TimeSplit)> {
         match (u.label, &detour) {
             (Some(Label::OnTask), _) => split.on_task_s += u.active_secs,
             (Some(Label::Drift), _) => split.drift_s += u.active_secs,
+            (Some(Label::Requested), _) => split.requested_s += u.active_secs,
             (Some(Label::Detour), Some((label, _))) => {
                 if let Some(d) = per_detour.values_mut().find(|d| &d.label == label) {
                     d.secs += u.active_secs;
@@ -620,6 +630,9 @@ pub struct TaskDrill {
     pub steps: Vec<StepRow>,
     /// Actual ÷ estimate, once it is done (L2 or above) and both are known.
     pub ratio: Option<f64>,
+    /// "Take back sign-off": the owner's newest verdict still in force, as a one-click
+    /// action (refused as stale when it was already taken back).
+    pub withdraw: Option<super::ActionSpec>,
 }
 
 /// One line of a cost split: who or what, its tokens and its cost.
@@ -708,6 +721,26 @@ fn task_usage(conn: &Connection, repo: &str, id: &str, cfg: &Config) -> Result<O
         by_model,
         by_agent,
     }))
+}
+
+/// "Take back sign-off" for the owner's newest verdict still in force.
+fn withdraw_action(conn: &Connection, repo: &str, id: &str) -> Result<Option<super::ActionSpec>> {
+    Ok(
+        verify::withdrawable(conn, repo, id)?.map(|w| super::ActionSpec {
+            label: if w.signoff {
+                "Take back sign-off".to_string()
+            } else {
+                "Take back \"broken\"".to_string()
+            },
+            action: crate::owner::OwnerAction::Withdraw {
+                repo: repo.to_string(),
+                task: id.to_string(),
+                verification_id: Some(w.verification_id),
+            },
+            inputs: Vec::new(),
+            tone: super::Tone::Neutral,
+        }),
+    )
 }
 
 /// The task's subtasks in plan order, the current one marked.
@@ -828,6 +861,7 @@ pub fn task(conn: &Connection, repo: &str, id: &str, cfg: &Config) -> Result<Tas
         usage: task_usage(conn, repo, id, cfg)?,
         steps: steps(conn, repo, id)?,
         ratio,
+        withdraw: withdraw_action(conn, repo, id)?,
     })
 }
 

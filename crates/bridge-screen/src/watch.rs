@@ -357,8 +357,8 @@ fn kind_word(kind: NeedsKind) -> &'static str {
         NeedsKind::DriftRed => "drift",
         NeedsKind::Question => "question",
         NeedsKind::PermissionWait => "waiting",
-        NeedsKind::VerifyOverdue => "verify",
-        NeedsKind::Leftover => "leftovers",
+        NeedsKind::VerifyOverdue => "check",
+        NeedsKind::Leftover => "unsaved",
     }
 }
 
@@ -503,9 +503,12 @@ fn project_lines(app: &App, row: usize, width: usize, narrow: bool) -> Vec<Line<
         (format!(" {pct}{claimed}{extra}"), sel),
     ];
     for m in &p.milestones {
-        let hill = crate::words::hill(m.hill, m.done_pct)
+        let mut hill = crate::words::milestone_hill(m)
             .map(|(icon, word)| format!(" {icon} {word}"))
             .unwrap_or_default();
+        if let Some(mark) = crate::words::rollup_mark(m.status) {
+            let _ = write!(hill, " {mark}");
+        }
         spans.push((
             format!("  {} {}%{hill}", m.id, m.done_pct),
             role(c, Color::Yellow),
@@ -742,11 +745,11 @@ impl Actor for StoreActor {
                 match view::drill::session(s.conn(), id, &self.cfg, now) {
                     Ok(Some(d)) => {
                         let mut out = vec![format!(
-                            "{} units · on task {} · drift {} · read-back {}",
+                            "{} units · on task {} · drift {} · handoff understood: {}",
                             d.units.len(),
                             crate::words::mins(d.split.on_task_s),
                             crate::words::mins(d.split.drift_s),
-                            d.readback.as_str()
+                            crate::words::readback(d.readback)
                         )];
                         // The last few units with their labels in words.
                         let skip = d.units.len().saturating_sub(UNITS_SHOWN);
@@ -769,7 +772,7 @@ impl Actor for StoreActor {
                         }));
                         out.extend(d.checkpoints.last().map(|c| {
                             format!(
-                                "checkpoint {} — next: {}",
+                                "last saved at {} — next: {}",
                                 c.sha.chars().take(8).collect::<String>(),
                                 c.next_action.clone().unwrap_or_default()
                             )
@@ -790,7 +793,9 @@ impl Actor for StoreActor {
                             "  ".repeat(n.depth),
                             n.id,
                             n.title,
-                            n.status.as_str()
+                            crate::words::status(
+                                n.rollup.map_or_else(|| n.status.as_str(), |r| r.as_str())
+                            )
                         )
                     })
                     .collect(),

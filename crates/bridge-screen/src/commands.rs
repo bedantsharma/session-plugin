@@ -51,9 +51,10 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Verify {
             task,
             broken,
+            withdraw,
             level,
             dir,
-        } => verify_cmd(&dir, &task, broken.as_deref(), level),
+        } => verify_cmd(&dir, &task, broken.as_deref(), withdraw, level),
         Command::Decisions { dir, task, all } => decisions_cmd(&dir, task.as_deref(), all),
         Command::Usage {
             dir,
@@ -413,12 +414,23 @@ fn decisions_cmd(dir: &Path, task: Option<&str>, all: bool) -> Result<()> {
     Ok(())
 }
 
-fn verify_cmd(dir: &Path, task: &str, broken: Option<&str>, level: i64) -> Result<()> {
+fn verify_cmd(
+    dir: &Path,
+    task: &str,
+    broken: Option<&str>,
+    withdraw: bool,
+    level: i64,
+) -> Result<()> {
     let repo = repo::identify(dir)?;
     let home = Home::resolve()?;
     let mut store = open_store(&home)?;
     store.register_repo(&repo)?;
     let action = match broken {
+        _ if withdraw => OwnerAction::Withdraw {
+            repo: repo.id,
+            task: task.to_string(),
+            verification_id: None,
+        },
         Some(note) => OwnerAction::Broken {
             repo: repo.id,
             task: task.to_string(),
@@ -500,6 +512,7 @@ fn label_cmd(prefix: &str, unit_no: i64, label: LabelArg) -> Result<()> {
         LabelArg::OnTask => Label::OnTask,
         LabelArg::Detour => Label::Detour,
         LabelArg::Drift => Label::Drift,
+        LabelArg::Requested => Label::Requested,
     };
     let action = OwnerAction::Label {
         session: prefix.to_string(),
