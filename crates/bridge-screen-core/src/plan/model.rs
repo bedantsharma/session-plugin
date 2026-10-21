@@ -128,6 +128,109 @@ pub struct PlanNode {
     pub hill: Option<Hill>,
     pub expected_files: Vec<String>,
     pub depends_on: Vec<String>,
+    /// Plan links to tasks in other repos (spec §9.1).
+    pub external_deps: Vec<ExternalDep>,
+    /// Where the node came from: by hand, drafted at setup, or a plan file.
+    pub source: NodeSource,
+    /// The branch of the session that last claimed this task.
+    pub branch: Option<String>,
     /// Distance from the root in a loaded tree (0 for single-node reads).
     pub depth: usize,
+}
+
+/// A plan link to a task in another repo.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExternalDep {
+    pub repo_id: String,
+    /// The other repo's folder name (`repos.name`); its id when it isn't registered.
+    pub repo_name: String,
+    pub id: String,
+}
+
+/// Where a plan node came from (spec §5.3 `source`). Stored as `manual`, `init`, or JSON
+/// `{"file": "<repo-relative path>", "task": N, "step": k}`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum NodeSource {
+    /// Added by hand (`plan_edit`, the CLI) — every node from before imports existed.
+    #[default]
+    Manual,
+    /// Drafted by `init_plan` when the repo was set up.
+    Init,
+    /// Imported from a plan file: its task `task`, and step `step` for a subtask.
+    File {
+        file: String,
+        task: u32,
+        step: Option<u32>,
+    },
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum NamedSource {
+    Manual,
+    Init,
+}
+
+#[derive(Serialize, Deserialize)]
+struct FileSource {
+    file: String,
+    task: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    step: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum SourceRepr {
+    Named(NamedSource),
+    File(FileSource),
+}
+
+impl Serialize for NodeSource {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let repr = match self {
+            Self::Manual => SourceRepr::Named(NamedSource::Manual),
+            Self::Init => SourceRepr::Named(NamedSource::Init),
+            Self::File { file, task, step } => SourceRepr::File(FileSource {
+                file: file.clone(),
+                task: *task,
+                step: *step,
+            }),
+        };
+        repr.serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for NodeSource {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match SourceRepr::deserialize(d)? {
+            SourceRepr::Named(NamedSource::Manual) => Self::Manual,
+            SourceRepr::Named(NamedSource::Init) => Self::Init,
+            SourceRepr::File(f) => Self::File {
+                file: f.file,
+                task: f.task,
+                step: f.step,
+            },
+        })
+    }
+}
+
+impl NodeSource {
+    /// The `plan_nodes.source` column text.
+    pub fn to_column(&self) -> String {
+        match self {
+            Self::Manual => "manual".into(),
+            Self::Init => "init".into(),
+            Self::File { .. } => serde_json::to_string(self).unwrap_or_else(|_| "manual".into()),
+        }
+    }
+
+    /// Read the column back; anything unreadable is manual.
+    pub fn from_column(text: &str) -> Self {
+        match text {
+            "manual" => Self::Manual,
+            "init" => Self::Init,
+            other => serde_json::from_str(other).unwrap_or_default(),
+        }
+    }
 }

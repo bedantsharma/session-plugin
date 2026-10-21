@@ -36,6 +36,9 @@ pub const VIEW_TABLES: &[&str] = &[
     "usage_replies",
     "transcript_cursors",
     "forecast_history",
+    "plan_sources",
+    "plan_source_items",
+    "waits",
 ];
 
 /// Update view tables for one event. Unknown kinds change no views.

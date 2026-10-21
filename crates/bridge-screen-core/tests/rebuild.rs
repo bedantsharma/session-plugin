@@ -30,7 +30,7 @@ fn dump(store: &Store) -> Vec<String> {
     let mut out = Vec::new();
     for (table, order) in [
         ("plan_nodes", "repo_id, id"),
-        ("plan_deps", "repo_id, node_id, depends_on"),
+        ("plan_deps", "repo_id, node_id, dep_repo_id, depends_on"),
         ("sessions", "session_id"),
         ("units", "session_id, unit_no"),
         ("task_time", "repo_id, task_id"),
@@ -50,6 +50,9 @@ fn dump(store: &Store) -> Vec<String> {
         ("usage_replies", "message_id"),
         ("transcript_cursors", "path"),
         ("forecast_history", "repo_id, ts"),
+        ("plan_sources", "repo_id, path"),
+        ("plan_source_items", "repo_id, path, task_no, step_no"),
+        ("waits", "wait_id"),
     ] {
         let mut stmt = store
             .conn()

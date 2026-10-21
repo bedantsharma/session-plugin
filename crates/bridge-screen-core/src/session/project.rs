@@ -599,7 +599,12 @@ impl Moment<'_> {
             u.task_id = Some(d.task_id.clone());
             save_unit(self.tx, &u)?;
         }
-        mark_claimed(self.tx, &self.session.repo_id, &d.task_id)?;
+        mark_claimed(
+            self.tx,
+            &self.session.repo_id,
+            &d.task_id,
+            self.session.branch.as_deref(),
+        )?;
         Ok(())
     }
 

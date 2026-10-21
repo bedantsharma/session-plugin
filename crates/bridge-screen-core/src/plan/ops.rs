@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::model::{Hill, NodeKind, NodeStatus, PlanNode};
+use super::model::{Hill, NodeKind, NodeSource, NodeStatus, PlanNode};
 use super::project::{
     DepChange, EditMeta, EstimateSet, HillMoved, IntentSet, NodeAdded, NodeEdited, NodeMoved,
     NodeRef,
@@ -139,6 +139,18 @@ pub fn plan_edit(store: &mut Store, ctx: &EditContext, ops: &[PlanOp]) -> Result
 
 /// [`plan_edit`] inside the caller's transaction, so other events can join the same batch.
 pub fn plan_edit_in(tx: &Transaction, ctx: &EditContext, ops: &[PlanOp]) -> Result<EditOutcome> {
+    plan_edit_in_sourced(tx, ctx, ops, &[])
+}
+
+/// [`plan_edit_in`] for imports and `init_plan`: `sources[i]`, when given, is where the node
+/// added by `ops[i]` came from (a plan file, or setup). Not reachable from the MCP schema:
+/// agents' own edits are always manual.
+pub fn plan_edit_in_sourced(
+    tx: &Transaction,
+    ctx: &EditContext,
+    ops: &[PlanOp],
+    sources: &[Option<NodeSource>],
+) -> Result<EditOutcome> {
     if ops.is_empty() {
         return Err(PlanError::Empty.into());
     }
@@ -166,9 +178,14 @@ pub fn plan_edit_in(tx: &Transaction, ctx: &EditContext, ops: &[PlanOp]) -> Resu
             replan_id,
         };
         for (index, op) in ops.iter().enumerate() {
-            let (kind, data, task) = validate(tx, &ctx.repo_id, index, op, &meta)?;
+            let (kind, mut data, task) = validate(tx, &ctx.repo_id, index, op, &meta)?;
             if kind == "node_added" {
                 added_ids.push(task.clone());
+                if let Some(Some(source)) = sources.get(index)
+                    && *source != NodeSource::Manual
+                {
+                    data["source"] = serde_json::to_value(source)?;
+                }
             }
             events.push(append_in(tx, draft(ctx, kind, data, Some(task)))?);
         }
@@ -268,6 +285,7 @@ fn validate(
                 intent: intent.map(str::to_string),
                 estimate_min: *estimate_min,
                 expected_files: expected_files.clone(),
+                source: None,
                 meta,
             };
             Ok(("node_added", serde_json::to_value(data)?, id))
@@ -419,6 +437,7 @@ impl Check<'_> {
         let data = DepChange {
             id: id.to_string(),
             depends_on: depends_on.to_string(),
+            dep_repo_id: None,
             meta,
         };
         Ok(("dep_added", serde_json::to_value(data)?, id.to_string()))
@@ -435,6 +454,7 @@ impl Check<'_> {
         let data = DepChange {
             id: id.to_string(),
             depends_on: depends_on.to_string(),
+            dep_repo_id: None,
             meta,
         };
         Ok(("dep_removed", serde_json::to_value(data)?, id.to_string()))

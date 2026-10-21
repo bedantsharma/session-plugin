@@ -7,8 +7,10 @@ pub mod query;
 pub mod render;
 pub mod rollup;
 
-pub use model::{Hill, NodeKind, NodeStatus, PlanNode};
-pub use ops::{EditContext, EditOutcome, PlanError, PlanOp, plan_edit, plan_edit_in};
+pub use model::{ExternalDep, Hill, NodeKind, NodeSource, NodeStatus, PlanNode};
+pub use ops::{
+    EditContext, EditOutcome, PlanError, PlanOp, plan_edit, plan_edit_in, plan_edit_in_sourced,
+};
 pub use query::{get_node, is_in_subtree, load_tree, next_child, would_cycle};
 pub use render::{render_annotated, render_text};
 pub use rollup::{Rollup, is_done, rollup_of, rollups, shown_status};
@@ -169,6 +171,68 @@ mod tests {
         assert!(is_in_subtree(s.conn(), "r", "1", "1.2").unwrap());
         assert!(is_in_subtree(s.conn(), "r", "1", "1").unwrap());
         assert!(!is_in_subtree(s.conn(), "r", "1", "2").unwrap());
+    }
+
+    #[test]
+    fn a_task_remembers_the_branch_it_was_last_claimed_on() {
+        let mut s = sample();
+        for (sid, branch) in [("s1", "feat/a"), ("s2", "feat/b")] {
+            s.append(EventDraft::new(
+                "r",
+                sid,
+                "session_started",
+                json!({"cwd": "/x", "branch": branch, "source": "startup"}),
+            ))
+            .unwrap();
+        }
+        let claim = |sid: &str| {
+            EventDraft::new(
+                "r",
+                sid,
+                "task_claimed",
+                json!({"task_id": "1.1", "mode": "confirmed", "confidence": 1.0}),
+            )
+            .task("1.1")
+        };
+        s.append(claim("s1")).unwrap();
+        let n = get_node(s.conn(), "r", "1.1").unwrap().unwrap();
+        assert_eq!(n.branch.as_deref(), Some("feat/a"));
+        s.append(claim("s2")).unwrap();
+        let n = get_node(s.conn(), "r", "1.1").unwrap().unwrap();
+        assert_eq!(n.branch.as_deref(), Some("feat/b"));
+        assert_eq!(n.source, NodeSource::Manual);
+    }
+
+    #[test]
+    fn node_source_round_trips() {
+        for src in [
+            NodeSource::Manual,
+            NodeSource::Init,
+            NodeSource::File {
+                file: "docs/p.md".into(),
+                task: 3,
+                step: Some(2),
+            },
+            NodeSource::File {
+                file: "docs/p.md".into(),
+                task: 3,
+                step: None,
+            },
+        ] {
+            assert_eq!(NodeSource::from_column(&src.to_column()), src);
+            let v = serde_json::to_value(&src).unwrap();
+            assert_eq!(serde_json::from_value::<NodeSource>(v).unwrap(), src);
+        }
+        assert_eq!(
+            NodeSource::File {
+                file: "a.md".into(),
+                task: 1,
+                step: None
+            }
+            .to_column(),
+            r#"{"file":"a.md","task":1}"#
+        );
+        assert_eq!(NodeSource::from_column("garbage"), NodeSource::Manual);
     }
 
     #[test]

@@ -66,6 +66,9 @@ mod tests {
             hill: None,
             expected_files: vec![],
             depends_on: vec![],
+            external_deps: vec![],
+            source: crate::plan::NodeSource::Manual,
+            branch: None,
             depth,
         }
     }
