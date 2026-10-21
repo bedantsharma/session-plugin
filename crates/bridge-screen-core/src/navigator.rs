@@ -613,12 +613,12 @@ fn verify_nudges(conn: &Connection, session: &Session, unit: &Unit) -> Result<Ve
 /// (spec §9.1): once per dependency and commit per session. Links into other repos say
 /// which repo; waits that cleared because their target was done get the same note.
 fn dependency_ready(conn: &Connection, session: &Session) -> Result<Vec<Candidate>> {
-    let mut out = crate::waits::cleared_notes(conn, session)?;
+    let mut out = Vec::new();
     let Some(task) = &session.active_task else {
-        return Ok(out);
+        return wait_notes(conn, session, out);
     };
     let Some(node) = crate::plan::get_node(conn, &session.repo_id, task)? else {
-        return Ok(out);
+        return wait_notes(conn, session, out);
     };
     let local = node
         .depends_on
@@ -636,11 +636,10 @@ fn dependency_ready(conn: &Connection, session: &Session) -> Result<Vec<Candidat
         if v.session_id == session.session_id {
             continue;
         }
-        let key = match &repo_name {
-            None => format!("dep:{dep}:{}", v.sha),
-            Some(_) => format!("dep:{repo}:{dep}:{}", v.sha),
-        };
-        if note_was_sent(conn, &session.session_id, &key)? {
+        let key = link_key(&session.repo_id, &repo, &dep, &v.sha);
+        if note_was_sent(conn, &session.session_id, &key)?
+            || crate::waits::noted_by_wait(conn, session, &repo, &dep, &v.sha)?
+        {
             continue;
         }
         let title = task_title(conn, &repo, &dep)?.unwrap_or_default();
@@ -655,7 +654,32 @@ fn dependency_ready(conn: &Connection, session: &Session) -> Result<Vec<Candidat
             key,
         ));
     }
-    Ok(out)
+    wait_notes(conn, session, out)
+}
+
+/// The state key of a plan link's "done" note: `dep:<id>:<sha>` in this repo,
+/// `dep:<repo id>:<id>:<sha>` for another.
+pub(crate) fn link_key(here: &str, repo: &str, id: &str, sha: &str) -> String {
+    if repo == here {
+        format!("dep:{id}:{sha}")
+    } else {
+        format!("dep:{repo}:{id}:{sha}")
+    }
+}
+
+/// `links` plus the notes of waits that cleared because their target was done, leaving out
+/// one the plan link's note already says (same target, same commit).
+fn wait_notes(
+    conn: &Connection,
+    session: &Session,
+    mut links: Vec<Candidate>,
+) -> Result<Vec<Candidate>> {
+    for c in crate::waits::cleared_notes(conn, session)? {
+        if !links.iter().any(|l| l.text == c.text) {
+            links.push(c);
+        }
+    }
+    Ok(links)
 }
 
 /// Was a note with this state key sent to the session already?

@@ -522,6 +522,57 @@ fn import_keeps_tasks_in_progress() {
 }
 
 #[test]
+fn renaming_a_task_in_progress_keeps_its_work_and_its_old_title() {
+    let mut r = Repo::new();
+    let a = r.write("a.md", &plan_text("P", &[("Busy", &[("s", false)])]));
+    r.scan();
+    for (kind, data) in [
+        (
+            "session_started",
+            serde_json::json!({"cwd": "/x", "source": "startup"}),
+        ),
+        (
+            "task_claimed",
+            serde_json::json!({"task_id": "1", "mode": "confirmed", "confidence": 1.0}),
+        ),
+    ] {
+        r.store
+            .append(EventDraft::new("r", "s1", kind, data).task("1"))
+            .unwrap();
+    }
+    std::fs::write(&a, plan_text("P", &[("Busy, renamed", &[("s", false)])])).unwrap();
+    let out = r.scan();
+    assert!(
+        matches!(out[0], ImportOutcome::Imported { edited: 1, .. }),
+        "{out:?}"
+    );
+    let n = get_node(r.store.conn(), "r", "1").unwrap().unwrap();
+    assert_eq!(
+        (n.title.as_str(), n.status),
+        ("Busy, renamed", NodeStatus::Active)
+    );
+    // The old title is still in the history, and the rename says where it came from.
+    let events = read_all(r.store.conn(), Some("r")).unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| e.kind == "node_added" && e.data["id"] == "1" && e.data["title"] == "Busy")
+    );
+    let rename = events
+        .iter()
+        .find(|e| e.kind == "node_edited" && e.data["title"] == "Busy, renamed")
+        .expect("a node_edited for the rename");
+    assert!(
+        rename.data["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("imported from "),
+        "{}",
+        rename.data
+    );
+}
+
+#[test]
 fn existing_plan_gets_a_baseline() {
     let mut r = Repo::new();
     let ectx = EditContext {

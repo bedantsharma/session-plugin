@@ -452,7 +452,12 @@ pub fn cleared_notes(conn: &Connection, session: &Session) -> Result<Vec<Candida
             continue;
         };
         let key = format!("wait:{}", w.wait_id);
-        if note_was_sent(conn, &session.session_id, &key)? {
+        // A plan link on the same task already said it (same commit).
+        let link = crate::navigator::link_key(&session.repo_id, repo, task, sha);
+        if note_was_sent(conn, &session.session_id, &key)?
+            || note_was_sent(conn, &session.session_id, &link)?
+            || noted_by_wait(conn, session, repo, task, sha)?
+        {
             continue;
         }
         let by = crate::verify::top_verification(conn, repo, task)?
@@ -474,6 +479,28 @@ pub fn cleared_notes(conn: &Connection, session: &Session) -> Result<Vec<Candida
         ));
     }
     Ok(out)
+}
+
+/// Did one of this session's waits on `repo:task` already get its "done" note for `sha`?
+/// (Then the plan link's note for the same task would say it twice.)
+pub fn noted_by_wait(
+    conn: &Connection,
+    session: &Session,
+    repo: &str,
+    task: &str,
+    sha: &str,
+) -> Result<bool> {
+    for w in of_session(conn, &session.session_id)? {
+        if w.cleared_why == Some(ClearedWhy::TargetDone)
+            && w.target_repo_id.as_deref() == Some(repo)
+            && w.target_task.as_deref() == Some(task)
+            && w.cleared_sha.as_deref() == Some(sha)
+            && note_was_sent(conn, &session.session_id, &format!("wait:{}", w.wait_id))?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// `waiting on 2.4 Login form (since 40m)` for each open wait, then

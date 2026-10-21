@@ -344,3 +344,65 @@ fn owner_lists_clears_and_promotes_waits() {
         "{list}"
     );
 }
+
+#[test]
+fn a_link_and_a_wait_on_the_same_task_note_once() {
+    let mut t = Two::new();
+    let link = r#"[{"op":"add_dep","id":"1.1","depends_on":"1.1","repo":"api"}]"#;
+    assert!(
+        t.env
+            .run(&["plan", "edit", "--reason", "needs it"], link)
+            .status
+            .success()
+    );
+    t.claim("w1", "1.1");
+    t.prompt_web("w1");
+    let (err, text) = t.call(
+        "w1",
+        "waiting_on",
+        &json!({"target": "api:1.1", "reason": "the page calls it"}),
+    );
+    assert!(!err, "{text}");
+    // Already a plan link: no offer to make one.
+    assert!(!text.contains("promote_wait"), "{text}");
+    t.claim("a1", "1.1");
+    t.api_hook("user-prompt-submit", "a1");
+    let short = t.finish_api_task();
+    let first = t.prompt_web("w1");
+    assert_eq!(
+        first,
+        format!(
+            "bridge-screen: api:1.1 Login endpoint is done on `main` @{short}. Merge or rebase to pick it up."
+        )
+    );
+    for _ in 0..3 {
+        assert_eq!(t.prompt_web("w1"), "", "the same news twice");
+    }
+}
+
+#[test]
+fn two_waits_on_the_same_task_note_once() {
+    let mut t = Two::new();
+    t.claim("w1", "1.1");
+    t.prompt_web("w1");
+    for why in ["the page calls it", "and the docs"] {
+        let (err, text) = t.call(
+            "w1",
+            "waiting_on",
+            &json!({"target": "api:1.1", "reason": why}),
+        );
+        assert!(!err, "{text}");
+    }
+    t.claim("a1", "1.1");
+    t.api_hook("user-prompt-submit", "a1");
+    let short = t.finish_api_task();
+    assert_eq!(
+        t.prompt_web("w1"),
+        format!(
+            "bridge-screen: api:1.1 Login endpoint is done on `main` @{short}. Merge or rebase to pick it up."
+        )
+    );
+    for _ in 0..3 {
+        assert_eq!(t.prompt_web("w1"), "", "the same news twice");
+    }
+}
