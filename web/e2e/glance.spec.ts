@@ -66,3 +66,64 @@ test('the header and the needs-you queue sit above the fold at 1280×720', async
     s.stop()
   }
 })
+
+test('no sideways overflow at phone, 1024 and 1100 widths; the columns follow the spec', async ({
+  page,
+}) => {
+  const s = await serve([
+    {
+      repo: 'r1',
+      name: 'shop',
+      milestones: [
+        { id: '2', title: 'Accounts and sign-in with a long enough title', hill: 'downhill' },
+        { id: '3', title: 'Catalogue and search', hill: 'uphill' },
+      ],
+      sessions: [
+        { id: 'w0rk1ng', working: true, units: 6, task: '2.1' },
+        { id: 'red0001', red: true },
+      ],
+    },
+  ])
+  // Elements poking past the right edge, whether or not the page itself scrolls.
+  const overflow = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll('body *')]
+        .filter((el) => !el.closest('.sr-only'))
+        .filter((el) => el.getBoundingClientRect().right > window.innerWidth + 0.5)
+        .map((el) => `${el.tagName.toLowerCase()}.${el.className}`.slice(0, 120)),
+    )
+  const order = () =>
+    page.evaluate(() => {
+      const top = (label: string) =>
+        document.querySelector(`[aria-label="${label}"]`)!.getBoundingClientRect().top
+      return top('Live sessions') < top('Projects') ? 'sessions first' : 'projects first'
+    })
+  try {
+    for (const [width, first] of [
+      [375, 'sessions first'],
+      [1024, 'projects first'],
+      [1100, 'projects first'],
+    ] as const) {
+      await page.setViewportSize({ width, height: 800 })
+      if (width === 375) await page.goto(s.url)
+      await expect(page.locator('[data-milestone="3"]')).toBeVisible()
+      expect(await overflow(), `glance at ${width}`).toEqual([])
+      expect(await order(), `glance at ${width}`).toBe(first)
+
+      await page.locator('[data-project="r1"]').getByRole('button', { name: 'shop' }).click()
+      await expect(page.getByRole('heading', { name: 'Plan' })).toBeVisible()
+      expect(await overflow(), `project at ${width}`).toEqual([])
+
+      await page.getByRole('button', { name: '← Glance' }).click()
+      await page
+        .locator('[data-session="w0rk1ng"]')
+        .getByRole('button', { name: /S w0rk1n/ })
+        .click()
+      await expect(page.getByText('Time by label')).toBeVisible()
+      expect(await overflow(), `session at ${width}`).toEqual([])
+      await page.getByRole('button', { name: '← Glance' }).click()
+    }
+  } finally {
+    s.stop()
+  }
+})
