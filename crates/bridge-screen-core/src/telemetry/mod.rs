@@ -66,7 +66,7 @@ pub struct Usage {
     /// back instead of only moving forward; message ids keep replies from counting twice.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub restarted: bool,
-    /// The file's identity (inode and first bytes) at this read, kept with the cursor so
+    /// The file's identity (device, inode, creation time) at this read, kept with the cursor so
     /// a replaced transcript is noticed even when it is as long as the old one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<String>,

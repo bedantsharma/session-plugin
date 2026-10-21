@@ -29,54 +29,38 @@ pub struct ReadOut {
     pub restarted: bool,
     /// One line was longer than twice the slice and was skipped without being parsed.
     pub skipped_long_line: bool,
-    /// The file's identity now (see [`identity`]), kept with the cursor; `None` for a
-    /// missing file.
+    /// The file's identity now (see [`identity`]: metadata only, never its contents),
+    /// kept with the cursor; `None` for a missing file.
     pub identity: Option<String>,
 }
 
-/// Bytes at the start of a transcript that identify it, with its inode.
-const HEAD_BYTES: u64 = 256;
-
-/// `ino:<inode>:len:<n>:head:<hash>` — the inode (Unix) and a hash of the first `n ≤ 256`
-/// bytes. A replaced file (a new inode, or different first bytes) gets a new identity,
-/// so its cursor restarts from 0 even when it is as long as the old one.
-fn identity(file: &mut File, size: u64) -> Result<String> {
-    use sha2::{Digest, Sha256};
+/// `dev:<device>:ino:<inode>:born:<secs>.<nanos>` — which file this is, from its
+/// metadata only (the transcript's contents are never read for it): the device and inode
+/// on Unix, and the creation time where the file system records one (an inode number can
+/// be reused after a delete; a creation time tells the two files apart). A file replaced
+/// by a new one — deleted and written again, or renamed over — gets a new identity, so
+/// its cursor restarts from 0 even when it is as long as the old one. A file rewritten in
+/// place keeps its identity; only its shrinking is noticed (`size < cursor`). `None`
+/// when the platform gives neither.
+fn identity(meta: &std::fs::Metadata) -> Option<String> {
+    use std::fmt::Write as _;
+    let mut out = String::new();
     #[cfg(unix)]
-    let ino = {
+    {
         use std::os::unix::fs::MetadataExt as _;
-        file.metadata()?.ino()
-    };
-    #[cfg(not(unix))]
-    let ino = 0_u64;
-    let n = size.min(HEAD_BYTES);
-    let mut head = Vec::new();
-    file.seek(SeekFrom::Start(0))?;
-    (&mut *file).take(n).read_to_end(&mut head)?;
-    let digest = Sha256::digest(&head);
-    let hash = digest.iter().take(8).fold(String::new(), |mut out, b| {
-        use std::fmt::Write as _;
-        let _ = write!(out, "{b:02x}");
-        out
-    });
-    Ok(format!("ino:{ino}:len:{}:head:{hash}", head.len()))
-}
-
-/// Is the file still the one `known` describes? Its inode must match and its first bytes
-/// (as many as were hashed then) must hash the same.
-fn same_file(file: &mut File, size: u64, known: &str) -> Result<bool> {
-    // An identity this version can't read: trust the cursor.
-    let Some(len) = known
-        .strip_prefix("ino:")
-        .and_then(|rest| rest.split(':').nth(2))
-        .and_then(|l| l.parse::<u64>().ok())
-    else {
-        return Ok(true);
-    };
-    if size < len {
-        return Ok(false);
+        let _ = write!(out, "dev:{}:ino:{}", meta.dev(), meta.ino());
     }
-    Ok(identity(file, len)? == known)
+    if let Some(born) = meta
+        .created()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+    {
+        if !out.is_empty() {
+            out.push(':');
+        }
+        let _ = write!(out, "born:{}.{:09}", born.as_secs(), born.subsec_nanos());
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 /// Read the replies in `path` after byte `from`, at most `max` bytes (a line longer than
@@ -98,17 +82,16 @@ pub fn read_new_checked(path: &Path, from: u64, max: u64, known: Option<&str>) -
         }
         Err(e) => return Err(e.into()),
     };
-    let size = file.metadata()?.len();
-    let replaced = match known {
-        Some(k) if from > 0 => !same_file(&mut file, size, k)?,
-        _ => false,
-    };
+    let meta = file.metadata()?;
+    let size = meta.len();
+    let identity = identity(&meta);
+    // Only a cursor taken with an identity can be checked against it.
+    let replaced = from > 0 && known.is_some() && identity.as_deref() != known;
     let (from, restarted) = if size < from || replaced {
         (0, true)
     } else {
         (from, false)
     };
-    let identity = Some(identity(&mut file, size)?);
     let want = max.min(size - from);
     let mut buf = Vec::new();
     file.seek(SeekFrom::Start(from))?;

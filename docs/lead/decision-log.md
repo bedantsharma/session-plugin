@@ -107,8 +107,12 @@ Choices someone will later ask "why?" about. Newest last. Entries are never dele
 **Decision:** Every owner-facing message was rewritten (`docs/lead/message-audit.md`). Codes stay inside the program; a single list (`web/src/lib/jargon.json`) is tested against the glance, `status`, `watch`, the dashboard and the card. The raw History page is exempt on purpose. The built bundle itself isn't scanned (its code holds the codes as map keys); the tests check what the components render instead.
 **Consequences:** New screen text that leaks a code fails the tests.
 
-## #22 A replaced transcript is recognised by its first bytes — Accepted — 2026-10-21
+## #22 A replaced transcript is recognised by its first bytes — Superseded by #23 — 2026-10-21
 **Context:** A transcript replaced by one as long or longer kept its old reading position, so new usage was missed.
 **Decision:** The reading position is stored with the file's identity: its inode and a short hash (8 bytes of SHA-256) of its first 256 bytes or fewer. A different identity means start again from the top; message ids keep anything from counting twice. The hash can't be turned back into text.
 **Consequences:** One extra 256-byte read per transcript per stop; a file under 256 bytes that is still growing is re-read from the top (cheap, no double counting).
 
+## #23 A replaced transcript is recognised without reading it — Accepted — 2026-10-21
+**Context:** #22 hashed the first 256 bytes of each transcript. Those bytes are message text, and the rule is that bridge-screen reads only ids, model names, token counts and timestamps from a transcript — a hash still means reading the text.
+**Decision:** The file's identity comes from its metadata only: device, inode and creation time (where the file system records one). A file deleted and written again, or renamed over, gets a new identity and is read again from the top; message ids keep anything from counting twice.
+**Consequences:** No transcript text is read for this. A file rewritten in place (same file, new contents) keeps its identity; it is still caught when it gets shorter, but not when it is rewritten as long or longer. Claude Code only appends to transcripts, so this isn't expected in practice. No extra read per stop.

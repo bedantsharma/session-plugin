@@ -640,10 +640,11 @@ fn replaced_transcript_restarts() {
         take(&mut s, &path),
         (true, vec!["n1".into(), "n2".into(), "n3".into()])
     );
-    // Rewritten in place, longer, with different first bytes: noticed too; replies seen
-    // before are not counted twice.
+    // Replaced by renaming a longer file over it (how tools swap a file atomically):
+    // noticed too; replies seen before are not counted twice.
+    let tmp = dir.path().join("t.jsonl.new");
     write(
-        &path,
+        &tmp,
         &[
             line("k1", &at(10), 1),
             line("n1", &at(8), 1),
@@ -652,6 +653,7 @@ fn replaced_transcript_restarts() {
         ]
         .concat(),
     );
+    std::fs::rename(&tmp, &path).unwrap();
     assert_eq!(
         take(&mut s, &path),
         (true, vec!["k1".into(), "k2".into(), "k3".into()])
@@ -668,7 +670,7 @@ fn replaced_transcript_restarts() {
             Ok((r.get(0)?, r.get(1)?))
         })
         .unwrap();
-    assert!(before.1.as_deref().is_some_and(|i| i.starts_with("ino:")));
+    assert!(before.1.as_deref().is_some_and(|i| i.starts_with("dev:")));
     s.rebuild().unwrap();
     let after: (i64, Option<String>) = s
         .conn()
@@ -677,4 +679,21 @@ fn replaced_transcript_restarts() {
         })
         .unwrap();
     assert_eq!(after, before);
+}
+
+#[test]
+fn file_identity_comes_from_metadata_not_contents() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (dir.path().join("a.jsonl"), dir.path().join("b.jsonl"));
+    let text = line("m1", &at(5), 1);
+    write(&a, &text);
+    write(&b, &text);
+    let id = |p: &std::path::Path| read_new(p, 0, MAX_HOOK_BYTES).unwrap().identity;
+    let first = id(&a);
+    assert!(first.is_some());
+    // Two files with the same contents are still two files.
+    assert_ne!(first, id(&b));
+    // Growing the file keeps its identity.
+    append(&a, &line("m2", &at(6), 1));
+    assert_eq!(id(&a), first);
 }
