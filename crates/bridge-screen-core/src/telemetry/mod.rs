@@ -26,7 +26,9 @@ use crate::config::{Price, price_for};
 use crate::error::Result;
 
 pub use project::{USAGE_KINDS, project};
-pub use read::{MAX_HOOK_BYTES, ReadOut, read_new, read_to_end};
+pub use read::{
+    MAX_HOOK_BYTES, ReadOut, read_new, read_new_checked, read_to_end, read_to_end_checked,
+};
 
 /// Appended to the model id of a fast-mode reply (`claude-opus-5-5 (fast)`): fast mode
 /// costs more than the standard rate, so it is priced only by an entry of its own.
@@ -64,6 +66,10 @@ pub struct Usage {
     /// back instead of only moving forward; message ids keep replies from counting twice.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub restarted: bool,
+    /// The file's identity (inode and first bytes) at this read, kept with the cursor so
+    /// a replaced transcript is noticed even when it is as long as the old one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -85,11 +91,19 @@ pub fn subagent_path(transcript: &Path, session_id: &str, agent_id: &str) -> Pat
 
 /// A transcript's byte cursor (0 when it was never read).
 pub fn cursor(conn: &Connection, path: &str) -> Result<u64> {
-    let offset: Option<i64> = conn
-        .prepare_cached("SELECT offset FROM transcript_cursors WHERE path = ?1")?
-        .query_row([path], |r| r.get(0))
+    Ok(cursor_with_identity(conn, path)?.0)
+}
+
+/// A transcript's byte cursor and the file identity it was taken on.
+fn cursor_with_identity(conn: &Connection, path: &str) -> Result<(u64, Option<String>)> {
+    let row: Option<(i64, Option<String>)> = conn
+        .prepare_cached("SELECT offset, identity FROM transcript_cursors WHERE path = ?1")?
+        .query_row([path], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()?;
-    Ok(offset.and_then(|o| u64::try_from(o).ok()).unwrap_or(0))
+    Ok(match row {
+        Some((o, id)) => (u64::try_from(o).unwrap_or(0), id),
+        None => (0, None),
+    })
 }
 
 /// What a transcript holds that isn't recorded yet.
@@ -105,10 +119,10 @@ pub struct Pending {
 /// catch-up only) — and drop replies already recorded.
 pub fn pending(conn: &Connection, path: &Path, max: Option<u64>) -> Result<Pending> {
     let key = path.to_string_lossy().into_owned();
-    let from = cursor(conn, &key)?;
+    let (from, stored_id) = cursor_with_identity(conn, &key)?;
     let out = match max {
-        Some(max) => read::read_new(path, from, max)?,
-        None => read::read_to_end(path, from)?,
+        Some(max) => read::read_new_checked(path, from, max, stored_id.as_deref())?,
+        None => read::read_to_end_checked(path, from, stored_id.as_deref())?,
     };
     let mut known = conn.prepare_cached("SELECT 1 FROM usage_replies WHERE message_id = ?1")?;
     let mut replies = Vec::with_capacity(out.replies.len());
@@ -117,12 +131,13 @@ pub fn pending(conn: &Connection, path: &Path, max: Option<u64>) -> Result<Pendi
             replies.push(r);
         }
     }
-    let moved = out.offset_after != from || out.restarted;
+    let moved = out.offset_after != from || out.restarted || out.identity != stored_id;
     Ok(Pending {
         usage: (moved || !replies.is_empty()).then_some(Usage {
             path: key,
             offset_after: out.offset_after,
             restarted: out.restarted,
+            identity: out.identity,
             agent_id: None,
             agent_type: None,
             replies,

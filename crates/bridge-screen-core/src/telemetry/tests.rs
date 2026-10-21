@@ -591,3 +591,90 @@ fn fast_mode_replies_are_not_priced_at_the_standard_rate() {
     assert!(c.complete());
     assert_eq!(cost_text(&c), "$60.00");
 }
+
+/// Record what `pending` found as the hook would, returning (restarted, reply ids).
+fn take(s: &mut Store, path: &std::path::Path) -> (bool, Vec<String>) {
+    let p = pending(s.conn(), path, Some(MAX_HOOK_BYTES)).unwrap();
+    let Some(u) = p.usage else {
+        return (false, Vec::new());
+    };
+    let ids = u.replies.iter().map(|r| r.message_id.clone()).collect();
+    let restarted = u.restarted;
+    s.append(EventDraft::new(
+        "r",
+        "s1",
+        "usage",
+        serde_json::to_value(&u).unwrap(),
+    ))
+    .unwrap();
+    (restarted, ids)
+}
+
+#[test]
+fn replaced_transcript_restarts() {
+    let mut s = Store::open_in_memory().unwrap();
+    session(&mut s);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.jsonl");
+    write(
+        &path,
+        &[line("m1", &at(5), 1), line("m2", &at(6), 1)].concat(),
+    );
+    assert_eq!(take(&mut s, &path), (false, vec!["m1".into(), "m2".into()]));
+    // Growing the same file reads only the new line.
+    append(&path, &line("m3", &at(7), 1));
+    assert_eq!(take(&mut s, &path), (false, vec!["m3".into()]));
+    assert_eq!(take(&mut s, &path), (false, vec![]));
+    // Replaced by a new file exactly as long: noticed, read again from the start.
+    let len = std::fs::metadata(&path).unwrap().len();
+    std::fs::remove_file(&path).unwrap();
+    let new = [
+        line("n1", &at(8), 1),
+        line("n2", &at(9), 1),
+        line("n3", &at(9), 1),
+    ]
+    .concat();
+    assert_eq!(new.len() as u64, len);
+    write(&path, &new);
+    assert_eq!(
+        take(&mut s, &path),
+        (true, vec!["n1".into(), "n2".into(), "n3".into()])
+    );
+    // Rewritten in place, longer, with different first bytes: noticed too; replies seen
+    // before are not counted twice.
+    write(
+        &path,
+        &[
+            line("k1", &at(10), 1),
+            line("n1", &at(8), 1),
+            line("k2", &at(11), 1),
+            line("k3", &at(12), 1),
+        ]
+        .concat(),
+    );
+    assert_eq!(
+        take(&mut s, &path),
+        (true, vec!["k1".into(), "k2".into(), "k3".into()])
+    );
+    let n: i64 = s
+        .conn()
+        .query_row("SELECT count(*) FROM usage_replies", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 9);
+    // The cursor and its identity rebuild from the events.
+    let before: (i64, Option<String>) = s
+        .conn()
+        .query_row("SELECT offset, identity FROM transcript_cursors", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert!(before.1.as_deref().is_some_and(|i| i.starts_with("ino:")));
+    s.rebuild().unwrap();
+    let after: (i64, Option<String>) = s
+        .conn()
+        .query_row("SELECT offset, identity FROM transcript_cursors", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(after, before);
+}

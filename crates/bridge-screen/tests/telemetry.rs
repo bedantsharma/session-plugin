@@ -150,7 +150,15 @@ fn replies_go_to_the_unit_and_task_and_nothing_private_is_kept() {
         .keys()
         .map(String::as_str)
         .collect();
-    assert_eq!(keys, ["offset_after", "path", "replies"]);
+    // `identity` is the inode and a short hash of the first bytes: no text is kept.
+    assert_eq!(keys, ["identity", "offset_after", "path", "replies"]);
+    assert!(
+        u.data["identity"]
+            .as_str()
+            .is_some_and(|i| i.starts_with("ino:") && !i.contains("PRIVATE")),
+        "{}",
+        u.data
+    );
     let reply_keys: Vec<&str> = u.data["replies"][0]
         .as_object()
         .unwrap()

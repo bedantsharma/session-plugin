@@ -403,9 +403,11 @@ CREATE INDEX forecast_history_repo ON forecast_history (repo_id, ts);
 /// Version 9: the polish round — a detour the owner asked for (`requested`, from
 /// `detour_opened`; never drift or away time); for each verification a failure wiped,
 /// which failure (`failed_by`, its event id) and the state it had (`failed_from`), so the
-/// owner can take a "broken" verdict back.
+/// owner can take a "broken" verdict back; and each transcript cursor's file identity
+/// (inode and first bytes), so a replaced transcript restarts from 0.
 pub const V9: &str = r"
 ALTER TABLE detours ADD COLUMN requested INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE verifications ADD COLUMN failed_by TEXT;
 ALTER TABLE verifications ADD COLUMN failed_from TEXT;
+ALTER TABLE transcript_cursors ADD COLUMN identity TEXT;
 ";

@@ -29,11 +29,65 @@ pub struct ReadOut {
     pub restarted: bool,
     /// One line was longer than twice the slice and was skipped without being parsed.
     pub skipped_long_line: bool,
+    /// The file's identity now (see [`identity`]), kept with the cursor; `None` for a
+    /// missing file.
+    pub identity: Option<String>,
+}
+
+/// Bytes at the start of a transcript that identify it, with its inode.
+const HEAD_BYTES: u64 = 256;
+
+/// `ino:<inode>:len:<n>:head:<hash>` — the inode (Unix) and a hash of the first `n ≤ 256`
+/// bytes. A replaced file (a new inode, or different first bytes) gets a new identity,
+/// so its cursor restarts from 0 even when it is as long as the old one.
+fn identity(file: &mut File, size: u64) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    #[cfg(unix)]
+    let ino = {
+        use std::os::unix::fs::MetadataExt as _;
+        file.metadata()?.ino()
+    };
+    #[cfg(not(unix))]
+    let ino = 0_u64;
+    let n = size.min(HEAD_BYTES);
+    let mut head = Vec::new();
+    file.seek(SeekFrom::Start(0))?;
+    (&mut *file).take(n).read_to_end(&mut head)?;
+    let digest = Sha256::digest(&head);
+    let hash = digest.iter().take(8).fold(String::new(), |mut out, b| {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{b:02x}");
+        out
+    });
+    Ok(format!("ino:{ino}:len:{}:head:{hash}", head.len()))
+}
+
+/// Is the file still the one `known` describes? Its inode must match and its first bytes
+/// (as many as were hashed then) must hash the same.
+fn same_file(file: &mut File, size: u64, known: &str) -> Result<bool> {
+    // An identity this version can't read: trust the cursor.
+    let Some(len) = known
+        .strip_prefix("ino:")
+        .and_then(|rest| rest.split(':').nth(2))
+        .and_then(|l| l.parse::<u64>().ok())
+    else {
+        return Ok(true);
+    };
+    if size < len {
+        return Ok(false);
+    }
+    Ok(identity(file, len)? == known)
 }
 
 /// Read the replies in `path` after byte `from`, at most `max` bytes (a line longer than
 /// that may extend the slice to `2 × max`). A missing file reads as nothing, not an error.
 pub fn read_new(path: &Path, from: u64, max: u64) -> Result<ReadOut> {
+    read_new_checked(path, from, max, None)
+}
+
+/// [`read_new`], restarting from 0 when the file is no longer the one `known` (the
+/// identity stored with the cursor) describes: replaced, even by one as long or longer.
+pub fn read_new_checked(path: &Path, from: u64, max: u64, known: Option<&str>) -> Result<ReadOut> {
     let mut file = match File::open(path) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -45,11 +99,16 @@ pub fn read_new(path: &Path, from: u64, max: u64) -> Result<ReadOut> {
         Err(e) => return Err(e.into()),
     };
     let size = file.metadata()?.len();
-    let (from, restarted) = if size < from {
+    let replaced = match known {
+        Some(k) if from > 0 => !same_file(&mut file, size, k)?,
+        _ => false,
+    };
+    let (from, restarted) = if size < from || replaced {
         (0, true)
     } else {
         (from, false)
     };
+    let identity = Some(identity(&mut file, size)?);
     let want = max.min(size - from);
     let mut buf = Vec::new();
     file.seek(SeekFrom::Start(from))?;
@@ -89,6 +148,7 @@ pub fn read_new(path: &Path, from: u64, max: u64) -> Result<ReadOut> {
         more: offset_after < size,
         restarted,
         skipped_long_line,
+        identity,
     })
 }
 
@@ -99,16 +159,22 @@ pub const MAX_CATCH_UP_LINE: u64 = 256 * 1024 * 1024;
 /// never from a hook). Replies are deduplicated across slices. A line too long for a
 /// hook's slice is read whole here (up to [`MAX_CATCH_UP_LINE`]).
 pub fn read_to_end(path: &Path, from: u64) -> Result<ReadOut> {
-    let mut out = slice(path, from)?;
+    read_to_end_checked(path, from, None)
+}
+
+/// [`read_to_end`], restarting when the file was replaced (see [`read_new_checked`]).
+pub fn read_to_end_checked(path: &Path, from: u64, known: Option<&str>) -> Result<ReadOut> {
+    let mut out = slice(path, from, known)?;
     let mut seen: HashSet<String> = out.replies.iter().map(|r| r.message_id.clone()).collect();
     while out.more {
-        let next = slice(path, out.offset_after)?;
+        let next = slice(path, out.offset_after, None)?;
         if next.offset_after == out.offset_after {
             break; // only a line still being written is left
         }
         out.offset_after = next.offset_after;
         out.more = next.more;
         out.skipped_long_line |= next.skipped_long_line;
+        out.identity = next.identity;
         out.replies.extend(
             next.replies
                 .into_iter()
@@ -119,10 +185,10 @@ pub fn read_to_end(path: &Path, from: u64) -> Result<ReadOut> {
 }
 
 /// One catch-up slice: a hook-sized read, widened while a single line overflows it.
-fn slice(path: &Path, from: u64) -> Result<ReadOut> {
+fn slice(path: &Path, from: u64, known: Option<&str>) -> Result<ReadOut> {
     let mut max = MAX_HOOK_BYTES;
     loop {
-        let out = read_new(path, from, max)?;
+        let out = read_new_checked(path, from, max, known)?;
         if !out.skipped_long_line || 2 * max > MAX_CATCH_UP_LINE {
             return Ok(out);
         }
