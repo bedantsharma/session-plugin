@@ -97,8 +97,6 @@ pub fn readback(state: ReadbackState) -> &'static str {
     }
 }
 
-/// The raw codes in `text` an owner should never see, from the list shared with the web
-/// tests (`web/src/lib/jargon.json`) plus L0–L4, `snake_case` tokens and session UUIDs.
 /// `waiting on 2.4 Login form` (and `+N more`) for a session's open waits, or `None`.
 pub fn waiting(waits: &[WaitRef]) -> Option<String> {
     let first = waits.first()?;
@@ -131,6 +129,8 @@ pub fn branch_group_repos(g: &BranchGroup) -> String {
         .join(" · ")
 }
 
+/// The raw codes in `text` an owner should never see, from the list shared with the web
+/// tests (`web/src/lib/jargon.json`) plus L0–L4, `snake_case` tokens and session UUIDs.
 #[cfg(test)]
 pub fn jargon_in(text: &str) -> Vec<String> {
     let list: serde_json::Value =
