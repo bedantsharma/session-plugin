@@ -53,10 +53,10 @@
       </span>
     </div>
     {#if session.branch || session.flags.length}
-      <div class="flex min-w-0 items-center gap-2 text-meta text-muted">
-        {#if session.branch}<span class="truncate font-mono">{session.branch}</span>{/if}
+      <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-meta text-muted">
+        {#if session.branch}<span class="max-w-full truncate font-mono">{session.branch}</span>{/if}
         {#each session.flags as f (f.kind)}
-          <span class="shrink-0">· {flagText(f)}</span>
+          <span class="min-w-0">· {flagText(f)}</span>
         {/each}
       </div>
     {/if}
