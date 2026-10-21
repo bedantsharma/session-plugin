@@ -17,9 +17,9 @@ use crate::handoff::{BriefingStatus, EndKind, ReadbackState};
 use crate::tangent::{Label, LabelSource, NavState};
 
 pub use project::{
-    FileEvent, NeedsOwner, NeedsOwnerKind, OwnerQuestion, Prompt, QuestionSource, SESSION_KINDS,
-    SessionCrashed, SessionEnded, SessionStarted, SubagentStopped, TaskClaimed, TaskReleased,
-    UnitStopped, project,
+    BranchChanged, FileEvent, NeedsOwner, NeedsOwnerKind, OwnerQuestion, Prompt, QuestionSource,
+    SESSION_KINDS, SessionCrashed, SessionEnded, SessionStarted, SubagentStopped, TaskClaimed,
+    TaskReleased, UnitStopped, project,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

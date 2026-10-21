@@ -493,6 +493,12 @@ fn tangent_script() -> Vec<(&'static str, i64, &'static str, Value)> {
             "score": 0.9, "heuristic": "drift"}),
         ),
         (
+            "s1",
+            156,
+            "branch_changed",
+            json!({"branch": "feat/licence"}),
+        ),
+        (
             "owner",
             160,
             "config_changed",
@@ -544,6 +550,11 @@ fn rebuild_reproduces_tangent_views() {
             .any(|r| r.starts_with("repo_tuning: ") && r.ends_with("|Integer(40)")),
         "{before:?}"
     );
+    let store_branch = bridge_screen_core::session::get(s.conn(), "s1")
+        .unwrap()
+        .unwrap()
+        .branch;
+    assert_eq!(store_branch.as_deref(), Some("feat/licence"));
     // The asked-for detour keeps its flag (the last column).
     assert!(
         before

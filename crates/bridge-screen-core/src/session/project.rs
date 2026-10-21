@@ -27,7 +27,14 @@ pub const SESSION_KINDS: &[&str] = &[
     "task_released",
     "owner_question",
     "question_answered",
+    "branch_changed",
 ];
+
+/// The session's worktree is now on another branch (seen at Stop, from file reads).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchChanged {
+    pub branch: String,
+}
 
 /// Where a question to the owner came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -283,9 +290,18 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
                 [&session.session_id],
             )?;
         }
+        "branch_changed" => set_branch(tx, &session.session_id, &payload(event)?)?,
         // subagent_stopped only marks activity.
         _ => {}
     }
+    Ok(())
+}
+
+fn set_branch(tx: &Transaction, session_id: &str, d: &BranchChanged) -> Result<()> {
+    tx.execute(
+        "UPDATE sessions SET branch = ?2 WHERE session_id = ?1",
+        params![session_id, d.branch],
+    )?;
     Ok(())
 }
 

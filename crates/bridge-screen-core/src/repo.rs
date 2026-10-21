@@ -50,6 +50,54 @@ pub fn current_branch(dir: &Path) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
+/// Most directories [`read_head`] climbs before giving up.
+const MAX_CLIMB: usize = 64;
+
+/// The checked-out branch of the worktree containing `dir`, from file reads only (no git
+/// process, so a hook can afford it): `.git/HEAD`, or for a linked worktree the `HEAD`
+/// in the directory its `.git` file points at. A detached HEAD reads
+/// `detached at <first 7 of the SHA>`. The climb stops at `stop_at` (the session's
+/// worktree root, when known). `None` when nothing readable is found.
+pub fn read_head(dir: &Path, stop_at: Option<&Path>) -> Option<String> {
+    let mut here = Some(dir);
+    for _ in 0..MAX_CLIMB {
+        let d = here?;
+        let dot_git = d.join(".git");
+        let head = if dot_git.is_dir() {
+            Some(dot_git.join("HEAD"))
+        } else if dot_git.is_file() {
+            let text = std::fs::read_to_string(&dot_git).ok()?;
+            let target = text.lines().find_map(|l| l.strip_prefix("gitdir:"))?.trim();
+            let target = Path::new(target);
+            let gitdir = if target.is_absolute() {
+                target.to_path_buf()
+            } else {
+                d.join(target)
+            };
+            Some(gitdir.join("HEAD"))
+        } else {
+            None
+        };
+        if let Some(head) = head {
+            let text = std::fs::read_to_string(head).ok()?;
+            let text = text.trim();
+            return if let Some(name) = text.strip_prefix("ref:") {
+                let name = name.trim();
+                Some(name.strip_prefix("refs/heads/").unwrap_or(name).to_string())
+            } else if text.len() >= 7 && text.chars().all(|c| c.is_ascii_hexdigit()) {
+                Some(format!("detached at {}", &text[..7]))
+            } else {
+                None
+            };
+        }
+        if stop_at.is_some_and(|s| s == d) {
+            return None;
+        }
+        here = d.parent();
+    }
+    None
+}
+
 /// First 16 hex chars of SHA-256 over the git common directory path.
 ///
 /// Hashes the path's raw bytes, so paths that aren't valid UTF-8 still get distinct ids
@@ -156,6 +204,28 @@ mod tests {
         assert_eq!(super::current_branch(repo.path()).as_deref(), Some("main"));
         let plain = tempfile::tempdir().unwrap();
         assert_eq!(super::current_branch(plain.path()), None);
+    }
+
+    #[test]
+    fn read_head_without_git() {
+        let repo = new_repo();
+        std::fs::create_dir(repo.path().join("sub")).unwrap();
+        assert_eq!(
+            super::read_head(&repo.path().join("sub"), None).as_deref(),
+            Some("main")
+        );
+        // Stops at the given root rather than climbing out of it.
+        let plain = tempfile::tempdir().unwrap();
+        let inner = plain.path().join("a");
+        std::fs::create_dir(&inner).unwrap();
+        assert_eq!(super::read_head(&inner, Some(plain.path())), None);
+        // Detached.
+        let sha = std::fs::read_to_string(repo.path().join(".git/refs/heads/main")).unwrap();
+        git(repo.path(), &["checkout", "-q", "--detach"]);
+        assert_eq!(
+            super::read_head(repo.path(), None),
+            Some(format!("detached at {}", &sha.trim()[..7]))
+        );
     }
 
     #[test]

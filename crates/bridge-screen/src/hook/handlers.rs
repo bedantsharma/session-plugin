@@ -505,6 +505,15 @@ fn stop_drafts(
             score: scored.and_then(|(_, score)| score),
         },
     )?];
+    // The branch may have changed since SessionStart: file reads only, no git process.
+    if let Some(known) = &ctx.known {
+        let stop_at = known.worktree.as_deref().map(std::path::Path::new);
+        if let Some(branch) = repo::read_head(&input.cwd, stop_at)
+            && known.branch.as_deref() != Some(branch.as_str())
+        {
+            drafts.push(ctx.draft("branch_changed", &session::BranchChanged { branch })?);
+        }
+    }
     if question::ends_with_question(input.last_assistant_message.as_deref()) {
         drafts.push(ctx.draft(
             "owner_question",

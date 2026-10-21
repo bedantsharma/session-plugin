@@ -1246,3 +1246,70 @@ fn a_newer_data_format_is_logged_once_per_session() {
         .collect();
     assert_eq!(lines.len(), 2, "{log}");
 }
+
+#[test]
+fn stop_refreshes_branch() {
+    use bridge_screen_core::session;
+    use bridge_screen_core::store::Store;
+    let env = Env::new();
+    let repo = env.repo.path().to_path_buf();
+    let turn = |session: &str, cwd: &str| {
+        env.hook_raw(
+            "user-prompt-submit",
+            &common::fixture("user-prompt-submit", session, cwd),
+        );
+        env.hook_raw("stop", &common::fixture("stop", session, cwd));
+    };
+    let state = |session: &str| {
+        let store = Store::open(&env.db_path()).unwrap();
+        let branch = session::get(store.conn(), session).unwrap().unwrap().branch;
+        let n: i64 = store
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM events WHERE session_id = ?1 AND kind = 'branch_changed'",
+                [session],
+                |r| r.get(0),
+            )
+            .unwrap();
+        (branch, n)
+    };
+    // A normal repo: the branch switched after SessionStart is picked up at Stop.
+    env.hook("session-start", "s1");
+    common::git(&repo, &["checkout", "-q", "-b", "feat/login"]);
+    turn("s1", &env.repo_path());
+    assert_eq!(state("s1"), (Some("feat/login".to_string()), 1));
+    // Unchanged: no new event.
+    turn("s1", &env.repo_path());
+    assert_eq!(state("s1"), (Some("feat/login".to_string()), 1));
+    // Detached HEAD.
+    common::git(&repo, &["checkout", "-q", "--detach"]);
+    turn("s1", &env.repo_path());
+    let (branch, n) = state("s1");
+    assert!(
+        branch.as_deref().unwrap().starts_with("detached at "),
+        "{branch:?}"
+    );
+    assert_eq!(n, 2);
+    // A linked worktree, where `.git` is a file.
+    let parent = tempfile::tempdir().unwrap();
+    let wt = parent.path().join("wt");
+    common::git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "wt-one",
+            wt.to_str().unwrap(),
+        ],
+    );
+    let wt_s = wt.to_string_lossy().into_owned();
+    env.hook_raw(
+        "session-start",
+        &common::fixture("session-start", "s2", &wt_s),
+    );
+    common::git(&wt, &["checkout", "-q", "-b", "wt-two"]);
+    turn("s2", &wt_s);
+    assert_eq!(state("s2"), (Some("wt-two".to_string()), 1));
+}
