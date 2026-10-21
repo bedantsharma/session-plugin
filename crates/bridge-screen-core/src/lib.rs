@@ -12,6 +12,7 @@ pub mod error;
 pub mod forecast;
 pub mod git;
 pub mod handoff;
+pub mod import;
 pub mod navigator;
 pub mod owner;
 pub mod paths;
