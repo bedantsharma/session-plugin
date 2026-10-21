@@ -143,11 +143,49 @@ fn odd_plan_files_are_skipped() {
         );
     }
     let p = parse(&big);
-    assert_eq!(p.tasks.len(), n);
+    // Capped at MAX_NODES tasks and steps (3 per task here), with a warning.
+    assert_eq!(p.tasks.len(), super::parse::MAX_NODES / 3 + 1);
+    assert!(n > p.tasks.len());
+    assert!(p.warnings.iter().any(|w| w.contains("too many")));
 
     // Lossy text from a binary file never panics.
     let binary = String::from_utf8_lossy(&[0xff, 0xfe, 0, 1, 2, b'#', b' ', 0xc3]).to_string();
     assert_eq!(parse(&binary).tasks.len(), 0);
+}
+
+#[test]
+fn huge_checkbox_lists_are_capped() {
+    // A 1 MiB file of checkboxes would otherwise become ~100,000 plan nodes.
+    let mut text = String::from("# Big Implementation Plan\n\n### Task 1: Many\n\n");
+    let mut n = 0;
+    while text.len() < 1 << 20 {
+        let _ = writeln!(text, "- [ ] step {n}");
+        n += 1;
+    }
+    let p = parse(&text);
+    assert_eq!(p.tasks.len(), 1);
+    assert_eq!(p.tasks[0].steps.len(), super::parse::MAX_STEPS_PER_TASK);
+    assert!(
+        p.warnings.iter().any(|w| w.contains("steps")),
+        "{:?}",
+        p.warnings
+    );
+    let mut many = String::new();
+    for i in 1..=5000 {
+        let _ = write!(many, "### Task {i}: t{i}\n- [ ] a\n");
+    }
+    let p = parse(&many);
+    let nodes: usize = p.tasks.iter().map(|t| 1 + t.steps.len()).sum();
+    assert!(nodes <= super::parse::MAX_NODES, "{nodes}");
+    assert!(p.tasks.len() >= 100);
+    assert!(
+        p.warnings.iter().any(|w| w.contains("too many")),
+        "{:?}",
+        p.warnings
+    );
+    // A repeated step number can't overflow.
+    let dup = "### Task 1: A\n- [ ] **Step 4294967295: a**\n- [ ] **Step 4294967295: b**\n";
+    assert_eq!(parse(dup).tasks[0].steps.len(), 2);
 }
 
 // ---- import and diff -------------------------------------------------------------------

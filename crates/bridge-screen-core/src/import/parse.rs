@@ -11,6 +11,12 @@ use serde::Serialize;
 /// Longest title or step text kept (the plan's title limit).
 pub const MAX_TEXT_CHARS: usize = 200;
 
+/// Most steps kept in one task, and most tasks plus steps kept from one file. A real plan
+/// has a few dozen; a file of 100,000 checkboxes would otherwise stall SessionStart. What
+/// is left out is named in the warnings.
+pub const MAX_STEPS_PER_TASK: usize = 100;
+pub const MAX_NODES: usize = 1000;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct ParsedPlan {
     pub title: Option<String>,
@@ -142,6 +148,10 @@ struct Parser {
     in_files: bool,
     /// Task numbers seen so far (kept tasks only).
     seen: HashSet<u32>,
+    /// Tasks plus steps kept so far.
+    nodes: usize,
+    /// Which caps already warned (`steps`, `nodes`).
+    warned: HashSet<&'static str>,
 }
 
 impl Parser {
@@ -192,7 +202,15 @@ impl Parser {
         self.in_files = false;
         match task_heading(trimmed) {
             Some((Some(number), title)) if !title.is_empty() => {
-                if self.seen.insert(number) {
+                if self.nodes >= MAX_NODES {
+                    if self.warned.insert("nodes") {
+                        self.plan.warnings.push(format!(
+                            "too many tasks and steps; kept the first {MAX_NODES}"
+                        ));
+                    }
+                    self.in_task = false;
+                } else if self.seen.insert(number) {
+                    self.nodes += 1;
                     self.plan.tasks.push(ParsedTask {
                         number,
                         title,
@@ -246,17 +264,32 @@ impl Parser {
         let Some((checked, body)) = checkbox(line) else {
             return;
         };
+        if task.steps.len() >= MAX_STEPS_PER_TASK || self.nodes >= MAX_NODES {
+            if self.warned.insert("steps") {
+                self.plan.warnings.push(format!(
+                    "too many steps in task {}; kept the first {MAX_STEPS_PER_TASK}",
+                    task.number
+                ));
+            }
+            return;
+        }
         let position = u32::try_from(task.steps.len() + 1).unwrap_or(u32::MAX);
         let (number, text) = match step_label(body) {
             Some((k, text)) => (k, text),
             None => (position, one_line(body)),
         };
         let number = if task.steps.iter().any(|s| s.number == number) {
-            task.steps.iter().map(|s| s.number).max().unwrap_or(0) + 1
+            task.steps
+                .iter()
+                .map(|s| s.number)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1)
         } else {
             number
         };
         if !text.is_empty() {
+            self.nodes += 1;
             task.steps.push(ParsedStep {
                 number,
                 text,
