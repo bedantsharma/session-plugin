@@ -158,7 +158,7 @@ fn sessions_grouped_by_project_needs_you_first() {
 bridge-screen · 4 live sessions · 2 projects
 api  no plan yet
   S apis00  idle      (no task)             2 units · 2m · on task
-shop  goal: Online shop  · done 0% · claimed 0% · 2 unestimated
+shop  goal: Online shop  · done 0% · claimed 0% · 2 unestimated · forecast needs 3 more finished tasks
   S work00  working   2 Login form          3 units · 18m · on task
   S idle00  idle      (no task)             0 units · 0m · on task
   S wait00  idle      (no task)             1 unit  · 2m · on task
@@ -487,7 +487,7 @@ fn status_from_glance_matches_every_kind() {
         "\
 6 need you
 bridge-screen · 5 live sessions · 1 project
-shop  goal: Online shop  · done 0% · claimed 100%
+shop  goal: Online shop  · done 0% · claimed 100% · forecast needs 3 more finished tasks
   leftovers: 1 open (0 report-only)
   S red00a  needs you (no task)             1 unit  · 40m · drift ⚠ 40m
   S ask0ff  needs you (no task)             1 unit  · 1m · on task · asked you a question

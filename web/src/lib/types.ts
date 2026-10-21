@@ -56,6 +56,43 @@ export interface SessionFlag {
 export type Rest =
   { kind: 'needs_you'; why: NeedsKind } | { kind: 'done'; task: NodeRef } | { kind: 'idle' }
 
+/** Tokens and money, computed by the server from the configured prices. */
+export interface CostRow {
+  tokens: number
+  tokens_text: string
+  /** USD of the priced models; null when nothing is priced (unknown, never $0). */
+  usd: number | null
+  unpriced_models: string[]
+  /** `$12.40`, `≥ $12.40 (some models unpriced)` or `cost unknown`. */
+  text: string
+  /** `$12.40 spent · 3.1M tokens`. */
+  summary: string
+}
+
+export interface Forecast {
+  p50_hours: number
+  p90_hours: number
+  p50_date: string | null
+  p90_date: string | null
+  remaining_min: number
+  unestimated: number
+  points: number
+  hours_per_day: number | null
+  reason: string | null
+  mean_ratio?: number | null
+}
+
+/** A project's forecast with its words (dates only when `compact` is set). */
+export interface ForecastRow extends Forecast {
+  /** `likely by Oct 30 · could take until Nov 8`, or the reason there are no dates. */
+  text: string
+  compact: string | null
+  short: string
+  /** What the two dates mean, for the tooltip and screen readers. */
+  help: string
+  basis: string
+}
+
 export interface SessionRow {
   session_id: string
   short: string
@@ -73,6 +110,7 @@ export interface SessionRow {
   asked_question: boolean
   branch: string | null
   worktree: string | null
+  cost: CostRow | null
   rank: number
 }
 
@@ -96,7 +134,8 @@ export interface ProjectRow {
   milestones: MilestoneRow[]
   leftovers: { open: number; report_only: number }
   tuned: string | null
-  forecast: unknown | null
+  forecast: ForecastRow | null
+  cost: CostRow | null
   needs_you: number
   sessions: SessionRow[]
 }

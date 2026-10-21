@@ -214,6 +214,15 @@
                 >{/if}</span
             >
           </div>
+          {#if p.forecast || p.cost}
+            <p class="pb-1 text-xs text-muted tabular-nums" data-testid="card-forecast">
+              {#if p.forecast}<span title={p.forecast.help}>{p.forecast.short}</span><span
+                  class="sr-only">{` (${p.forecast.help})`}</span
+                >{/if}{#if p.forecast && p.cost}<span>&nbsp;·&nbsp;</span>{/if}{#if p.cost}<span
+                  >{p.cost.text}</span
+                >{/if}
+            </p>
+          {/if}
           {#if p.milestones.length}
             <button
               type="button"

@@ -563,6 +563,24 @@ pub fn compact_range(f: &Forecast, now: Timestamp, tz: &TimeZone) -> Option<Stri
     ))
 }
 
+/// A few words for one-line screens: `likely Oct 30–Nov 8`, or why there are no dates.
+pub fn short_text(f: &Forecast, now: Timestamp, tz: &TimeZone) -> String {
+    if let Some(range) = compact_range(f, now, tz) {
+        return format!("likely {range}");
+    }
+    if f.points < MIN_POINTS {
+        let more = MIN_POINTS - f.points;
+        format!(
+            "forecast needs {more} more finished {}",
+            if more == 1 { "task" } else { "tasks" }
+        )
+    } else if f.remaining_min == 0 {
+        "nothing estimated left".to_string()
+    } else {
+        "no recent activity to date a forecast".to_string()
+    }
+}
+
 /// `14h`, `2.5h`, `40m`: agent time for people (never rounded up).
 pub fn hours_text(hours: f64) -> String {
     if hours < 1.0 {

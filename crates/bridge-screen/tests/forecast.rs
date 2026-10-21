@@ -158,3 +158,79 @@ fn forecast_cli_refuses_thin_data() {
     );
     assert!(!text.contains("likely by"), "{text}");
 }
+
+/// One live session (through the hooks), so `status` lists the project.
+fn live(env: &Env) {
+    env.hook("session-start", "live01");
+}
+
+#[test]
+fn status_and_mcp_status_show_the_forecast_and_cost() {
+    let env = Env::new();
+    let name = seeded(&env, 3);
+    live(&env);
+    let repo = bridge_screen_core::repo::identify(env.repo.path()).unwrap();
+    let mut store = Store::open(&env.db_path()).unwrap();
+    let ts = Timestamp::now().to_string();
+    store
+        .append(EventDraft::new(
+            &repo.id,
+            "live01",
+            "usage",
+            json!({"path": "/t/live01.jsonl", "offset_after": 5, "replies": [
+                {"message_id": "m1", "model": "claude-opus-5-5", "ts": ts,
+                 "input": 1_000_000, "output": 100_000}]}),
+        ))
+        .unwrap();
+    drop(store);
+    let status = run(&env, &["status"]);
+    let line = status
+        .lines()
+        .find(|l| l.starts_with(&format!("{name}  goal: Ship")))
+        .unwrap_or_else(|| panic!("{status}"));
+    assert!(line.contains(" · likely "), "{line}");
+    assert!(line.ends_with(" · $6.00"), "{line}");
+
+    let mut mcp = common::Mcp::start(&env, &env.repo_path());
+    let (err, text) = common::call_as(&mut mcp, &env, "live01", "status", &json!({}));
+    assert!(!err, "{text}");
+    assert!(
+        text.contains("Cost so far: this session $6.00 (1.1M tokens)"),
+        "{text}"
+    );
+    assert!(text.contains("Forecast: likely by "), "{text}");
+    assert!(
+        text.contains("(based on 3 finished tasks; this project averages 2× its estimates)"),
+        "{text}"
+    );
+}
+
+#[test]
+fn an_unpriced_model_is_named_in_status() {
+    let env = Env::new();
+    seeded(&env, 0);
+    live(&env);
+    let repo = bridge_screen_core::repo::identify(env.repo.path()).unwrap();
+    let mut store = Store::open(&env.db_path()).unwrap();
+    store
+        .append(EventDraft::new(
+            &repo.id,
+            "live01",
+            "usage",
+            json!({"path": "/t/x.jsonl", "offset_after": 5, "replies": [
+                {"message_id": "m1", "model": "mystery-model", "ts": Timestamp::now().to_string(),
+                 "output": 5000}]}),
+        ))
+        .unwrap();
+    drop(store);
+    let status = run(&env, &["status"]);
+    assert!(status.contains(" · cost unknown"), "{status}");
+    assert!(
+        status.contains("  no price for mystery-model: add one under [prices] in config.toml"),
+        "{status}"
+    );
+    assert!(
+        status.contains("forecast needs 3 more finished tasks"),
+        "{status}"
+    );
+}

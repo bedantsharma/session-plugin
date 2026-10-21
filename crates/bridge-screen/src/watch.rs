@@ -488,12 +488,19 @@ fn project_lines(app: &App, row: usize, width: usize, narrow: bool) -> Vec<Line<
     } else {
         String::new()
     };
+    let mut extra = String::new();
+    if let Some(f) = &p.forecast {
+        let _ = write!(extra, " · {}", f.short);
+    }
+    if let Some(cost) = &p.cost {
+        let _ = write!(extra, " · {}", cost.text);
+    }
     let mut spans = vec![
         (format!("{:<12} ", p.name), sel.add_modifier(Modifier::BOLD)),
         (d, role(c, CLAY)),
         (cl, role(c, CLAY)),
         (rest, Style::default()),
-        (format!(" {pct}{claimed}"), sel),
+        (format!(" {pct}{claimed}{extra}"), sel),
     ];
     for m in &p.milestones {
         let hill = crate::words::hill(m.hill, m.done_pct)
@@ -539,6 +546,11 @@ fn session_line(
         (None, Some(t)) => format!("{} {}", t.id, t.title),
         (None, None) => "(no task)".to_string(),
     };
+    let cost = s
+        .cost
+        .as_ref()
+        .map(|c| format!(" · {}", c.text))
+        .unwrap_or_default();
     let flags = s.flags.iter().fold(String::new(), |mut out, f| {
         let age = f.age_s.map(|a| format!(" {}m", a / 60)).unwrap_or_default();
         let _ = write!(out, " · {}{age}", f.kind.text());
@@ -550,7 +562,7 @@ fn session_line(
             (format!("S {}  ", s.short), sel),
             (what, sel),
             (flags, sel),
-            (format!("  {}m", s.active_min), sel),
+            (format!("  {}m{cost}", s.active_min), sel),
         ],
         width,
     )

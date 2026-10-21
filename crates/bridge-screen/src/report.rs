@@ -102,7 +102,7 @@ pub fn write(store: &Store, glance: &Glance, label: &str) -> Result<Report> {
     task_titles.dedup();
     let names: Vec<String> = projects.iter().map(|p| titles(p)).collect();
     let mut summary = format!(
-        "Wrote {}. It is one self-contained page (inline styles, no scripts, no outside links) holding:\n- the time of the snapshot ({})\n- {} needs-you item(s){}\n- projects: {} (done% and claimed% bars, milestone hill states, live-session counts)\n- {decisions_shown} recent decision(s) (what and why){}",
+        "Wrote {}. It is one self-contained page (inline styles, no scripts, no outside links) holding:\n- the time of the snapshot ({})\n- {} needs-you item(s){}\n- projects: {} (done% and claimed% bars, the forecast, tokens and cost, milestone hill states, live-session counts)\n- {decisions_shown} recent decision(s) (what and why){}",
         path.display(),
         glance.as_of,
         items.len(),
@@ -178,6 +178,22 @@ fn project_html(
         p.claimed_pct,
         p.sessions.len()
     );
+    if let Some(f) = &p.forecast {
+        let _ = writeln!(
+            html,
+            "<p title=\"{}\">{} <span class=\"muted\">({})</span></p>",
+            esc(&f.help),
+            esc(&f.text),
+            esc(if f.compact.is_some() {
+                &f.help
+            } else {
+                &f.basis
+            })
+        );
+    }
+    if let Some(cost) = &p.cost {
+        let _ = writeln!(html, "<p class=\"muted\">{}</p>", esc(&cost.summary));
+    }
     if !p.milestones.is_empty() {
         html.push_str("<ul>");
         for m in &p.milestones {

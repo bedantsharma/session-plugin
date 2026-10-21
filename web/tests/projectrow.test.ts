@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/svelte'
 import { describe, expect, it } from 'vitest'
 import ProjectRow from '../src/lib/glance/ProjectRow.svelte'
-import { project } from './fixtures'
+import { COST, forecast, project } from './fixtures'
 
 describe('ProjectRow', () => {
   it('draws done and claimed apart and says both in text', () => {
@@ -56,5 +56,27 @@ describe('ProjectRow', () => {
     await Promise.resolve()
     await new Promise((r) => setTimeout(r))
     expect(container.querySelectorAll('[data-milestone]')).toHaveLength(8)
+  })
+
+  it('shows the forecast range with what it means, and the cost', () => {
+    render(ProjectRow, { project: project({ forecast: forecast(), cost: COST }) })
+    const line = screen.getByTestId('forecast')
+    expect(line.textContent?.replace(/\s+/g, ' ').trim()).toBe(
+      'likely by Oct 30 · could take until Nov 8 (50% and 90% chance, based on how long 5 verified tasks actually took)',
+    )
+    expect(line.querySelector('[title]')).toHaveAttribute(
+      'title',
+      '50% and 90% chance, based on how long 5 verified tasks actually took',
+    )
+    expect(screen.getByTestId('cost')).toHaveTextContent('$12.40 spent · 3.1M tokens')
+  })
+
+  it('shows the reason and no date when the data is too thin', () => {
+    const reason = 'Not enough finished tasks to forecast yet — 2 more are needed'
+    render(ProjectRow, { project: project({ forecast: forecast(reason) }) })
+    const line = screen.getByTestId('forecast')
+    expect(line).toHaveTextContent(reason)
+    expect(line.textContent).not.toMatch(/likely|Oct|Nov/)
+    expect(screen.queryByTestId('cost')).toBeNull()
   })
 })

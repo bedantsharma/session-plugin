@@ -1,7 +1,7 @@
 <script lang="ts">
   // One live session (plan §2): a status chip with its word and a distinct shape per
   // state (colour is never the only signal), the mono id, its task or detour, the branch
-  // and the active time. A working session gets a green bar, a faint tint and a ring
+  // and the active time and cost. A working session gets a green bar, a faint tint and a ring
   // that breathes around its dot (still under Motion off or reduced motion).
   import Chip from '$lib/ui/Chip.svelte'
   import { changed } from '$lib/changed'
@@ -61,9 +61,10 @@
       </div>
     {/if}
   </div>
-  <span class="shrink-0 self-start pt-0.5 text-meta text-muted tabular-nums"
+  <span class="shrink-0 self-start pt-0.5 text-right text-meta text-muted tabular-nums"
     ><span class="inline-block" use:changed={{ value: session.active_min, cls: 'num' }}
       >{session.active_min} min</span
-    ></span
+    >{#if session.cost}<span data-testid="session-cost">{` · ${session.cost.text}`}</span
+      >{/if}</span
   >
 </li>

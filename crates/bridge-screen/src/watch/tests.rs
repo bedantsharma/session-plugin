@@ -341,3 +341,47 @@ fn the_picker_stays_on_its_item_when_the_queue_changes_under_it() {
     key(&mut app, KeyCode::Char('1'), &mut fake);
     assert_eq!(fake.acted.len(), 1);
 }
+
+#[test]
+fn the_project_line_shows_the_forecast_and_cost_and_sessions_their_cost() {
+    use bridge_screen_core::forecast::Forecast;
+    use bridge_screen_core::view::{CostRow, ForecastRow};
+    let mut g = glance(0);
+    let cost = |text: &str| CostRow {
+        tokens: 3_100_000,
+        tokens_text: "3.1M".into(),
+        usd: Some(12.4),
+        unpriced_models: vec![],
+        text: text.into(),
+        summary: format!("{text} spent · 3.1M tokens"),
+    };
+    g.projects[0].forecast = Some(ForecastRow {
+        forecast: Forecast {
+            p50_hours: 10.0,
+            p90_hours: 20.0,
+            p50_date: Some("2026-10-30".into()),
+            p90_date: Some("2026-11-08".into()),
+            remaining_min: 600,
+            unestimated: 0,
+            points: 5,
+            hours_per_day: Some(2.0),
+            reason: None,
+            mean_ratio: Some(1.5),
+        },
+        text: "likely by Oct 30 · could take until Nov 8".into(),
+        compact: Some("Oct 30–Nov 8".into()),
+        short: "likely Oct 30–Nov 8".into(),
+        help: "50% and 90% chance, based on how long 5 verified tasks actually took".into(),
+        basis: "based on 5 finished tasks".into(),
+    });
+    g.projects[0].cost = Some(cost("$12.40"));
+    g.projects[0].sessions[0].cost = Some(cost("$1.20"));
+    let app = App::new(g, false);
+    let (lines, _) = draw(&app, 140, 30);
+    let all = text(&lines);
+    assert!(
+        all.contains("0% done · likely Oct 30–Nov 8 · $12.40"),
+        "{all}"
+    );
+    assert!(all.contains("0m · $1.20"), "{all}");
+}
