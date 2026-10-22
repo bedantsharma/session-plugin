@@ -11,9 +11,11 @@
    `publish-new` and `publish-update` scopes, and save it as the Actions secret
    `CARGO_REGISTRY_TOKEN`.
 
-## Before the first tag (checklist)
+## Before the next tag (checklist)
 
-Do these in order; each says what "done" looks like.
+`v0.1.0` is already released (GitHub Release, brew, npm, PyPI), before the crates.io workflow existed,
+so neither crate is on crates.io yet: the next tag (`v0.1.1`) is the first crates.io publish and the
+first run of `crates.io` workflow. Do these in order; each says what "done" looks like.
 
 1. **The five one-time setup items above are done**: tap repo and `HOMEBREW_TAP_TOKEN`, `NPM_TOKEN`,
    the PyPI pending trusted publisher with the `pypi` environment, and `CARGO_REGISTRY_TOKEN`
@@ -25,11 +27,12 @@ Do these in order; each says what "done" looks like.
    Windows zip, the shell and PowerShell installers, the Homebrew formula and the npm package.
 3. **`claude plugin validate ./plugin` passes**, and `plugin/.claude-plugin/plugin.json`'s `version`
    equals the workspace version.
-4. **Rehearse with a prerelease tag first**: bump the workspace version to `0.1.0-rc.1`, tag
-   `v0.1.0-rc.1`. dist marks it a prerelease and skips the Homebrew and npm publish; the `crates.io`
+4. **Rehearse with a prerelease tag first**: bump the workspace version, the plugin manifest version and
+   the core dependency's `version` in `crates/bridge-screen/Cargo.toml` together to `0.1.1-rc.1`, tag
+   `v0.1.1-rc.1`. dist marks it a prerelease and skips the Homebrew and npm publish; the `crates.io`
    workflow skips it too. Check the GitHub Release page, the installers and the PyPI upload. Done when
    the archives download and `bridge-screen --version` runs from one of them.
-5. **Then the real tag**: set the version to `0.1.0`, commit, tag `v0.1.0`, push the tag.
+5. **Then the real tag**: set all three versions to `0.1.1`, commit, tag `v0.1.1`, push the tag.
 
 Windows: the program itself is released for Windows (zip, PowerShell installer, wheel, npm). The
 plugin's own launcher is not: on Windows it tells the user to install the program and put it on
@@ -41,7 +44,7 @@ Windows plugin support needs a Windows machine to test on, so it is left as a fo
 1. Bump `version` in the root `Cargo.toml` (`[workspace.package]`) and commit.
 2. `dist plan` to check the release.
 3. `git tag v<version> && git push origin v<version>`.
-4. The `Release` workflow builds binaries, the GitHub Release, installers, the Homebrew formula and npm packages. The `PyPI` workflow uploads wheels. The `crates.io` workflow publishes `bridge-screen-core`, then `bridge-screen` (it skips prerelease tags such as `v0.1.0-rc.1`, because a crates.io version can never be taken back).
+4. The `Release` workflow builds binaries, the GitHub Release, installers, the Homebrew formula and npm packages. The `PyPI` workflow uploads wheels. The `crates.io` workflow publishes `bridge-screen-core`, then `bridge-screen` (it skips prerelease tags such as `v0.1.1-rc.1`, because a crates.io version can never be taken back).
 
 ## crates.io
 

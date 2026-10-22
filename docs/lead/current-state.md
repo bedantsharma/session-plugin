@@ -26,6 +26,6 @@
 - Licence and credit for the bundled skill (blocks release).
 - Confirm or correct the intent page (`docs/lead/intent.md`).
 
-**Next:** review and merge this branch, reinstall, try the offer in a real session; then the first-release rehearsal (`v0.1.0-rc.1`).
+**Next:** review and merge this branch, reinstall, try the offer in a real session; then the rehearsal tag (`v0.1.1-rc.1`) and the first crates.io publish with `v0.1.1` (v0.1.0 is already live without the crates).
 
 **How sure:** Checked by running, on the branch: the Rust suite (577 passed, 0 failed, 10 slow speed checks skipped), the web tests (163 passed), clippy, the web lint and type checks and build; the SessionStart speed check with the offer and with the pointer (p95 29 ms and 22 ms, budget 150 ms); `cargo publish --dry-run` for the core library and `cargo package --workspace` for both crates; `dist plan` (its archive names match what the launcher downloads); the plugin manifest check. Believed from reading only: the new GitHub workflow (its YAML parses; it has never run), the Windows launcher message (tested with a pretend Windows only). Not checked: a real Claude session seeing the offer, the dashboard screen in a browser, the browser end-to-end tests, anything on Windows.
