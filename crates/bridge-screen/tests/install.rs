@@ -177,6 +177,11 @@ fn plugin_package_is_consistent() {
     let manifest = json(&plugin.join(".claude-plugin/plugin.json"));
     assert_eq!(manifest["name"], "bridge-screen");
     assert_eq!(manifest["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(
+        core_dependency_version(),
+        env!("CARGO_PKG_VERSION"),
+        "crates/bridge-screen/Cargo.toml: the bridge-screen-core dependency's version must equal the workspace version (crates.io needs both)"
+    );
 
     let market = json(&checkout().join(".claude-plugin/marketplace.json"));
     assert_eq!(market["name"], "bridge-screen");
@@ -224,6 +229,25 @@ fn plugin_package_is_consistent() {
     let skill = std::fs::read_to_string(plugin.join("skills/bridge-screen/SKILL.md")).unwrap();
     assert!(skill.lines().count() <= 150);
     assert!(skill.starts_with("---\nname: bridge-screen\n"));
+}
+
+/// The `version = "…"` of the `bridge-screen-core` dependency in the binary's `Cargo.toml`.
+fn core_dependency_version() -> String {
+    let manifest =
+        std::fs::read_to_string(checkout().join("crates/bridge-screen/Cargo.toml")).unwrap();
+    let line = manifest
+        .lines()
+        .find(|l| l.trim_start().starts_with("bridge-screen-core"))
+        .expect("a bridge-screen-core dependency");
+    let after = line
+        .split("version")
+        .nth(1)
+        .expect("a version on that line");
+    after
+        .split('"')
+        .nth(1)
+        .expect("a quoted version")
+        .to_string()
 }
 
 #[test]
