@@ -17,13 +17,13 @@
 - **GitHub release:** programs for Mac (Apple and Intel), Linux and Windows, the shell and PowerShell installers, with checksums. The plugin downloads from here.
 - **Homebrew:** the formula is in your tap (`bedantsharma/homebrew-tap`).
 - **PyPI:** `bridge-screen` 0.1.0 with five wheels is live.
-- **npm:** not live. The first publish asked for a one-time code; a new token with the two-factor bypass switch on is saved, and the re-run was still going when this was written.
+- **npm:** not live. The automatic publish keeps failing on a one-time-code request, even with a new token that has the two-factor bypass switch on. The cause is not confirmed.
 - **crates.io:** not published; it ships with the next version.
 
-**In flight:** the npm re-run for v0.1.0. Nothing else.
+**In flight:** nothing running.
 
 **Open problems:**
-- **npm:** if the re-run fails again, the first version can be published by hand (steps given), but your passkey can't produce a code, so an authenticator app would have to be added to the npm account first.
+- **npm:** the first version has to be published by hand (steps given). Your passkey can't produce the one-time code npm asks for, so an authenticator app (for example Apple's Passwords app or 1Password) has to be added to the npm account first. After the package exists, a bypass token should be able to publish later versions.
 - **Project pages aren't in any release yet.** They reach other people with v0.1.1; this laptop needs a reinstall to get them.
 - **"The owner said yes" is the agent's word.** The tool cannot tell a real answer from an invented one; the command you run yourself is the reliable route (decision #30).
 - **Windows plugin launcher is not supported** (decision #34); the program is released for Windows but nobody has run it there.
@@ -36,6 +36,6 @@
 - Confirm or correct the intent page (`docs/lead/intent.md`).
 - Next: sub-project 9 (archive) or the next release (v0.1.1, with the pages and crates.io)?
 
-**Next:** finish npm, reinstall here and try the offer in a real session; then release v0.1.1.
+**Next:** publish npm by hand, reinstall here and try the offer in a real session; then release v0.1.1.
 
 **How sure:** Checked by running: the merged pull request's four GitHub checks (Rust on macOS and Linux, web, browser smoke test) pass; before merging, the Rust suite (579 passed, 0 failed) and clippy ran clean on the branch; the v0.1.0 release (every build step passed, the Mac program's checksum matched and it reports 0.1.0); the Homebrew formula file exists in the tap; PyPI lists 0.1.0 with its wheels. Relayed from the reviewing agent, not re-run: the speed checks and the smoke test in a temporary home. Not checked: `brew install` and `npx` on a real machine, the crates.io workflow (never run), a real Claude session seeing the offer, the new dashboard screen in a browser, anything on Windows.
