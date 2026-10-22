@@ -16,6 +16,7 @@ pub mod import;
 pub mod init;
 pub mod navigator;
 pub mod owner;
+pub mod pages;
 pub mod paths;
 pub mod plan;
 pub mod projection;

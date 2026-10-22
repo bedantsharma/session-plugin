@@ -36,6 +36,9 @@ pub enum Error {
     /// An owner action the owner can fix and resend (e.g. a reason that says nothing).
     #[error("{0}")]
     Invalid(String),
+    /// A project-pages request the agent or owner can fix (blank words, unknown page, too long).
+    #[error("{0}")]
+    Pages(String),
     /// A screen asked for something that doesn't exist.
     #[error("{0}")]
     NotFound(String),

@@ -49,6 +49,11 @@ impl Home {
         self.root.join("snapshots").join(repo_id)
     }
 
+    /// Where a repo's project pages live: `lead/<repo-id>/` (never inside the repo).
+    pub fn lead_dir(&self, repo_id: &str) -> PathBuf {
+        self.root.join("lead").join(repo_id)
+    }
+
     /// Create the data folder if it doesn't exist.
     pub fn ensure(&self) -> Result<()> {
         std::fs::create_dir_all(&self.root)?;
