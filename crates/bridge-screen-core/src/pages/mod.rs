@@ -59,6 +59,17 @@ impl Page {
         }
     }
 
+    /// The page's name in plain words, as the owner sees it on screens and in the CLI.
+    pub fn title(self) -> &'static str {
+        match self {
+            Page::Intent => "What this project is for",
+            Page::ProjectMap => "How it fits together",
+            Page::CurrentState => "Where things stand",
+            Page::DecisionLog => "Why we chose what we chose",
+            Page::Glossary => "Words we use",
+        }
+    }
+
     pub fn file_name(self) -> &'static str {
         match self {
             Page::Intent => "intent.md",

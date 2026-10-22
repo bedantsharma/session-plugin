@@ -297,3 +297,118 @@ fn config_shows_and_resets_drift_tuning() {
     );
     assert!(!env.ok(&["config"], None).contains("# tuned"));
 }
+
+/// A second worktree of the env's repo (the repo needs a commit first).
+fn second_worktree(env: &Env) -> tempfile::TempDir {
+    let ok = git_cmd(env.repo.path())
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ])
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    let dir = tempfile::tempdir().unwrap();
+    let ok = git_cmd(env.repo.path())
+        .args(["worktree", "add", "-q", "-b", "other"])
+        .arg(dir.path().join("wt"))
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    dir
+}
+
+#[test]
+fn cli_set_up_creates_pages_and_says_where() {
+    let env = Env::new();
+    let out = env.ok(&["pages", "set-up"], None);
+    assert!(out.contains("Project pages are set up"), "{out}");
+    assert!(out.contains("nothing was written into the repo"), "{out}");
+    let folder = env.ok(&["pages", "path"], None);
+    let folder = std::path::PathBuf::from(folder.trim());
+    assert!(out.contains(folder.to_str().unwrap()), "{out}");
+    assert!(folder.starts_with(env.home.path()));
+    for page in [
+        "intent.md",
+        "project-map.md",
+        "current-state.md",
+        "decision-log.md",
+        "glossary.md",
+    ] {
+        assert!(folder.join(page).is_file(), "{page}");
+    }
+    // Nothing inside the repo.
+    let in_repo: Vec<_> = std::fs::read_dir(env.repo.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .filter(|n| n != ".git")
+        .collect();
+    assert!(in_repo.is_empty(), "{in_repo:?}");
+    let again = env.ok(&["pages", "set-up"], None);
+    assert!(again.contains("already set up"), "{again}");
+}
+
+#[test]
+fn cli_decline_then_set_up_works() {
+    let env = Env::new();
+    let out = env.ok(&["pages", "decline"], None);
+    assert!(out.contains("won't offer"), "{out}");
+    let shown = env.ok(&["pages", "show"], None);
+    assert!(shown.contains("chose not to"), "{shown}");
+    let out = env.ok(&["pages", "set-up"], None);
+    assert!(out.contains("Project pages are set up"), "{out}");
+    // Declining once they exist is refused.
+    let refused = env.run(&["pages", "decline"], None, env.repo.path());
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("already set up"));
+}
+
+#[test]
+fn cli_show_lists_five_pages() {
+    let env = Env::new();
+    let before = env.ok(&["pages", "show"], None);
+    assert!(before.contains("not set up"), "{before}");
+    assert!(before.contains("bridge-screen pages set-up"), "{before}");
+    env.ok(&["pages", "set-up"], None);
+    let shown = env.ok(&["pages", "show"], None);
+    for title in [
+        "What this project is for",
+        "How it fits together",
+        "Where things stand",
+        "Why we chose what we chose",
+        "Words we use",
+    ] {
+        assert!(shown.contains(title), "{shown}");
+    }
+    assert!(shown.contains(env.home.path().to_str().unwrap()), "{shown}");
+    let today = &jiff::Timestamp::now().to_string()[..10];
+    assert!(shown.contains(today), "{shown}");
+}
+
+#[test]
+fn cli_path_prints_folder_for_any_worktree() {
+    let env = Env::new();
+    let wt = second_worktree(&env);
+    let main = env.ok(&["pages", "path"], None);
+    let other = env.run(&["pages", "path"], None, &wt.path().join("wt"));
+    assert!(other.status.success());
+    assert_eq!(String::from_utf8(other.stdout).unwrap(), main);
+    // -C works too.
+    let via_c = env.ok(
+        &[
+            "pages",
+            "path",
+            "-C",
+            wt.path().join("wt").to_str().unwrap(),
+        ],
+        None,
+    );
+    assert_eq!(via_c, main);
+}

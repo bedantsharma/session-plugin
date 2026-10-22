@@ -7,12 +7,13 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use bridge_screen_core::import::{self, ImportCtx, ImportOutcome, ScanBudget};
 use bridge_screen_core::owner::OwnerAction;
+use bridge_screen_core::pages::{self, PagesState};
 use bridge_screen_core::paths::Home;
 use bridge_screen_core::repo;
 use bridge_screen_core::store::{Actor, OWNER_SESSION};
 use bridge_screen_core::waits;
 
-use crate::cli::WaitCommand;
+use crate::cli::{PagesCommand, WaitCommand};
 
 use crate::commands::open_store;
 
@@ -121,6 +122,100 @@ pub fn wait(dir: &Path, action: WaitCommand) -> Result<()> {
             &OwnerAction::PromoteWait { wait_id },
         ),
     }
+}
+
+/// `bridge-screen pages set-up|decline|show|path [-C DIR]`: the owner's own route to the
+/// project pages. Running `set-up` or `decline` is the owner's yes or no. Needs no database,
+/// only the repo's id (the same for every worktree).
+pub fn pages(dir: &Path, action: &PagesCommand) -> Result<()> {
+    let repo = repo::identify(dir)?;
+    let home = Home::resolve()?;
+    let folder = home.lead_dir(&repo.id);
+    match action {
+        PagesCommand::Path => println!("{}", folder.display()),
+        PagesCommand::SetUp => {
+            let out = pages::set_up(
+                &home,
+                &repo.id,
+                "set up by the owner with `bridge-screen pages set-up`",
+            )?;
+            if out.created.is_empty() {
+                println!(
+                    "Project pages for {} were already set up in {}; nothing changed.",
+                    repo.name,
+                    folder.display()
+                );
+            } else {
+                println!(
+                    "Project pages are set up for {}: {} written to {}. Every worktree of this repo reads the same pages; nothing was written into the repo.",
+                    repo.name,
+                    if out.created.len() == 5 {
+                        "five pages".to_string()
+                    } else {
+                        format!("{} missing page(s)", out.created.len())
+                    },
+                    folder.display()
+                );
+            }
+        }
+        PagesCommand::Decline => {
+            pages::decline(
+                &home,
+                &repo.id,
+                "declined by the owner with `bridge-screen pages decline`",
+            )?;
+            println!(
+                "Okay: bridge-screen won't offer project pages for {} again. Run `bridge-screen pages set-up` any time to change your mind.",
+                repo.name
+            );
+        }
+        PagesCommand::Show => print!("{}", render_pages(&home, &repo.id, &repo.name)),
+    }
+    Ok(())
+}
+
+/// The `pages show` text: where the pages are and what each one holds.
+fn render_pages(home: &Home, repo_id: &str, repo_name: &str) -> String {
+    let folder = home.lead_dir(repo_id);
+    let mut out = String::new();
+    match pages::state(home, repo_id) {
+        PagesState::SetUp => {
+            let _ = writeln!(
+                out,
+                "Project pages for {repo_name} (in {}):",
+                folder.display()
+            );
+        }
+        PagesState::Declined => {
+            let _ = writeln!(
+                out,
+                "You chose not to have project pages for {repo_name}. Run `bridge-screen pages set-up` to change that."
+            );
+            return out;
+        }
+        PagesState::NotSetUp { .. } => {
+            let _ = writeln!(
+                out,
+                "Project pages are not set up for {repo_name}. Run `bridge-screen pages set-up` to create them in {}.",
+                folder.display()
+            );
+            return out;
+        }
+    }
+    for info in pages::status(home, repo_id) {
+        let when = info.updated.map_or_else(
+            || "not written yet".to_string(),
+            |t| format!("updated {}", t.to_zoned(jiff::tz::TimeZone::UTC).date()),
+        );
+        let _ = writeln!(
+            out,
+            "  {} ({}) — {when}, {} KiB",
+            info.page.title(),
+            info.page.file_name(),
+            info.bytes.div_ceil(1024)
+        );
+    }
+    out
 }
 
 /// What an import did, in plain words.
