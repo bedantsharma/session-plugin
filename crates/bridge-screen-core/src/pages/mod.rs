@@ -242,6 +242,55 @@ pub fn write(
     write_atomic(&dir, page.file_name(), &next)
 }
 
+/// Sessions are offered the setup at most this many times.
+pub const MAX_OFFERS: u8 = 3;
+
+/// The line at the end of a SessionStart briefing, if any (spec 2026-10-22, "Briefing pointer").
+///
+/// `room` is how many lines are left under the briefing's cap. Pages set up: one pointer
+/// line (needs 1 line). Not set up and fewer than [`MAX_OFFERS`] offers made: a two-line
+/// offer (needs 2 lines, and no other onboarding note in the briefing), counted in
+/// `.offered` with one small file write. Declined, offers used up or no room: nothing,
+/// and nothing is written. Any problem with the folder is an `Err` the caller logs and
+/// drops, so the briefing is never lost.
+pub fn briefing_note(
+    home: &Home,
+    repo_id: &str,
+    room: usize,
+    other_onboarding_note: bool,
+) -> Result<Option<String>> {
+    match state(home, repo_id) {
+        PagesState::SetUp => {
+            if room < 1 {
+                return Ok(None);
+            }
+            let latest = status(home, repo_id)
+                .into_iter()
+                .filter_map(|i| i.updated)
+                .max();
+            let when = latest.map_or_else(
+                || "unknown".to_string(),
+                |t| t.to_zoned(jiff::tz::TimeZone::UTC).date().to_string(),
+            );
+            Ok(Some(format!(
+                "Project pages: read intent and current state first (lead_page_read); keep current state true after each merge. Last updated {when}."
+            )))
+        }
+        PagesState::NotSetUp { offers_made } if offers_made < MAX_OFFERS => {
+            if room < 2 || other_onboarding_note {
+                return Ok(None);
+            }
+            let dir = home.lead_dir(repo_id);
+            fs::create_dir_all(&dir)?;
+            write_atomic(&dir, OFFERED, &(offers_made + 1).to_string())?;
+            Ok(Some(OFFER.to_string()))
+        }
+        PagesState::NotSetUp { .. } | PagesState::Declined => Ok(None),
+    }
+}
+
+const OFFER: &str = "bridge-screen: this repo has no project pages yet. Ask the owner once, in plain words, whether they want a short set of pages (what the project is for, how it fits together, where things stand, why choices were made, the words we use) that every session can read.\nRelay their answer with lead_pages (action set_up or decline, owner_said = their words). Do not set them up without a yes.";
+
 /// An exclusive advisory lock on `<dir>/.lock`, held until the returned file drops.
 fn lock(dir: &Path) -> Result<File> {
     let file = File::options()

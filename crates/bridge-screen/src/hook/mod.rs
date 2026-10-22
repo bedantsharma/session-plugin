@@ -177,7 +177,7 @@ pub fn run(event: HookEvent, stdin: &str, home: &Home) -> Result<Option<HookOutp
     };
     // A broken config file must not break the session: fall back to defaults.
     let config = Config::load(&home.config_path()).unwrap_or_default();
-    handlers::handle(event, &input, &mut store, &config)
+    handlers::handle(event, &input, &mut store, &config, home)
 }
 
 /// Has this session not been told yet that its data is newer than this binary? Marks it

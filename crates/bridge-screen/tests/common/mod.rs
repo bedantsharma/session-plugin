@@ -77,6 +77,16 @@ impl Env {
         }
     }
 
+    /// The owner said no to project pages here, so SessionStart briefings carry no offer
+    /// (for tests that look at the exact briefing text).
+    pub fn decline_pages(&self) {
+        let id = bridge_screen_core::repo::identify(self.repo.path())
+            .unwrap()
+            .id;
+        let home = bridge_screen_core::paths::Home::at(self.home.path());
+        bridge_screen_core::pages::decline(&home, &id, "no thanks").unwrap();
+    }
+
     pub fn repo_path(&self) -> String {
         self.repo.path().to_str().unwrap().to_string()
     }

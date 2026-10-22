@@ -245,3 +245,48 @@ fn decline_after_set_up_is_refused() {
     assert!(decline(&home, ID, "no").is_err());
     assert_eq!(state(&home, ID), PagesState::SetUp);
 }
+
+#[test]
+fn briefing_note_offers_three_times_then_stops() {
+    use super::briefing_note;
+    let (_d, home) = home();
+    for n in 1..=3 {
+        let note = briefing_note(&home, ID, 10, false).unwrap().unwrap();
+        assert_eq!(note.lines().count(), 2);
+        assert!(note.contains("lead_pages"));
+        assert_eq!(state(&home, ID), PagesState::NotSetUp { offers_made: n });
+    }
+    assert_eq!(briefing_note(&home, ID, 10, false).unwrap(), None);
+}
+
+#[test]
+fn offer_dropped_when_briefing_full() {
+    use super::briefing_note;
+    let (_d, home) = home();
+    assert_eq!(briefing_note(&home, ID, 1, false).unwrap(), None);
+    assert_eq!(briefing_note(&home, ID, 9, true).unwrap(), None);
+    assert!(!home.lead_dir(ID).exists(), "nothing written");
+    set_up(&home, ID, "yes").unwrap();
+    assert_eq!(briefing_note(&home, ID, 0, false).unwrap(), None);
+    let line = briefing_note(&home, ID, 1, true).unwrap().unwrap();
+    assert_eq!(line.lines().count(), 1);
+    assert!(line.starts_with("Project pages:"));
+    assert!(line.contains(&jiff::Timestamp::now().to_string()[..10]));
+}
+
+#[test]
+fn briefing_note_silent_after_decline() {
+    use super::briefing_note;
+    let (_d, home) = home();
+    decline(&home, ID, "no").unwrap();
+    assert_eq!(briefing_note(&home, ID, 10, false).unwrap(), None);
+}
+
+#[test]
+fn briefing_note_errors_on_broken_folder() {
+    use super::briefing_note;
+    let (_d, home) = home();
+    std::fs::create_dir_all(home.lead_dir(ID).parent().unwrap()).unwrap();
+    std::fs::write(home.lead_dir(ID), "i am a file").unwrap();
+    assert!(briefing_note(&home, ID, 10, false).is_err());
+}
