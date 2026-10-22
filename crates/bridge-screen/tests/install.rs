@@ -450,6 +450,64 @@ fn launcher_prefers_a_matching_binary_on_path() {
     assert_eq!(stdout(&out), "downloaded bridge-screen status\n");
 }
 
+/// A PATH where `uname -s` says this is Git Bash on Windows.
+fn windows_path() -> (tempfile::TempDir, String) {
+    let fake = tempfile::tempdir().unwrap();
+    write_script(
+        &fake.path().join("uname"),
+        "#!/bin/sh\nif [ \"$1\" = -s ]; then echo MINGW64_NT-10.0-19045; else echo x86_64; fi\n",
+    );
+    let path = format!("{}:{SYSTEM_PATH}", fake.path().display());
+    (fake, path)
+}
+
+#[test]
+fn launcher_on_windows_hook_exits_zero_and_logs() {
+    let (_fake, path) = windows_path();
+    let release = fake_release(true);
+    let data = tempfile::tempdir().unwrap();
+    let out = launch(release.path(), data.path(), &path, &["hook", "stop"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(stdout(&out), "");
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "");
+    let log = std::fs::read_to_string(data.path().join("launcher.log")).unwrap();
+    assert!(log.contains("doesn't support Windows"), "{log}");
+}
+
+#[test]
+fn launcher_on_windows_run_explains_install() {
+    let (_fake, path) = windows_path();
+    let release = fake_release(true);
+    let data = tempfile::tempdir().unwrap();
+    let out = launch(release.path(), data.path(), &path, &["--version"]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        err.trim(),
+        "bridge-screen's plugin launcher doesn't support Windows yet. Install the program with the PowerShell installer from the release page and make sure `bridge-screen` is on your PATH, then run `bridge-screen install`."
+    );
+    assert!(!data.path().join("bin").exists(), "nothing was downloaded");
+}
+
+#[test]
+fn launcher_still_uses_matching_binary_on_path_on_windows() {
+    let (fake, _) = windows_path();
+    let version = env!("CARGO_PKG_VERSION");
+    write_script(
+        &fake.path().join("bridge-screen"),
+        &format!(
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'bridge-screen {version}'; else echo \"path bridge-screen $*\"; fi\n"
+        ),
+    );
+    let path = format!("{}:{SYSTEM_PATH}", fake.path().display());
+    let data = tempfile::tempdir().unwrap();
+    let nowhere = tempfile::tempdir().unwrap();
+    let out = launch(nowhere.path(), data.path(), &path, &["status"]);
+    assert_eq!(stdout(&out), "path bridge-screen status\n");
+    let out = launch(nowhere.path(), data.path(), &path, &["hook", "stop"]);
+    assert_eq!(stdout(&out), "path bridge-screen hook stop\n");
+}
+
 #[test]
 fn launcher_hook_mode_survives_a_bare_environment() {
     // No HOME, no CLAUDE_PLUGIN_DATA, nothing to download: still exit 0 and print nothing.

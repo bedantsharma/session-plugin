@@ -11,6 +11,31 @@
    `publish-new` and `publish-update` scopes, and save it as the Actions secret
    `CARGO_REGISTRY_TOKEN`.
 
+## Before the first tag (checklist)
+
+Do these in order; each says what "done" looks like.
+
+1. **The five one-time setup items above are done**: tap repo and `HOMEBREW_TAP_TOKEN`, `NPM_TOKEN`,
+   the PyPI pending trusted publisher with the `pypi` environment, and `CARGO_REGISTRY_TOKEN`
+   (the crate names checked as free). Done when the Actions secrets page lists the three tokens and the
+   `pypi` environment exists.
+2. **`dist plan` reviewed.** It must list `bridge-screen-<arch>-<os>.tar.xz` archives (with `.sha256`
+   files) for `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu` and
+   `aarch64-unknown-linux-gnu`: the plugin launcher downloads exactly those names. It also lists the
+   Windows zip, the shell and PowerShell installers, the Homebrew formula and the npm package.
+3. **`claude plugin validate ./plugin` passes**, and `plugin/.claude-plugin/plugin.json`'s `version`
+   equals the workspace version.
+4. **Rehearse with a prerelease tag first**: bump the workspace version to `0.1.0-rc.1`, tag
+   `v0.1.0-rc.1`. dist marks it a prerelease and skips the Homebrew and npm publish; the `crates.io`
+   workflow skips it too. Check the GitHub Release page, the installers and the PyPI upload. Done when
+   the archives download and `bridge-screen --version` runs from one of them.
+5. **Then the real tag**: set the version to `0.1.0`, commit, tag `v0.1.0`, push the tag.
+
+Windows: the program itself is released for Windows (zip, PowerShell installer, wheel, npm). The
+plugin's own launcher is not: on Windows it tells the user to install the program and put it on
+their PATH, and from a hook it exits quietly. **Owner decision recorded, not made here:** real
+Windows plugin support needs a Windows machine to test on, so it is left as a follow-up.
+
 ## Cutting a release
 
 1. Bump `version` in the root `Cargo.toml` (`[workspace.package]`) and commit.
