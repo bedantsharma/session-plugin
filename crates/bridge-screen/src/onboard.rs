@@ -272,7 +272,11 @@ mod tests {
         shown.push(render_pages(&home, "r1", "shop"));
         pages::set_up(&home, "r1", "yes").unwrap();
         shown.push(render_pages(&home, "r1", "shop"));
+        // The folder path is part of the message; a temp folder's random name (macOS ones hold
+        // underscores) is not owner-facing wording, so leave it out of the jargon check.
+        let folder = dir.path().display().to_string();
         for text in shown {
+            let text = text.replace(&folder, "<folder>");
             assert_eq!(jargon_in(&text), Vec::<String>::new(), "{text}");
         }
     }
