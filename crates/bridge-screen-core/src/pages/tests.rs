@@ -326,3 +326,43 @@ fn view_declined_and_odd_ids() {
         assert!(super::view(&home, bad).is_err(), "{bad:?}");
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn planted_links_in_the_folder_are_never_followed() {
+    use std::os::unix::fs::symlink;
+    let (d, home) = home();
+    set_up(&home, ID, "yes").unwrap();
+    let dir = home.lead_dir(ID);
+    let outside = d.path().join("outside.txt");
+    std::fs::write(&outside, "secret").unwrap();
+    // A link where a temp file would be written: the write must not go through it.
+    for name in [
+        "glossary.md.tmp",
+        "glossary.md.prev.tmp",
+        ".glossary.md.tmp",
+    ] {
+        symlink(&outside, dir.join(name)).unwrap();
+    }
+    write(&home, ID, Page::Glossary, "one", WriteMode::Replace, None).unwrap();
+    write(&home, ID, Page::Glossary, "two", WriteMode::Replace, None).unwrap();
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), "secret");
+    // A page that is a link to some other file is not read (nothing leaks to the agent).
+    std::fs::remove_file(dir.join("project-map.md")).unwrap();
+    symlink(&outside, dir.join("project-map.md")).unwrap();
+    assert!(read(&home, ID, Page::ProjectMap).is_err());
+    assert!(
+        write(
+            &home,
+            ID,
+            Page::ProjectMap,
+            "mine",
+            WriteMode::Replace,
+            None
+        )
+        .is_ok(),
+        "writing replaces the link, never the file behind it"
+    );
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), "secret");
+    assert_eq!(read(&home, ID, Page::ProjectMap).unwrap().unwrap(), "mine");
+}

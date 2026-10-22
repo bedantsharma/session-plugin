@@ -14,6 +14,7 @@ pub mod view;
 use std::fs::{self, File};
 use std::io::{ErrorKind, Write as _};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::{Error, Result};
 use crate::paths::Home;
@@ -185,11 +186,7 @@ pub fn decline(home: &Home, repo_id: &str, owner_said: &str) -> Result<()> {
 
 /// The page text, or `None` if the page doesn't exist yet.
 pub fn read(home: &Home, repo_id: &str, page: Page) -> Result<Option<String>> {
-    match fs::read_to_string(home.lead_dir(repo_id).join(page.file_name())) {
-        Ok(text) => Ok(Some(text)),
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.into()),
-    }
+    read_file(&home.lead_dir(repo_id).join(page.file_name()))
 }
 
 /// Every page with its last-updated time and size (missing pages have no time).
@@ -239,10 +236,11 @@ pub fn write(
     fs::create_dir_all(&dir)?;
     let _lock = lock(&dir)?;
     let target = dir.join(page.file_name());
-    let current = match fs::read_to_string(&target) {
-        Ok(text) => Some(text),
-        Err(e) if e.kind() == ErrorKind::NotFound => None,
-        Err(e) => return Err(e.into()),
+    let current = match read_file(&target) {
+        Ok(text) => text,
+        // A link in the page's place is replaced (the rename swaps the link itself).
+        Err(Error::Pages(_)) => None,
+        Err(e) => return Err(e),
     };
     if let Some(old) = &current {
         write_atomic(&dir, &format!("{}.prev", page.file_name()), old)?;
@@ -316,14 +314,39 @@ fn lock(dir: &Path) -> Result<File> {
     Ok(file)
 }
 
-/// Temp file in the same folder, then rename.
+/// Temp file in the same folder (a fresh name, created only if absent, so a link planted
+/// in the folder is never written through), then rename.
 fn write_atomic(dir: &Path, file_name: &str, text: &str) -> Result<()> {
-    let tmp = dir.join(format!("{file_name}.tmp"));
-    let mut file = File::create(&tmp)?;
-    file.write_all(text.as_bytes())?;
-    file.sync_all()?;
-    fs::rename(&tmp, dir.join(file_name))?;
-    Ok(())
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let tmp = dir.join(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let result = (|| -> Result<()> {
+        let mut file = File::options().write(true).create_new(true).open(&tmp)?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        fs::rename(&tmp, dir.join(file_name))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// Read a page file; a link is refused rather than followed, so nothing outside the
+/// folder can be shown as a page.
+fn read_file(path: &Path) -> Result<Option<String>> {
+    match fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => Err(refuse(
+            "That page is a link to another file, not a page, so it is not read. Remove the link in the project pages folder.",
+        )),
+        Ok(_) => Ok(Some(fs::read_to_string(path)?)),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
 }
 
 fn remove_if_present(path: &Path) -> Result<()> {
