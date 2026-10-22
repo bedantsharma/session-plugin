@@ -413,10 +413,15 @@ fn claim_for(env: &Env, session: &str, task: &str) {
 fn session_start_without_a_plan_asks_for_one() {
     let env = Env::new();
     let out = env.hook("session-start", "s1");
-    assert_eq!(
-        context_of(&out, "SessionStart"),
-        "bridge-screen briefing — stable\nNo plan yet. If this repo has work already, run `bridge-screen init` and follow it; otherwise ask the owner what the goal is."
+    let text = context_of(&out, "SessionStart");
+    // The "no plan yet" note comes first; the project-pages offer follows it.
+    assert!(
+        text.starts_with(
+            "bridge-screen briefing — stable\nNo plan yet. If this repo has work already, run `bridge-screen init` and follow it; otherwise ask the owner what the goal is."
+        ),
+        "{text}"
     );
+    assert!(text.contains("no project pages yet"), "{text}");
     // No plan, no claim reminders.
     for _ in 0..4 {
         assert_eq!(env.hook("user-prompt-submit", "s1"), "");

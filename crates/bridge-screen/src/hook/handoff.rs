@@ -9,7 +9,7 @@ use bridge_screen_core::config::Config;
 use bridge_screen_core::decision;
 use bridge_screen_core::error::Result;
 use bridge_screen_core::git::{self, HeadCommit};
-use bridge_screen_core::handoff::briefing::{MAX_LINES, NO_PLAN};
+use bridge_screen_core::handoff::briefing::MAX_LINES;
 use bridge_screen_core::handoff::{self, EndKind, ReadbackState};
 use bridge_screen_core::navigator::{Candidate, Channel, NoteKind, note_sent_draft};
 use bridge_screen_core::pages;
@@ -263,7 +263,8 @@ pub fn start_context(
         }
         Ok(())
     })?;
-    let onboarding = !imported.is_empty() || b.text.contains(NO_PLAN);
+    // A brand-new repo ("no plan yet") still gets the offer: it is the best moment for it.
+    let onboarding = !imported.is_empty();
     let text = with_imports(&b.text, imported);
     Ok(Some(with_pages_note(home, &me.repo_id, text, onboarding)))
 }

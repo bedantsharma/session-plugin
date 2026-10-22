@@ -153,7 +153,7 @@ Choices someone will later ask "why?" about. Newest last. Entries are never dele
 **Decision:** The five pages are plain Markdown files in `~/.bridge-screen/lead/<repo-id>/`. All worktrees of a repo share the folder, so a new worktree sees them at once. They are created only after the owner says yes once. The intent page changes only with the owner's words; the decision log only grows (two sessions adding at once both land); a replaced page keeps its previous version.
 **Consequences:** No repo writes, no merge conflicts, and every worktree sees the same pages. The pages are not shared between people or machines (a later "export into the repo" command is possible). "The owner said yes" is the agent's word: the tool can't tell a real answer from an invented one, so the owner's own command (`bridge-screen pages set-up`) is the reliable route.
 
-## #31 The offer to set up project pages repeats for at most three sessions — Accepted (owner to check) — 2026-10-22
+## #31 The offer to set up project pages repeats for at most three sessions — Accepted (owner to check); the "no plan yet" exclusion is superseded by #35 — 2026-10-22
 **Context:** A session that never asks, or an owner who is busy, would otherwise mean the offer is never seen; asking every session would nag.
 **Decision:** The session briefing carries the offer in up to three sessions of a repo, ranked last and dropped first when the briefing is full, never next to the "no plan yet" or plan-import notes, and never after a compaction. A yes or a no ends it at once. After three, only the command remains.
 **Consequences:** One small file write per offering session. An owner who ignores three offers has to run the command themselves.
@@ -172,3 +172,13 @@ Choices someone will later ask "why?" about. Newest last. Entries are never dele
 **Context:** The release builds a Windows program, but the plugin launcher is a shell script that downloads a Unix binary and nobody has a Windows machine to test on.
 **Decision:** On Windows the launcher says so in plain words and, from a hook, exits quietly. A `bridge-screen` already on the PATH is still used. The README and the first-release checklist say this.
 **Consequences:** Windows users install the program themselves and then the plugin works through it. Real support needs a Windows machine; left as a follow-up.
+
+## #35 The offer also shows in a brand-new repo, after the "no plan yet" note — Accepted; owner decided 2026-10-22 (changes part of #31) — 2026-10-22
+**Context:** #31 kept the offer out of any session whose briefing carried the "no plan yet" note. A brand-new repo has no plan, so a friend's first project never saw the offer until a plan existed, although a new project is the best moment for it. The reviewer confirmed there is room: the offer is two lines and the briefing cap still holds.
+**Decision:** The "no plan yet" note no longer blocks the offer; both appear, the offer after the note. The plan-import note still blocks it, and a compaction re-briefing still carries the pointer only. Everything else in #31 stands (up to three sessions, ranked last, dropped first when full).
+**Consequences:** A new repo's first briefing asks two things of the owner (the goal, and the pages). The offer still stops at a yes, a no or the third session.
+
+## #36 The lead-briefing skill stays under the repo's licence, with a credit line — Accepted; owner decided 2026-10-22 — 2026-10-22
+**Context:** The skill is the owner's own work and ships inside the plugin (#32), but carried no author or licence line, so it fell under this repo's licence (PolyForm Strict, #8) by default.
+**Decision:** Keep it that way: people may use it, not modify or redistribute it. A `NOTICE.md` beside the skill names the author and says it is covered by the repo's licence. The skill's own files are copied unchanged.
+**Consequences:** Friends can use the skill through the plugin but not reuse it separately. Opening it up later is possible; a more open licence, once given, can't be taken back.

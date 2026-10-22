@@ -86,8 +86,9 @@ luck.
   the answer. **My call:** the note is repeated for at most three sessions (the hook counts them in
   `.offered`), and stops earlier when any `lead_pages` call or CLI command is made. After three,
   only the CLI remains. The note ranks **last** among briefing notes, is dropped first when the
-  briefing is full, and is left out in a session that already carries an onboarding note
-  (`init`, plan import).
+  briefing is full, and is left out in a session that already carries a plan-import note.
+  **Owner decision, 2026-10-22:** a brand-new repo's "no plan yet" note does not block the offer;
+  both appear, the offer after the note.
 - The agent calls `lead_pages` with `action: "set_up"` and the owner's words (`owner_said`), or
   `"decline"`. Without `owner_said` the call is refused (same pattern as `init_plan` and the L4
   verdict). **My call:** this is a free-text check, as for `init_plan`; it cannot tell a real
@@ -133,7 +134,9 @@ luck.
   The five page templates are taken from `references/living-docs.md`.
 - `plugin/skills/bridge-screen/SKILL.md` gets a short section: use lead-briefing whenever the owner asks
   for status, a problem or a checklist; use the page tools for the living docs; when to update each page.
-- Credit and licence of the bundled skill: left to the owner (open question below).
+- **Licence and credit (owner decision, 2026-10-22):** the skill stays under this repo's licence
+  (PolyForm Strict: people may use it, not modify or redistribute it). A short `NOTICE.md` in the
+  skill's folder credits the author and says so.
 
 ## Constraints
 
@@ -165,8 +168,7 @@ how the CLI subcommand is wired, and test names.
 
 ## Open questions for the owner
 
-- **Licence and credit** for the bundled lead-briefing skill (this repo is PolyForm Strict; the skill is
-  the owner's own work). Still open; does not block the build, blocks the release.
+None. (The licence question is settled; see "The lead-briefing bundle".)
 
 ## Working rules for the build (owner, 2026-10-22)
 

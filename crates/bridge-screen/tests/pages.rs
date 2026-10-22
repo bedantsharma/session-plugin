@@ -128,12 +128,18 @@ fn offer_stops_after_decline_or_setup() {
 }
 
 #[test]
-fn offer_yields_to_onboarding_note() {
+fn offer_shows_after_no_plan_note() {
+    // A brand-new repo (no plan yet) is the best moment for the offer: both notes appear.
     let env = Env::new();
     let text = start_text(&env, "s1");
-    assert!(text.contains("No plan yet"), "{text}");
-    assert!(!text.contains(OFFER_MARK));
-    assert_eq!(offered_marker(&env), None);
+    let no_plan = text.find("No plan yet").unwrap_or_else(|| panic!("{text}"));
+    let offer = text.find(OFFER_MARK).unwrap_or_else(|| panic!("{text}"));
+    assert!(
+        no_plan < offer,
+        "the offer comes after the no-plan note: {text}"
+    );
+    assert_eq!(offered_marker(&env), Some("1".to_string()));
+    assert!(text.lines().count() <= 40, "{text}");
 }
 
 #[test]
