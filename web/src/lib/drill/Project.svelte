@@ -101,7 +101,7 @@
         <h2 class="text-xl font-semibold">{m.data.name}</h2>
         {#if row?.goal}<p class="text-meta text-muted">{row.goal.title}</p>{/if}
       </div>
-      <div class="flex items-center gap-2">
+      <div class="flex flex-wrap items-center gap-2">
         <button
           type="button"
           class="inline-flex h-9 items-center rounded-lg border border-edge px-4 text-sm font-medium transition-colors duration-150 hover:bg-hover"
