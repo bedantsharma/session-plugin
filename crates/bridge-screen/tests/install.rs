@@ -226,6 +226,49 @@ fn plugin_package_is_consistent() {
     assert!(skill.starts_with("---\nname: bridge-screen\n"));
 }
 
+#[test]
+fn plugin_ships_lead_briefing_skill() {
+    let dir = checkout().join("plugin/skills/lead-briefing");
+    for file in [
+        "SKILL.md",
+        "references/why-it-works.md",
+        "references/living-docs.md",
+    ] {
+        let text = std::fs::read_to_string(dir.join(file))
+            .unwrap_or_else(|e| panic!("{file} missing from the plugin: {e}"));
+        assert!(!text.trim().is_empty(), "{file} is empty");
+    }
+    let skill = std::fs::read_to_string(dir.join("SKILL.md")).unwrap();
+    assert!(
+        skill.starts_with("---\nname: lead-briefing\n"),
+        "{skill:.80}"
+    );
+    // The page templates the program writes come from the living-docs reference.
+    let docs = std::fs::read_to_string(dir.join("references/living-docs.md")).unwrap();
+    for heading in ["## 1. Intent", "## 3. Current state", "## 4. Decision log"] {
+        assert!(docs.contains(heading), "{heading}");
+    }
+}
+
+#[test]
+fn bridge_screen_skill_mentions_pages_and_lead_briefing() {
+    let skill =
+        std::fs::read_to_string(checkout().join("plugin/skills/bridge-screen/SKILL.md")).unwrap();
+    for needle in [
+        "lead-briefing",
+        "lead_page_read",
+        "lead_page_write",
+        "lead_pages",
+        "owner_said",
+        "current-state",
+        "decision-log",
+        "glossary",
+    ] {
+        assert!(skill.contains(needle), "the skill never says {needle}");
+    }
+    assert!(skill.lines().count() <= 150, "{}", skill.lines().count());
+}
+
 /// The target triple the launcher picks on this machine.
 fn host_target() -> &'static str {
     match (std::env::consts::OS, std::env::consts::ARCH) {

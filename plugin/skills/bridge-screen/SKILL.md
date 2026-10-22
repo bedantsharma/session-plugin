@@ -127,10 +127,23 @@ things stand, call `show_progress` (its buttons are the owner's: never call
 `owner_action`). Reports only on the owner's request: `progress_report`, show the
 summary, publish with the Artifact tool once they confirm, then `report_published`.
 
-## Notes from bridge-screen, and telling the owner
+## 8. Project pages, and reporting to the owner
+
+- The owner leads but doesn't read code. For any status, problem or checklist, use the
+  `lead-briefing` skill: effect first in plain words (no codes: "tests pass", not "L2"),
+  state, the ask, checked vs believed, details last.
+- Each repo can have five project pages, kept outside the repo and shared by every
+  worktree: `lead_page_read` / `lead_page_write` (`intent`, `project-map`, `current-state`,
+  `decision-log`, `glossary`). Read intent and current-state at the start of work.
+- If the briefing says there are none, ask the owner once, then relay their answer:
+  `lead_pages {"action": "set_up", "owner_said": "<their words>"}` (or `"decline"`). Never
+  without asking. After set-up, follow the next steps it returns.
+- Keep them true: **current-state** after each merge or working day (replace it);
+  **decision-log** (`"mode": "append"`) for a choice someone will later ask "why?" about;
+  **glossary** for each new term; **project-map** when a part is added or changes job.
+  The **intent** is the owner's: change it only with their words in `owner_said`.
+
+## Notes from bridge-screen
 
 Hook notes start with `bridge-screen:` and end with the one action expected. Act on
-them; don't repeat them back to the owner. The owner leads but doesn't read code. Report bridge-screen's state as: **effect first**
-in plain words, no codes ("tests pass", not "L2"; "work not saved yet", not "checkpoint
-pending"); the **state** (open / being fixed / done and checked); the **ask** (one
-decision, or "nothing"); **checked vs believed**; **details last** (ids, commands).
+them; don't repeat them back to the owner.
