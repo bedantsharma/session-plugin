@@ -58,6 +58,17 @@ impl Store {
         Ok(out)
     }
 
+    /// Run `f` inside one `BEGIN IMMEDIATE` transaction and roll it back: a dry run sees
+    /// what `f` would write, and nothing is kept.
+    pub fn dry_run<T>(&mut self, f: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let out = f(&tx)?;
+        tx.rollback()?;
+        Ok(out)
+    }
+
     /// Append one event (and update its views) in its own transaction.
     pub fn append(&mut self, draft: EventDraft) -> Result<Event> {
         self.write(|tx| append_in(tx, draft))
@@ -190,6 +201,9 @@ fn migrate(conn: &mut Connection) -> Result<()> {
     }
     if current < 9 {
         tx.execute_batch(schema::V9)?;
+    }
+    if current < 10 {
+        tx.execute_batch(schema::V10)?;
     }
     tx.execute(
         "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
@@ -536,6 +550,83 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!((d.reason.as_str(), d.requested), ("ci", false));
+    }
+
+    #[test]
+    fn migrates_v9_database_to_v10_keeping_plan_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            for v in [
+                super::schema::V1,
+                super::schema::V2,
+                super::schema::V3,
+                super::schema::V4,
+                super::schema::V5,
+                super::schema::V6,
+                super::schema::V7,
+                super::schema::V8,
+                super::schema::V9,
+            ] {
+                conn.execute_batch(v).unwrap();
+            }
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('schema_version', '9')",
+                [],
+            )
+            .unwrap();
+            for (id, parent, kind) in [
+                ("G", None, "goal"),
+                ("1", Some("G"), "milestone"),
+                ("1.1", Some("1"), "task"),
+                ("1.2", Some("1"), "task"),
+            ] {
+                conn.execute(
+                    "INSERT INTO plan_nodes (repo_id, id, parent_id, kind, title, position)
+                     VALUES ('r', ?1, ?2, ?3, ?1, 1)",
+                    rusqlite::params![id, parent, kind],
+                )
+                .unwrap();
+            }
+            conn.execute(
+                "INSERT INTO plan_deps (repo_id, node_id, depends_on) VALUES ('r', '1.2', '1.1')",
+                [],
+            )
+            .unwrap();
+            // A V9-era node_added event, without a source.
+            conn.execute(
+                "INSERT INTO events (id, v, ts, repo_id, session_id, seq, kind, data)
+                 VALUES ('01J', 1, '2026-10-13T09:00:00Z', 'q', 'owner', 1, 'node_added',
+                         '{\"id\":\"G\",\"parent_id\":null,\"kind\":\"goal\",\"title\":\"Ship\",\"intent\":\"why\"}')",
+                [],
+            )
+            .unwrap();
+        }
+        let mut store = Store::open(&path).unwrap();
+        let n = crate::plan::get_node(store.conn(), "r", "1.2")
+            .unwrap()
+            .unwrap();
+        assert_eq!(n.depends_on, vec!["1.1".to_string()]);
+        assert_eq!(n.external_deps, Vec::new());
+        assert_eq!(
+            (n.source, n.branch),
+            (crate::plan::NodeSource::Manual, None)
+        );
+        let tree = crate::plan::load_tree(store.conn(), "r", true).unwrap();
+        assert_eq!(tree.len(), 4);
+        store.rebuild().unwrap();
+        let g = crate::plan::get_node(store.conn(), "q", "G")
+            .unwrap()
+            .unwrap();
+        assert_eq!(g.source, crate::plan::NodeSource::Manual);
+        for table in ["plan_sources", "plan_source_items", "waits"] {
+            let n: i64 = store
+                .conn()
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0, "{table}");
+        }
     }
 
     #[test]

@@ -118,8 +118,13 @@ impl Call<'_> {
     }
 
     /// Record a verification at L2 or above, then re-run the forecast (spec §9.3).
+    /// Waits on the task clear in the same transaction (spec §9.1).
     fn record_done(&self, store: &mut Store, draft: EventDraft) -> Result<()> {
-        self.record(store, draft)?;
+        let sha = draft.data["sha"].as_str().unwrap_or_default().to_string();
+        store.write(|tx| {
+            append_in(tx, draft.actor(self.req.actor.clone()))?;
+            crate::waits::clear_for_in(tx, &self.repo, &self.task, &sha)
+        })?;
         crate::forecast::record_now(store, &self.repo, &self.sid);
         Ok(())
     }
@@ -464,6 +469,9 @@ pub fn owner_verdict(
                     None,
                 )?,
             )?;
+            if level >= 2 {
+                crate::waits::clear_for_in(tx, repo_id, task, &sha)?;
+            }
             let at = if sha.is_empty() {
                 String::new()
             } else {

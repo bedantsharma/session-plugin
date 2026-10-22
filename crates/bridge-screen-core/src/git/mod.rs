@@ -577,6 +577,55 @@ pub fn words_missing_at(
     Ok(missing)
 }
 
+/// The shape of a repo's history, for `bridge-screen init` (spec §12.2).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct LogSummary {
+    pub commits: usize,
+    /// Dates (`YYYY-MM-DD`) of the first and the newest commit.
+    pub first: Option<String>,
+    pub last: Option<String>,
+    /// The newest subject lines, newest first.
+    pub subjects: Vec<String>,
+}
+
+/// Commit count, first and last commit dates, and the newest `n` subjects. A repo with no
+/// commits gives an empty summary.
+pub fn log_summary(wt: &Path, n: usize) -> Result<LogSummary> {
+    let Some(count) = optional(wt, &["rev-list", "--count", "HEAD"])? else {
+        return Ok(LogSummary::default());
+    };
+    let roots = optional(wt, &["rev-list", "--max-parents=0", "HEAD"])?.unwrap_or_default();
+    let first = match roots.lines().last() {
+        Some(root) => optional(wt, &["log", "-1", "--format=%cs", root])?,
+        None => None,
+    };
+    let limit = format!("-n{n}");
+    Ok(LogSummary {
+        commits: count.parse().unwrap_or(0),
+        first,
+        last: optional(wt, &["log", "-1", "--format=%cs"])?,
+        subjects: optional(wt, &["log", &limit, "--format=%s"])?
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect(),
+    })
+}
+
+/// TODO and FIXME lines per tracked text file (`git grep -c`), most first.
+pub fn todo_counts(wt: &Path) -> Result<Vec<(String, usize)>> {
+    let out = optional(wt, &["grep", "-c", "-I", "-E", "TODO|FIXME"])?.unwrap_or_default();
+    let mut counts: Vec<(String, usize)> = out
+        .lines()
+        .filter_map(|l| {
+            let (path, n) = l.rsplit_once(':')?;
+            Some((path.to_string(), n.parse().ok()?))
+        })
+        .collect();
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    Ok(counts)
+}
+
 /// One commit of [`history`]: its parents and the paths it touched (merges list none).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitTouch {

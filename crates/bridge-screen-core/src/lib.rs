@@ -12,6 +12,8 @@ pub mod error;
 pub mod forecast;
 pub mod git;
 pub mod handoff;
+pub mod import;
+pub mod init;
 pub mod navigator;
 pub mod owner;
 pub mod paths;
@@ -27,6 +29,7 @@ pub mod telemetry;
 pub mod tuning;
 pub mod verify;
 pub mod view;
+pub mod waits;
 
 /// Crate version, shared by the CLI and the plugin manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

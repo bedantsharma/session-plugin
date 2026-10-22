@@ -722,3 +722,26 @@ fn calibration_drill_ratios_history_and_prices() {
         ["No price for mystery: add one under [prices] in config.toml."]
     );
 }
+
+#[test]
+fn where_a_task_came_from_reads_in_words() {
+    use crate::plan::NodeSource;
+    assert_eq!(super::source_text(&NodeSource::Manual), None);
+    assert_eq!(
+        super::source_text(&NodeSource::Init).as_deref(),
+        Some("drafted at setup")
+    );
+    let file = |step| NodeSource::File {
+        file: "docs/superpowers/plans/2026-10-21-sp7-telemetry.md".into(),
+        task: 3,
+        step,
+    };
+    assert_eq!(
+        super::source_text(&file(None)).as_deref(),
+        Some("from sp7-telemetry plan, task 3")
+    );
+    assert_eq!(
+        super::source_text(&file(Some(2))).as_deref(),
+        Some("from sp7-telemetry plan, task 3, step 2")
+    );
+}

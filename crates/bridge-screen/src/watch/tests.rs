@@ -386,6 +386,35 @@ fn the_project_line_shows_the_forecast_and_cost_and_sessions_their_cost() {
     assert!(all.contains("0m · $1.20"), "{all}");
 }
 
+#[test]
+fn branch_groups_and_waits_show_under_projects_and_on_sessions() {
+    use bridge_screen_core::view::{BranchGroup, GroupRepo, WaitRef};
+    let mut g = glance(0);
+    let repo = |name: &str, pct: Option<u32>| GroupRepo {
+        repo_id: name.into(),
+        name: name.into(),
+        done_pct: pct,
+        claimed_pct: pct,
+        sessions: 1,
+    };
+    g.branch_groups = vec![BranchGroup {
+        branch: "feat/auth".into(),
+        repos: vec![repo("api", Some(20)), repo("web", Some(60))],
+        done_pct: Some(45),
+        claimed_pct: Some(0),
+    }];
+    g.projects[0].sessions[0].waiting = vec![WaitRef {
+        wait_id: "W1".into(),
+        target: "2.4 Login form".into(),
+        since_min: 40,
+    }];
+    let app = App::new(g, false);
+    let (lines, _) = draw(&app, 140, 30);
+    let all = text(&lines);
+    assert!(all.contains("⑂ feat/auth · 2 repos · 45%"), "{all}");
+    assert!(all.contains("· waiting on 2.4 Login form"), "{all}");
+}
+
 /// Every owner-facing string a glance carries: titles, details, words, labels.
 fn screen_strings(v: &serde_json::Value, key: &str, out: &mut Vec<String>) {
     const SHOWN: &[&str] = &[

@@ -125,6 +125,7 @@ export function glance(items: NeedsYou[] = [item()]): Glance {
     needs_you: items,
     needs_you_count: items.length,
     escalated: items.length > 4,
+    branch_groups: [],
   }
 }
 

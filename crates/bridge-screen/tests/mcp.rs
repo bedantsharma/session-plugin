@@ -45,22 +45,26 @@ fn lists_three_tools_with_schemas() {
         vec![
             "claim_done",
             "claim_task",
+            "clear_wait",
             "close_detour",
             "handoff_note",
             "handoff_readback",
+            "init_plan",
             "label_unit",
             "log_decision",
             "owner_action",
             "plan_edit",
             "progress_report",
             "promote_detour",
+            "promote_wait",
             "report_published",
             "resolve_leftover",
             "resume",
             "show_progress",
             "start_detour",
             "status",
-            "verify"
+            "verify",
+            "waiting_on"
         ]
     );
     for tool in tools {
@@ -109,7 +113,10 @@ fn claim_task_binds_to_the_calling_session() {
     let args = json!({"id": "1.2", "mode": "confirmed", "confidence": 1});
     bind(&env, "s2", "claim_task", &args, "toolu_2");
     let (_, text) = mcp.call("claim_task", &args);
-    assert_eq!(text, "Claimed 1.2 Password reset. Released 1.1.");
+    assert_eq!(
+        text,
+        "Claimed 1.2 Password reset. Released 1.1.\nIt has no estimate yet: set one in agent-minutes with plan_edit (set_estimate)."
+    );
 
     // A new task under a milestone.
     let args = json!({"new_task": {"parent": "1", "title": "Remember me", "estimate_min": 20},

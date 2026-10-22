@@ -64,6 +64,14 @@ pub fn run(cli: Cli) -> Result<()> {
             catch_up,
         } => crate::usage::run(&dir, session.as_deref(), task.as_deref(), by, catch_up),
         Command::Forecast { dir } => crate::usage::forecast(&dir),
+        Command::Import {
+            file,
+            into,
+            dry_run,
+            dir,
+        } => crate::onboard::import(&dir, file.as_deref(), into.as_deref(), dry_run),
+        Command::Init { goal, dir } => crate::onboard::init(&dir, goal.as_deref()),
+        Command::Wait { action, dir } => crate::onboard::wait(&dir, action),
         Command::Rebuild => rebuild(),
         Command::Config { action: None, dir } => config(&dir),
         Command::Config {
@@ -466,7 +474,7 @@ fn reset_drift(dir: &Path) -> Result<()> {
 
 /// Run one owner action (the same path the dashboard, `watch` and the card take) and
 /// print its reply.
-fn owner_cmd(
+pub fn owner_cmd(
     home: &Home,
     store: &mut Store,
     dir: Option<&Path>,

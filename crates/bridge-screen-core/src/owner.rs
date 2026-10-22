@@ -115,6 +115,10 @@ pub enum OwnerAction {
     },
     /// Put the repo's auto-tuned drift thresholds back to the defaults.
     ResetDrift { repo: String },
+    /// Close a session's wait by hand (spec §9.1): what it waited on arrived.
+    ClearWait { wait_id: String },
+    /// Turn a session's wait on a task into a plan link of its active task.
+    PromoteWait { wait_id: String },
 }
 
 /// Where an owner action runs.
@@ -264,7 +268,36 @@ pub fn act(store: &mut Store, ctx: &ActCtx, action: &OwnerAction) -> Result<Stri
             verification_id,
         } => verify::withdraw(store, repo, task, verification_id.as_deref()),
         OwnerAction::ResetDrift { repo } => reset_drift(store, ctx, repo),
+        OwnerAction::ClearWait { wait_id } => store.write(|tx| {
+            let w = crate::waits::clear(tx, wait_id, None, &Actor::default())?;
+            record(
+                tx,
+                &w.repo_id,
+                &owner_data("clear_wait", None, Some(w.wait_id.clone())),
+            )?;
+            Ok(format!(
+                "Cleared {}: {} no longer waits on {}.",
+                w.wait_id,
+                short_id(&w.session_id),
+                w.target_text
+            ))
+        }),
+        OwnerAction::PromoteWait { wait_id } => store.write(|tx| {
+            let w = crate::waits::find(tx, wait_id)?;
+            let line = crate::waits::promote(tx, wait_id, None, &Actor::default())?;
+            record(
+                tx,
+                &w.repo_id,
+                &owner_data("promote_wait", None, Some(w.wait_id.clone())),
+            )?;
+            Ok(line)
+        }),
     }
+}
+
+/// The first 6 characters of a session id.
+fn short_id(id: &str) -> String {
+    id.chars().take(6).collect()
 }
 
 fn drift(

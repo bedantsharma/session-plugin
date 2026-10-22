@@ -3,6 +3,7 @@ mod commands;
 mod hook;
 mod install;
 mod mcp;
+mod onboard;
 mod report;
 mod status;
 mod ui;

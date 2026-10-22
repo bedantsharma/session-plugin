@@ -4,6 +4,7 @@
   // readable labels, then suspended items, checkpoints, leftovers, the handoff note, the
   // read-back and the owner's answers.
   import Chip from '$lib/ui/Chip.svelte'
+  import ActionButton from '$lib/glance/ActionButton.svelte'
   import type { Client } from '$lib/api'
   import { hhmm } from '$lib/format'
   import {
@@ -15,10 +16,21 @@
     unitWord,
     type ChipTone,
   } from '$lib/words'
-  import type { SessionDrill } from '$lib/types'
+  import type { ActionSpec, SessionDrill } from '$lib/types'
   import { useModel } from './useModel.svelte'
 
   let { client, id, version }: { client: Client; id: string; version: number } = $props()
+
+  // A wait's buttons (Clear, Make it a plan link) are owner actions.
+  let pending = $state<string | null>(null)
+  let reply = $state<{ ok: boolean; text: string } | null>(null)
+  async function act(key: string, spec: ActionSpec) {
+    if (pending) return
+    pending = key
+    const res = await client.act(spec.action)
+    pending = null
+    reply = res.ok ? { ok: true, text: res.reply } : { ok: false, text: res.error }
+  }
 
   const m = useModel<SessionDrill>(
     () => client,
@@ -229,6 +241,36 @@
           </li>
         {/each}
       </ul>
+    </section>
+  {/if}
+
+  {#if d.waits?.length}
+    <section class="flex flex-col gap-3" data-testid="waits">
+      <h3 class="text-base font-semibold">Waiting on</h3>
+      <ul class="flex flex-col divide-y divide-line border-y border-line">
+        {#each d.waits as w (w.wait_id)}
+          <li class="flex min-h-11 flex-wrap items-center gap-3 py-2 text-row">
+            <span class="min-w-0 truncate" class:text-muted={!w.open}>{w.target}</span>
+            <span class="min-w-0 truncate text-meta text-muted">— {w.reason}</span>
+            <span class="ml-auto shrink-0 text-meta text-muted">{w.state_text}</span>
+            {#each w.actions as a (a.label)}
+              <ActionButton
+                label={a.label}
+                tone={a.tone}
+                compact
+                pending={pending === `${w.wait_id}:${a.label}`}
+                disabled={pending !== null}
+                onclick={() => act(`${w.wait_id}:${a.label}`, a)}
+              />
+            {/each}
+          </li>
+        {/each}
+      </ul>
+      {#if reply}
+        <p class={['text-meta', reply.ok ? 'text-muted' : 'text-warn']} role="status">
+          {reply.text}
+        </p>
+      {/if}
     </section>
   {/if}
 

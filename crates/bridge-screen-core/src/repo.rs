@@ -42,6 +42,12 @@ pub fn identify(dir: &Path) -> Result<RepoInfo> {
     })
 }
 
+/// The top directory of the worktree containing `dir` (git; not for hooks).
+pub fn worktree_toplevel(dir: &Path) -> Result<PathBuf> {
+    let top = git_path(dir, &["rev-parse", "--show-toplevel"])?;
+    Ok(std::fs::canonicalize(&top)?)
+}
+
 /// The checked-out branch of the worktree containing `dir` (`HEAD` when detached), or
 /// `None` if git can't tell.
 pub fn current_branch(dir: &Path) -> Option<String> {

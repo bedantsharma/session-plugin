@@ -21,6 +21,7 @@ use bridge_screen_core::claim::{self, ClaimMode, ClaimRequest, ClaimTarget};
 use bridge_screen_core::config::Config;
 use bridge_screen_core::decision;
 use bridge_screen_core::handoff::{self, LeftoverAction};
+use bridge_screen_core::init::InitDraft;
 use bridge_screen_core::owner::{self, OwnerAction};
 use bridge_screen_core::paths::Home;
 use bridge_screen_core::plan::{EditContext, NodeKind, NodeStatus, PlanOp, get_node, load_tree};
@@ -46,6 +47,11 @@ use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
+
+mod onboard;
+mod waits;
+
+pub use waits::{WaitIdInput, WaitingOnInput};
 
 const NO_SESSION: &str =
     "bridge-screen couldn't tell which session this is; is the plugin's hook enabled?";
@@ -486,10 +492,44 @@ impl Bridge {
     }
 
     #[tool(
-        description = "Change the plan: add, edit, move or remove nodes; set intents, estimates (agent-minutes), dependencies and milestone hill state. Give a reason. All ops apply together or none do."
+        description = "Change the plan: add, edit, move or remove nodes; set intents, estimates (agent-minutes), dependencies and milestone hill state. A dependency can be on a task in another repo: give `repo` (its folder name) for a task in another repo. Give a reason. All ops apply together or none do."
     )]
     async fn plan_edit(&self, Parameters(args): Parameters<Args<PlanEditInput>>) -> CallToolResult {
         text(self.do_plan_edit(&args))
+    }
+
+    #[tool(
+        description = "Create the plan for a repo that has work but no plan (after `bridge-screen init`): the goal, milestones and tasks you drafted from the repo's evidence, with the tasks that look done and the files that show it. Show the draft to the owner first and pass their confirming words in owner_said. Done tasks are recorded as claimed and checked at HEAD (L1), never more."
+    )]
+    async fn init_plan(&self, Parameters(args): Parameters<Args<InitDraft>>) -> CallToolResult {
+        text(self.do_init_plan(&args))
+    }
+
+    #[tool(
+        description = "Say this session is waiting on something: a task id (\"2.4\"), a task in another repo (\"<repo>:<task id>\"), or a few words (\"Sam's API key\"). Keep working on what you can. A task wait clears by itself when the task is verified (L2+) and you get a note here; clear a free-text wait with clear_wait when it arrives."
+    )]
+    async fn waiting_on(
+        &self,
+        Parameters(args): Parameters<Args<WaitingOnInput>>,
+    ) -> CallToolResult {
+        text(self.do_waiting_on(&args))
+    }
+
+    #[tool(
+        description = "Close one of this session's waits (its id, e.g. \"W3\") when what you waited on arrived."
+    )]
+    async fn clear_wait(&self, Parameters(args): Parameters<Args<WaitIdInput>>) -> CallToolResult {
+        text(self.do_clear_wait(&args))
+    }
+
+    #[tool(
+        description = "Turn this session's wait on a task into a plan link: your active task then depends on it. Use only when the owner agreed that your task always needs it."
+    )]
+    async fn promote_wait(
+        &self,
+        Parameters(args): Parameters<Args<WaitIdInput>>,
+    ) -> CallToolResult {
+        text(self.do_promote_wait(&args))
     }
 
     #[tool(
@@ -633,6 +673,12 @@ impl Bridge {
         let mut reply = format!("Claimed {} {title}.", out.task_id);
         if let Some(prev) = out.released {
             let _ = write!(reply, " Released {prev}.");
+        }
+        if onboard::asks_for_estimate(&store, &session.repo_id, &out.task_id).map_err(msg)? {
+            let _ = write!(
+                reply,
+                "\nIt has no estimate yet: set one in agent-minutes with plan_edit (set_estimate)."
+            );
         }
         Ok(reply)
     }
@@ -1351,6 +1397,22 @@ fn agent_status(
             .collect();
         let _ = writeln!(out, "Unverified: {} — verify them", list.join(" · "));
     }
+    let waits = bridge_screen_core::waits::open_of(conn, &s.session_id)?;
+    if !waits.is_empty() {
+        let now = jiff::Timestamp::now();
+        let list: Vec<String> = waits
+            .iter()
+            .map(|w| {
+                format!(
+                    "{} {} (since {}m)",
+                    w.wait_id,
+                    w.target_text,
+                    w.since_min(now)
+                )
+            })
+            .collect();
+        let _ = writeln!(out, "Waiting on: {}", list.join(" · "));
+    }
     let open = tangent::open_detours(conn, &s.session_id)?;
     if !open.is_empty() {
         let list: Vec<String> = open
@@ -1426,7 +1488,7 @@ fn plan_status(
                 let _ = write!(out, "Next: {}", next.join(" · "));
             }
         }
-        None => out.push_str("No plan yet — ask the owner whether to create one."),
+        None => out.push_str(bridge_screen_core::handoff::briefing::NO_PLAN),
     }
     Ok(())
 }

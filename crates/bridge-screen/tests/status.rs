@@ -498,3 +498,64 @@ shop  goal: Online shop  · done 0% · claimed 100% · forecast needs 3 more fin
 "
     );
 }
+
+#[test]
+fn status_shows_branch_groups_and_waits() {
+    let env = Env::new();
+    let mut s = Store::open(&env.db_path()).unwrap();
+    register(&s, "r1", "web");
+    register(&s, "r2", "api");
+    for repo in ["r1", "r2"] {
+        ev(
+            &mut s,
+            repo,
+            "owner",
+            "node_added",
+            json!({"id": "G", "parent_id": null, "kind": "goal", "title": "Ship", "intent": "why"}),
+            0,
+        );
+        ev(
+            &mut s,
+            repo,
+            "owner",
+            "node_added",
+            json!({"id": "1", "parent_id": "G", "kind": "task", "title": "Login form",
+                   "estimate_min": 30}),
+            0,
+        );
+    }
+    for (repo, sid) in [("r1", "w1aaaa"), ("r2", "a1bbbb")] {
+        ev(
+            &mut s,
+            repo,
+            sid,
+            "session_started",
+            json!({"cwd": "/x", "source": "startup", "branch": "feat/auth"}),
+            10,
+        );
+        ev(
+            &mut s,
+            repo,
+            sid,
+            "task_claimed",
+            json!({"task_id": "1", "mode": "confirmed", "confidence": 1.0}),
+            20,
+        );
+    }
+    ev(
+        &mut s,
+        "r1",
+        "w1aaaa",
+        "waiting_on",
+        json!({"wait_id": "W1", "target_repo_id": "r2", "target_task": "1",
+               "target_text": "api:1 Login form", "reason": "calls it"}),
+        30,
+    );
+    drop(s);
+    let out = status(&env);
+    assert!(
+        out.contains("branch group  feat/auth · 2 repos · 0%  (api 0% · web 0%)"),
+        "{out}"
+    );
+    assert!(out.contains("· waiting on api:1 Login form"), "{out}");
+}

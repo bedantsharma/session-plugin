@@ -415,7 +415,7 @@ fn session_start_without_a_plan_asks_for_one() {
     let out = env.hook("session-start", "s1");
     assert_eq!(
         context_of(&out, "SessionStart"),
-        "bridge-screen briefing — stable\nNo plan yet — ask the owner whether to create one (bridge-screen plan edit / plan_edit tool)."
+        "bridge-screen briefing — stable\nNo plan yet. If this repo has work already, run `bridge-screen init` and follow it; otherwise ask the owner what the goal is."
     );
     // No plan, no claim reminders.
     for _ in 0..4 {
@@ -917,6 +917,7 @@ fn hook_latency_prompt_with_verify_notes() {
             PlanOp::AddDep {
                 id: "1".into(),
                 depends_on: "2".into(),
+                repo: None,
             },
         ],
     )
@@ -1037,6 +1038,175 @@ fn hook_latency_session_start_staleness() {
         "hook session-start (50 verifications, staleness scan)",
         times,
         1000,
+    );
+}
+
+/// A plan file with `tasks` tasks of three steps, `pad` bytes of text per step.
+fn plan_file(tasks: usize, pad: usize, tag: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = format!("# Perf {tag} Implementation Plan\n\n**Goal:** Fast.\n\n");
+    for t in 1..=tasks {
+        let _ = writeln!(out, "### Task {t}: Task {t} {tag}\n");
+        for k in 1..=3 {
+            let _ = writeln!(out, "- [ ] **Step {k}: do {}**", "x".repeat(pad));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// SessionStart with 20 plan files that haven't changed (stat only, no reads) and with one
+/// 300 KiB plan file that changed since the last SessionStart (read, diffed, imported).
+/// Budget p95 < 150 ms, as for SessionStart's other work.
+#[test]
+#[ignore = "perf check: run on demand with --release"]
+fn hook_latency_session_start_plan_import() {
+    use std::time::Instant;
+
+    let env = Env::new();
+    big_database(&env);
+    let dir = env.repo.path().join("docs/superpowers/plans");
+    std::fs::create_dir_all(&dir).unwrap();
+    for i in 0..20 {
+        std::fs::write(
+            dir.join(format!("p{i:02}.md")),
+            plan_file(8, 20, &format!("{i}")),
+        )
+        .unwrap();
+    }
+    assert!(env.run(&["--version"], "").status.success());
+    // The first SessionStart imports them all; after that they are unchanged.
+    env.hook("session-start", "first-start");
+    let unchanged = (0..40)
+        .map(|i| {
+            let payload =
+                common::fixture("session-start", &format!("same-{i:03}"), &env.repo_path());
+            let start = Instant::now();
+            env.hook_raw("session-start", &payload);
+            start.elapsed()
+        })
+        .collect();
+    report_within(
+        "hook session-start (20 unchanged plan files)",
+        unchanged,
+        150,
+    );
+    // One big file, changed before every SessionStart (one step renamed each time).
+    let big = dir.join("p99-big.md");
+    std::fs::remove_file(dir.join("p19.md")).unwrap();
+    let base = plan_file(300, 310, "big");
+    assert!(base.len() > 300 * 1024, "{}", base.len());
+    std::fs::write(&big, &base).unwrap();
+    env.hook("session-start", "big-first");
+    let changed = (0..40)
+        .map(|i| {
+            let text = base.replacen("Step 1: do", &format!("Step 1: done {i}"), 1);
+            std::fs::write(&big, text).unwrap();
+            let payload =
+                common::fixture("session-start", &format!("chg-{i:03}"), &env.repo_path());
+            let start = Instant::now();
+            env.hook_raw("session-start", &payload);
+            start.elapsed()
+        })
+        .collect();
+    assert_eq!(env.log(), "");
+    let store = Store::open(&env.db_path()).unwrap();
+    let imports: i64 = store
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM events WHERE kind = 'plan_imported'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(imports, 20 + 1 + 40, "every change imported once");
+    report_within(
+        "hook session-start (one changed 300 KiB plan file)",
+        changed,
+        150,
+    );
+}
+
+/// UserPromptSubmit for a session with 20 open waits and an active task with 5 links into
+/// another repo (SQL only): p95 under 50 ms on the large database.
+#[test]
+#[ignore = "perf check: run on demand with --release"]
+fn hook_latency_prompt_with_waits_and_external_deps() {
+    use bridge_screen_core::plan::{EditContext, NodeKind, PlanOp, plan_edit};
+    use bridge_screen_core::repo::RepoInfo;
+    use bridge_screen_core::store::{Actor, EventDraft};
+    use std::time::Instant;
+
+    let env = Env::new();
+    let repo = big_database(&env);
+    let mut store = Store::open(&env.db_path()).unwrap();
+    store
+        .register_repo(&RepoInfo {
+            id: "otherrepo0000000".into(),
+            name: "api".into(),
+            root: "/nonexistent/api".into(),
+        })
+        .unwrap();
+    let ctx = |repo_id: &str| EditContext {
+        repo_id: repo_id.into(),
+        session_id: "owner".into(),
+        actor: Actor::default(),
+        reason: None,
+        replan: false,
+    };
+    let goal = PlanOp::AddNode {
+        parent: None,
+        kind: NodeKind::Goal,
+        title: "Ship".into(),
+        intent: Some("Ship it.".into()),
+        estimate_min: None,
+        expected_files: vec![],
+    };
+    let task = |title: String| PlanOp::AddNode {
+        parent: Some("G".into()),
+        kind: NodeKind::Task,
+        title,
+        intent: None,
+        estimate_min: Some(30),
+        expected_files: vec![],
+    };
+    let mut api = vec![goal.clone()];
+    api.extend((1..=25).map(|i| task(format!("Endpoint {i}"))));
+    plan_edit(&mut store, &ctx("otherrepo0000000"), &api).unwrap();
+    let mut web = vec![goal, task("Page".into())];
+    web.extend((1..=5).map(|i| PlanOp::AddDep {
+        id: "1".into(),
+        depends_on: i.to_string(),
+        repo: Some("api".into()),
+    }));
+    plan_edit(&mut store, &ctx(&repo.id), &web).unwrap();
+    let session = "perf-session-09";
+    claim_for(&env, session, "1");
+    for i in 0..20 {
+        store
+            .append(EventDraft::new(
+                &repo.id,
+                session,
+                "waiting_on",
+                json!({"wait_id": format!("W{}", i + 1), "target_repo_id": "otherrepo0000000",
+                       "target_task": (i + 6).to_string(), "target_text": format!("api:{}", i + 6),
+                       "reason": "needed"}),
+            ))
+            .unwrap();
+    }
+    let payload = common::fixture("user-prompt-submit", session, &env.repo_path());
+    assert!(env.run(&["--version"], "").status.success());
+    let times = (0..200)
+        .map(|_| {
+            let start = Instant::now();
+            env.hook_raw("user-prompt-submit", &payload);
+            start.elapsed()
+        })
+        .collect();
+    assert_eq!(env.log(), "");
+    report(
+        "hook user-prompt-submit (20 waits, 5 links into another repo)",
+        times,
     );
 }
 

@@ -7,6 +7,7 @@
   import Header from '$lib/glance/Header.svelte'
   import NeedsYouQueue from '$lib/glance/NeedsYou.svelte'
   import ProjectRowView from '$lib/glance/ProjectRow.svelte'
+  import BranchGroups from '$lib/glance/BranchGroups.svelte'
   import SessionRowView from '$lib/glance/SessionRow.svelte'
   import ProjectView from '$lib/drill/Project.svelte'
   import SessionView from '$lib/drill/Session.svelte'
@@ -167,6 +168,7 @@
             >{glance.projects.length - MAX_PROJECTS} more</button
           >
         {/if}
+        <BranchGroups groups={glance.branch_groups ?? []} />
       </section>
       <section aria-label="Live sessions" class="order-first flex flex-col gap-3 lg:order-none">
         <h2 class="flex items-baseline gap-2 text-base font-semibold">

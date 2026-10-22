@@ -554,11 +554,14 @@ fn session_line(
         .as_ref()
         .map(|c| format!(" · {}", c.text))
         .unwrap_or_default();
-    let flags = s.flags.iter().fold(String::new(), |mut out, f| {
+    let mut flags = s.flags.iter().fold(String::new(), |mut out, f| {
         let age = f.age_s.map(|a| format!(" {}m", a / 60)).unwrap_or_default();
         let _ = write!(out, " · {}{age}", f.kind.text());
         out
     });
+    if let Some(w) = crate::words::waiting(&s.waiting) {
+        let _ = write!(flags, " · {w}");
+    }
     line(
         vec![
             (format!("{} {:<10}", shape(s.light), s.light_word), lit),
@@ -611,6 +614,16 @@ pub fn render(f: &mut Frame, app: &App) {
         lines.extend(project_lines(app, row, width, narrow));
         detail(&mut lines, row);
         row += 1;
+    }
+    // Branch groups under the projects (not selectable).
+    for g in &app.glance.branch_groups {
+        lines.push(line(
+            vec![(
+                format!("  ⑂ {}", crate::words::branch_group(g)),
+                role(app.color, CLAY),
+            )],
+            width,
+        ));
     }
     lines.push(Line::from(""));
     for s in app.sessions() {

@@ -5,12 +5,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::model::{Hill, NodeKind, NodeStatus, PlanNode};
+use super::model::{Hill, NodeKind, NodeSource, NodeStatus, PlanNode};
 use super::project::{
     DepChange, EditMeta, EstimateSet, HillMoved, IntentSet, NodeAdded, NodeEdited, NodeMoved,
     NodeRef,
 };
-use super::query::{get_node, is_in_subtree, next_child, would_cycle};
+use super::query::{get_node, is_in_subtree, next_child, would_cycle_across};
 use crate::error::Result;
 use crate::store::{Actor, Event, EventDraft, Store, append_in};
 
@@ -48,38 +48,29 @@ pub enum PlanOp {
         expected_files: Option<Vec<String>>,
     },
     /// Move a node (and its children) under another parent.
-    MoveNode {
-        id: String,
-        new_parent: String,
-    },
+    MoveNode { id: String, new_parent: String },
     /// Drop a node and its children. Ids are never reused.
-    RemoveNode {
-        id: String,
-    },
-    /// `id` can't finish before `depends_on`.
+    RemoveNode { id: String },
+    /// `id` can't finish before `depends_on`. `repo` for a task in another repo (its
+    /// folder name or id).
     AddDep {
         id: String,
         depends_on: String,
+        #[serde(default)]
+        repo: Option<String>,
     },
     RemoveDep {
         id: String,
         depends_on: String,
+        #[serde(default)]
+        repo: Option<String>,
     },
     /// Set the purpose-and-end-state statement (required on goals and milestones).
-    SetIntent {
-        id: String,
-        intent: String,
-    },
+    SetIntent { id: String, intent: String },
     /// Set the estimate in agent-minutes.
-    SetEstimate {
-        id: String,
-        estimate_min: u32,
-    },
+    SetEstimate { id: String, estimate_min: u32 },
     /// Milestones only: uphill while unknowns remain, downhill once it's execution.
-    SetHill {
-        id: String,
-        hill: Hill,
-    },
+    SetHill { id: String, hill: Hill },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -139,6 +130,18 @@ pub fn plan_edit(store: &mut Store, ctx: &EditContext, ops: &[PlanOp]) -> Result
 
 /// [`plan_edit`] inside the caller's transaction, so other events can join the same batch.
 pub fn plan_edit_in(tx: &Transaction, ctx: &EditContext, ops: &[PlanOp]) -> Result<EditOutcome> {
+    plan_edit_in_sourced(tx, ctx, ops, &[])
+}
+
+/// [`plan_edit_in`] for imports and `init_plan`: `sources[i]`, when given, is where the node
+/// added by `ops[i]` came from (a plan file, or setup). Not reachable from the MCP schema:
+/// agents' own edits are always manual.
+pub fn plan_edit_in_sourced(
+    tx: &Transaction,
+    ctx: &EditContext,
+    ops: &[PlanOp],
+    sources: &[Option<NodeSource>],
+) -> Result<EditOutcome> {
     if ops.is_empty() {
         return Err(PlanError::Empty.into());
     }
@@ -166,9 +169,14 @@ pub fn plan_edit_in(tx: &Transaction, ctx: &EditContext, ops: &[PlanOp]) -> Resu
             replan_id,
         };
         for (index, op) in ops.iter().enumerate() {
-            let (kind, data, task) = validate(tx, &ctx.repo_id, index, op, &meta)?;
+            let (kind, mut data, task) = validate(tx, &ctx.repo_id, index, op, &meta)?;
             if kind == "node_added" {
                 added_ids.push(task.clone());
+                if let Some(Some(source)) = sources.get(index)
+                    && *source != NodeSource::Manual
+                {
+                    data["source"] = serde_json::to_value(source)?;
+                }
             }
             events.push(append_in(tx, draft(ctx, kind, data, Some(task)))?);
         }
@@ -215,6 +223,44 @@ fn invalid(index: usize, reason: impl Into<String>) -> crate::error::Error {
         reason: reason.into(),
     }
     .into()
+}
+
+/// The repo id that `name` names: an id, else the one repo with that folder name
+/// (decision: cross-repo targets are `<repo name>:<task id>`). The error is plain words.
+pub fn resolve_repo(conn: &Connection, name: &str) -> std::result::Result<String, String> {
+    let lookup = || -> Result<Vec<(String, String)>> {
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, root FROM repos WHERE id = ?1 OR name = ?1 ORDER BY id = ?1 DESC, root",
+        )?;
+        let rows = stmt.query_map([name], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    };
+    let found = lookup().map_err(|e| e.to_string())?;
+    if let Some((id, _)) = found.iter().find(|(id, _)| id == name) {
+        return Ok(id.clone());
+    }
+    match found.as_slice() {
+        [] => Err(format!("no repo named {name}")),
+        [(id, _)] => Ok(id.clone()),
+        many => Err(format!(
+            "{name} matches several repos: {}",
+            many.iter()
+                .map(|(_, root)| root.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+/// `2.4`, or `api:2.4` for a task in another repo.
+fn shown_dep(conn: &Connection, dep_repo: Option<&str>, id: &str) -> Result<String> {
+    Ok(match dep_repo {
+        None => id.to_string(),
+        Some(r) => format!(
+            "{}:{id}",
+            crate::store::repo_name(conn, r)?.unwrap_or_else(|| r.to_string())
+        ),
+    })
 }
 
 /// An accepted op: (event kind, event data, task id).
@@ -268,6 +314,7 @@ fn validate(
                 intent: intent.map(str::to_string),
                 estimate_min: *estimate_min,
                 expected_files: expected_files.clone(),
+                source: None,
                 meta,
             };
             Ok(("node_added", serde_json::to_value(data)?, id))
@@ -279,8 +326,16 @@ fn validate(
         } => c.edit_node(id, title.as_deref(), expected_files.as_ref(), meta),
         PlanOp::MoveNode { id, new_parent } => c.move_node(id, new_parent, meta),
         PlanOp::RemoveNode { id } => c.remove_node(id, meta),
-        PlanOp::AddDep { id, depends_on } => c.add_dep(id, depends_on, meta),
-        PlanOp::RemoveDep { id, depends_on } => c.remove_dep(id, depends_on, meta),
+        PlanOp::AddDep {
+            id,
+            depends_on,
+            repo,
+        } => c.add_dep(id, depends_on, repo.as_deref(), meta),
+        PlanOp::RemoveDep {
+            id,
+            depends_on,
+            repo,
+        } => c.remove_dep(id, depends_on, repo.as_deref(), meta),
         PlanOp::SetIntent { id, intent } => c.set_intent(id, intent, meta),
         PlanOp::SetEstimate { id, estimate_min } => c.set_estimate(id, *estimate_min, meta),
         PlanOp::SetHill { id, hill } => c.set_hill(id, *hill, meta),
@@ -392,49 +447,88 @@ impl Check<'_> {
         Ok(("node_removed", serde_json::to_value(data)?, id.to_string()))
     }
 
-    fn add_dep(self, id: &str, depends_on: &str, meta: EditMeta) -> Result<Validated> {
+    /// The repo a dependency's `repo` names: `None` for this repo.
+    fn dep_repo(self, repo: Option<&str>) -> Result<Option<String>> {
+        let Some(name) = repo.map(str::trim).filter(|r| !r.is_empty()) else {
+            return Ok(None);
+        };
+        let id = resolve_repo(self.conn, name).map_err(|reason| invalid(self.index, reason))?;
+        Ok((id != self.repo).then_some(id))
+    }
+
+    fn add_dep(
+        self,
+        id: &str,
+        depends_on: &str,
+        repo: Option<&str>,
+        meta: EditMeta,
+    ) -> Result<Validated> {
         let index = self.index;
         let node = self.live(id)?;
-        let target = self.live(depends_on)?;
-        if node.id == target.id {
+        let dep_repo = self.dep_repo(repo)?;
+        let target_repo = dep_repo.as_deref().unwrap_or(self.repo);
+        let target = live(self.conn, target_repo, index, depends_on)?;
+        let shown = shown_dep(self.conn, dep_repo.as_deref(), depends_on)?;
+        if dep_repo.is_none() && node.id == target.id {
             return Err(invalid(index, format!("{id} cannot depend on itself")));
         }
         if node.kind == NodeKind::Goal || target.kind == NodeKind::Goal {
             return Err(invalid(index, "the goal cannot take part in dependencies"));
         }
-        if node.depends_on.iter().any(|d| d == depends_on) {
-            return Err(invalid(
-                index,
-                format!("{id} already depends on {depends_on}"),
-            ));
+        let already = match &dep_repo {
+            None => node.depends_on.iter().any(|d| d == depends_on),
+            Some(r) => node
+                .external_deps
+                .iter()
+                .any(|d| &d.repo_id == r && d.id == depends_on),
+        };
+        if already {
+            return Err(invalid(index, format!("{id} already depends on {shown}")));
         }
-        if would_cycle(self.conn, self.repo, id, depends_on)? {
+        if would_cycle_across(self.conn, self.repo, id, target_repo, depends_on)? {
             return Err(PlanError::Cycle {
                 index,
                 id: id.to_string(),
-                depends_on: depends_on.to_string(),
+                depends_on: shown,
             }
             .into());
         }
         let data = DepChange {
             id: id.to_string(),
             depends_on: depends_on.to_string(),
+            dep_repo_id: dep_repo,
             meta,
         };
         Ok(("dep_added", serde_json::to_value(data)?, id.to_string()))
     }
 
-    fn remove_dep(self, id: &str, depends_on: &str, meta: EditMeta) -> Result<Validated> {
+    fn remove_dep(
+        self,
+        id: &str,
+        depends_on: &str,
+        repo: Option<&str>,
+        meta: EditMeta,
+    ) -> Result<Validated> {
         let node = self.live(id)?;
-        if !node.depends_on.iter().any(|d| d == depends_on) {
+        let dep_repo = self.dep_repo(repo)?;
+        let has = match &dep_repo {
+            None => node.depends_on.iter().any(|d| d == depends_on),
+            Some(r) => node
+                .external_deps
+                .iter()
+                .any(|d| &d.repo_id == r && d.id == depends_on),
+        };
+        if !has {
+            let shown = shown_dep(self.conn, dep_repo.as_deref(), depends_on)?;
             return Err(invalid(
                 self.index,
-                format!("{id} does not depend on {depends_on}"),
+                format!("{id} does not depend on {shown}"),
             ));
         }
         let data = DepChange {
             id: id.to_string(),
             depends_on: depends_on.to_string(),
+            dep_repo_id: dep_repo,
             meta,
         };
         Ok(("dep_removed", serde_json::to_value(data)?, id.to_string()))
@@ -714,6 +808,7 @@ mod tests {
         let dep = |id: &str, on: &str| PlanOp::AddDep {
             id: id.into(),
             depends_on: on.into(),
+            repo: None,
         };
         plan_edit(&mut s, &ctx(), &[dep("1.2", "1.1")]).unwrap();
         assert_eq!(
@@ -742,7 +837,8 @@ mod tests {
                 &ctx(),
                 &[PlanOp::RemoveDep {
                     id: "1.1".into(),
-                    depends_on: "1.2".into()
+                    depends_on: "1.2".into(),
+                    repo: None,
                 }]
             )),
             PlanError::Invalid { index: 0, .. }
@@ -753,6 +849,7 @@ mod tests {
             &[PlanOp::RemoveDep {
                 id: "1.2".into(),
                 depends_on: "1.1".into(),
+                repo: None,
             }],
         )
         .unwrap();

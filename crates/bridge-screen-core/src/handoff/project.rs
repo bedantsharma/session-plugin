@@ -39,6 +39,10 @@ pub struct ClaimedDone {
     /// Key functions or types to find in `files`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub symbols: Vec<String>,
+    /// Recorded from a plan file (a ticked step) or at setup (`init_plan`), not just
+    /// finished in this session: no decision capture follows.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inferred: bool,
 }
 
 /// Why a checkpoint commit is due (spec §8.1).
@@ -270,11 +274,13 @@ fn claimed_done(tx: &Transaction, event: &Event, d: &ClaimedDone) -> Result<()> 
     )?;
     mark_claimed_done(tx, &event.repo_id, &d.task_id)?;
     crate::verify::refresh_status(tx, &event.repo_id, &d.task_id, false)?;
-    tx.execute(
-        "UPDATE sessions SET decision_capture = COALESCE(decision_capture, 'claimed_done')
-         WHERE session_id = ?1",
-        [sid],
-    )?;
+    if !d.inferred {
+        tx.execute(
+            "UPDATE sessions SET decision_capture = COALESCE(decision_capture, 'claimed_done')
+             WHERE session_id = ?1",
+            [sid],
+        )?;
+    }
     Ok(())
 }
 

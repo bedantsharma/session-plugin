@@ -7,6 +7,9 @@
 //! reaches a view table.
 
 pub mod drill;
+pub mod groups;
+
+pub use groups::{BranchGroup, GroupRepo, branch_groups};
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
@@ -46,6 +49,8 @@ pub struct Glance {
     pub needs_you_count: usize,
     /// More than [`ESCALATE_ABOVE`] items.
     pub escalated: bool,
+    /// The same branch with live sessions in two or more repos (spec §10.1).
+    pub branch_groups: Vec<BranchGroup>,
 }
 
 impl Glance {
@@ -54,6 +59,8 @@ impl Glance {
     pub fn for_repo(mut self, repo_id: &str) -> Self {
         self.projects.retain(|p| p.repo_id == repo_id);
         self.needs_you.retain(|i| i.repo_id == repo_id);
+        self.branch_groups
+            .retain(|g| g.repos.iter().any(|r| r.repo_id == repo_id));
         self.live_sessions = self.projects.iter().map(|p| p.sessions.len()).sum();
         self.needs_you_count = self.needs_you.len();
         self.escalated = self.needs_you_count > ESCALATE_ABOVE;
@@ -307,9 +314,20 @@ pub struct SessionRow {
     pub worktree: Option<String>,
     /// Tokens and money the session spent so far; `None` before any usage.
     pub cost: Option<CostRow>,
+    /// Its open waits (spec §9.1): amber `waiting` when nothing redder applies.
+    pub waiting: Vec<WaitRef>,
     /// Sort key: 0 red, 1 other needs-you (question, permission wait), 2 handoff trouble,
     /// 3 working, 4 resting.
     pub rank: u8,
+}
+
+/// An open wait on a session row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WaitRef {
+    pub wait_id: String,
+    /// `2.4 Login form`, `api:2.4 Login endpoint`, or the free text.
+    pub target: String,
+    pub since_min: i64,
 }
 
 /// Kinds of needs-you item, in rank order.
@@ -637,6 +655,8 @@ struct Facts {
     red: bool,
     /// Red, and the owner hasn't answered it yet.
     red_open: bool,
+    /// It has an open wait.
+    waiting: bool,
 }
 
 fn facts(conn: &Connection, s: &Session) -> Result<Facts> {
@@ -660,6 +680,7 @@ fn facts(conn: &Connection, s: &Session) -> Result<Facts> {
         blocking_wait: wait.filter(|(kind, _)| kind != "idle_prompt"),
         red,
         red_open: red && !drift_answered(conn, s)?,
+        waiting: !crate::waits::open_of(conn, &s.session_id)?.is_empty(),
     })
 }
 
@@ -771,11 +792,15 @@ fn looks(s: &Session, f: &Facts, rest: Option<&Rest>) -> (Light, &'static str, &
             (Light::Amber, "drift")
         } else if f.has_detour || s.away_secs > 0 || f.red {
             (Light::Amber, "detour")
+        } else if f.waiting {
+            (Light::Amber, "waiting")
         } else if f.requested {
             (Light::Green, "asked for")
         } else {
             (Light::Green, "on task")
         }
+    } else if f.waiting {
+        (Light::Amber, "waiting")
     } else if done {
         (Light::Green, "done")
     } else {
@@ -859,6 +884,14 @@ fn session_row(
         branch: s.branch.clone(),
         worktree: s.worktree.clone(),
         cost: cost_row(conn, &telemetry::Scope::Session(s.session_id.clone()), cfg)?,
+        waiting: crate::waits::open_of(conn, &s.session_id)?
+            .into_iter()
+            .map(|w| WaitRef {
+                since_min: w.since_min(now),
+                wait_id: w.wait_id,
+                target: w.target_text,
+            })
+            .collect(),
         rank,
     };
     Ok((row, items))
@@ -1374,6 +1407,7 @@ pub fn glance(conn: &Connection, cfg: &Config, now: Timestamp) -> Result<Glance>
         as_of: now.to_string(),
         last_event_pos: last_event_pos(conn)?,
         live_sessions: live.len(),
+        branch_groups: branch_groups(conn, &projects)?,
         projects,
         needs_you: queue,
         needs_you_count: count,

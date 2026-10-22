@@ -811,3 +811,144 @@ fn milestones_and_the_goal_show_their_rolled_up_status() {
     let m1 = p.milestones.iter().find(|m| m.id == "1").unwrap();
     assert_eq!(m1.status, Rollup::InProgress);
 }
+
+// ---- branch groups ---------------------------------------------------------------------
+
+/// Repos `r` (shop) and `q` (api, rooted at `q_root`), each with tasks 1.1 (30m) and 1.2
+/// (60m); sessions on `branch` claim them.
+fn two_repo_store(q_root: &std::path::Path) -> Store {
+    let mut s = store();
+    s.register_repo(&RepoInfo {
+        id: "q".into(),
+        name: "api".into(),
+        root: q_root.to_path_buf(),
+    })
+    .unwrap();
+    let mut events = Vec::new();
+    for (id, parent, kind, est) in [
+        ("G", None, "goal", None),
+        ("1", Some("G"), "milestone", None),
+        ("1.1", Some("1"), "task", Some(30)),
+        ("1.2", Some("1"), "task", Some(60)),
+    ] {
+        events.push(("q", "owner", 0, "node_added", node(id, parent, kind, est)));
+    }
+    script(&mut s, &events);
+    s
+}
+
+fn on_branch(s: &mut Store, repo: &str, session: &str, branch: &str, task: Option<&str>) {
+    script(
+        s,
+        &[(
+            repo,
+            session,
+            10,
+            "session_started",
+            json!({"cwd": "/wt", "source": "startup", "branch": branch}),
+        )],
+    );
+    if let Some(t) = task {
+        script(
+            s,
+            &[(
+                repo,
+                session,
+                20,
+                "task_claimed",
+                json!({"task_id": t, "mode": "confirmed", "confidence": 1.0}),
+            )],
+        );
+    }
+}
+
+fn verified_l2(s: &mut Store, repo: &str, task: &str) {
+    script(
+        s,
+        &[(
+            repo,
+            "owner",
+            30,
+            "verified",
+            json!({"verif_id": format!("v-{repo}-{task}"), "task_id": task, "level": 2,
+                   "sha": "abc", "files": [], "evidence": "ok", "by": "owner"}),
+        )],
+    );
+}
+
+#[test]
+fn same_branch_in_two_repos_is_a_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = two_repo_store(dir.path());
+    on_branch(&mut s, "r", "s1", "feat/auth", Some("1.1"));
+    on_branch(&mut s, "q", "s2", "feat/auth", Some("1.2"));
+    on_branch(&mut s, "q", "s3", "feat/auth", None);
+    verified_l2(&mut s, "r", "1.1");
+    let g = glance(s.conn(), &Config::default(), at(60)).unwrap();
+    assert_eq!(g.branch_groups.len(), 1);
+    let grp = &g.branch_groups[0];
+    assert_eq!(grp.branch, "feat/auth");
+    let repos: Vec<(&str, Option<u32>, usize)> = grp
+        .repos
+        .iter()
+        .map(|r| (r.name.as_str(), r.done_pct, r.sessions))
+        .collect();
+    assert_eq!(repos, vec![("api", Some(0), 2), ("shop", Some(100), 1)]);
+    // 30 of 30+60 minutes done.
+    assert_eq!(grp.done_pct, Some(33));
+    assert_eq!(g.clone().for_repo("q").branch_groups.len(), 1);
+    // A repo in the group with no task on the branch yet shows no %.
+    let mut s = two_repo_store(dir.path());
+    on_branch(&mut s, "r", "s1", "feat/auth", Some("1.1"));
+    on_branch(&mut s, "q", "s2", "feat/auth", None);
+    let g = glance(s.conn(), &Config::default(), at(60)).unwrap();
+    let api = g.branch_groups[0]
+        .repos
+        .iter()
+        .find(|r| r.name == "api")
+        .unwrap();
+    assert_eq!((api.done_pct, api.claimed_pct), (None, None));
+}
+
+#[test]
+fn default_branch_is_never_a_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = two_repo_store(dir.path());
+    on_branch(&mut s, "r", "s1", "main", None);
+    on_branch(&mut s, "q", "s2", "main", None);
+    assert_eq!(
+        glance(s.conn(), &Config::default(), at(60))
+            .unwrap()
+            .branch_groups,
+        vec![]
+    );
+    // api's origin HEAD is trunk: trunk in both repos is still api's default branch, so
+    // only one repo counts and there is no group.
+    let refs = dir.path().join(".git/refs/remotes/origin");
+    std::fs::create_dir_all(&refs).unwrap();
+    std::fs::write(refs.join("HEAD"), "ref: refs/remotes/origin/trunk\n").unwrap();
+    let mut s = two_repo_store(dir.path());
+    on_branch(&mut s, "r", "s1", "trunk", None);
+    on_branch(&mut s, "q", "s2", "trunk", None);
+    assert_eq!(
+        glance(s.conn(), &Config::default(), at(60))
+            .unwrap()
+            .branch_groups,
+        vec![]
+    );
+}
+
+#[test]
+fn one_repo_is_not_a_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = two_repo_store(dir.path());
+    on_branch(&mut s, "r", "s1", "feat/x", Some("1.1"));
+    on_branch(&mut s, "r", "s2", "feat/x", None);
+    on_branch(&mut s, "q", "s3", "feat/y", None);
+    assert_eq!(
+        glance(s.conn(), &Config::default(), at(60))
+            .unwrap()
+            .branch_groups,
+        vec![]
+    );
+}

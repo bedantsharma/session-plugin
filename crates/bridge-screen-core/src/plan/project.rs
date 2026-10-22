@@ -3,7 +3,7 @@
 use rusqlite::{Transaction, params};
 use serde::{Deserialize, Serialize};
 
-use super::model::{Hill, NodeKind};
+use super::model::{Hill, NodeKind, NodeSource};
 use crate::error::Result;
 use crate::store::Event;
 
@@ -41,6 +41,9 @@ pub struct NodeAdded {
     pub estimate_min: Option<u32>,
     #[serde(default)]
     pub expected_files: Vec<String>,
+    /// Where the node came from; events from before imports read as manual.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<NodeSource>,
     #[serde(flatten)]
     pub meta: EditMeta,
 }
@@ -75,6 +78,9 @@ pub struct NodeRef {
 pub struct DepChange {
     pub id: String,
     pub depends_on: String,
+    /// The repo `depends_on` is in; `None` for the same repo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dep_repo_id: Option<String>,
     #[serde(flatten)]
     pub meta: EditMeta,
 }
@@ -119,8 +125,8 @@ fn project_node_added(tx: &Transaction, repo: &str, d: &NodeAdded) -> Result<()>
     let position = next_position(tx, repo, d.parent_id.as_deref())?;
     tx.execute(
         "INSERT INTO plan_nodes (repo_id, id, parent_id, kind, title, intent, estimate_min,
-                                 expected_files, position)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                                 expected_files, position, source)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             repo,
             d.id,
@@ -130,7 +136,8 @@ fn project_node_added(tx: &Transaction, repo: &str, d: &NodeAdded) -> Result<()>
             d.intent,
             d.estimate_min,
             serde_json::to_string(&d.expected_files)?,
-            position
+            position,
+            d.source.clone().unwrap_or_default().to_column()
         ],
     )?;
     if let Some(parent) = &d.parent_id {
@@ -139,6 +146,7 @@ fn project_node_added(tx: &Transaction, repo: &str, d: &NodeAdded) -> Result<()>
             params![repo, parent],
         )?;
     }
+    crate::import::project::node_added(tx, repo, d)?;
     Ok(())
 }
 
@@ -157,8 +165,9 @@ fn project_node_removed(tx: &Transaction, repo: &str, d: &NodeRef) -> Result<()>
     )?;
     tx.execute(
         &format!(
-            "{subtree} DELETE FROM plan_deps WHERE repo_id = ?1
-             AND (node_id IN (SELECT id FROM sub) OR depends_on IN (SELECT id FROM sub))"
+            "{subtree} DELETE FROM plan_deps
+             WHERE (repo_id = ?1 AND node_id IN (SELECT id FROM sub))
+                OR (dep_repo_id = ?1 AND depends_on IN (SELECT id FROM sub))"
         ),
         params![repo, d.id],
     )?;
@@ -166,13 +175,20 @@ fn project_node_removed(tx: &Transaction, repo: &str, d: &NodeRef) -> Result<()>
 }
 
 /// A claimed task starts being worked on: todo or failed → active. Verified and claimed-done
-/// statuses (claimed, L1–L4) are left alone.
-pub fn mark_claimed(tx: &Transaction, repo: &str, id: &str) -> Result<()> {
+/// statuses (claimed, L1–L4) are left alone. The task remembers the claiming session's
+/// branch (decision: a task's branch is the branch it was last claimed on).
+pub fn mark_claimed(tx: &Transaction, repo: &str, id: &str, branch: Option<&str>) -> Result<()> {
     tx.execute(
         "UPDATE plan_nodes SET status = 'active'
          WHERE repo_id = ?1 AND id = ?2 AND status IN ('todo', 'failed')",
         params![repo, id],
     )?;
+    if let Some(branch) = branch {
+        tx.execute(
+            "UPDATE plan_nodes SET branch = ?3 WHERE repo_id = ?1 AND id = ?2",
+            params![repo, id, branch],
+        )?;
+    }
     Ok(())
 }
 
@@ -230,15 +246,27 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
         "dep_added" => {
             let d: DepChange = payload(event)?;
             tx.execute(
-                "INSERT OR IGNORE INTO plan_deps (repo_id, node_id, depends_on) VALUES (?1, ?2, ?3)",
-                params![repo, d.id, d.depends_on],
+                "INSERT OR IGNORE INTO plan_deps (repo_id, node_id, dep_repo_id, depends_on)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    repo,
+                    d.id,
+                    d.dep_repo_id.as_deref().unwrap_or(repo),
+                    d.depends_on
+                ],
             )?;
         }
         "dep_removed" => {
             let d: DepChange = payload(event)?;
             tx.execute(
-                "DELETE FROM plan_deps WHERE repo_id = ?1 AND node_id = ?2 AND depends_on = ?3",
-                params![repo, d.id, d.depends_on],
+                "DELETE FROM plan_deps WHERE repo_id = ?1 AND node_id = ?2 AND dep_repo_id = ?3
+                 AND depends_on = ?4",
+                params![
+                    repo,
+                    d.id,
+                    d.dep_repo_id.as_deref().unwrap_or(repo),
+                    d.depends_on
+                ],
             )?;
         }
         "intent_set" => {

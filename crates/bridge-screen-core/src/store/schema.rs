@@ -1,6 +1,6 @@
 //! SQL schema. Version 1 is the first released schema; later versions append migrations.
 
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 pub const V1: &str = r"
 CREATE TABLE meta (
@@ -411,4 +411,66 @@ ALTER TABLE detours ADD COLUMN requested INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE verifications ADD COLUMN failed_by TEXT;
 ALTER TABLE verifications ADD COLUMN failed_from TEXT;
 ALTER TABLE transcript_cursors ADD COLUMN identity TEXT;
+";
+
+/// Version 10: imports and onboarding (spec §5.2–5.3, §9.1, §12.1–12.2) — the branch a task
+/// was last claimed on; plan links that may point at a task in another repo
+/// (`dep_repo_id`, the same repo for every older link); the plan files imported or seen
+/// (`plan_sources`) and which node each of their tasks and steps became
+/// (`plan_source_items`); and ad-hoc waits (`waiting_on`).
+pub const V10: &str = r"
+ALTER TABLE plan_nodes ADD COLUMN branch TEXT;
+
+CREATE TABLE plan_deps_v10 (
+    repo_id     TEXT NOT NULL,
+    node_id     TEXT NOT NULL,
+    dep_repo_id TEXT NOT NULL,
+    depends_on  TEXT NOT NULL,
+    PRIMARY KEY (repo_id, node_id, dep_repo_id, depends_on)
+);
+INSERT INTO plan_deps_v10 (repo_id, node_id, dep_repo_id, depends_on)
+    SELECT repo_id, node_id, repo_id, depends_on FROM plan_deps;
+DROP TABLE plan_deps;
+ALTER TABLE plan_deps_v10 RENAME TO plan_deps;
+CREATE INDEX plan_deps_target ON plan_deps (dep_repo_id, depends_on);
+
+CREATE TABLE plan_sources (
+    repo_id     TEXT NOT NULL,
+    path        TEXT NOT NULL,
+    hash        TEXT NOT NULL,
+    size        INTEGER NOT NULL,
+    mtime       INTEGER NOT NULL,
+    node_id     TEXT,
+    baseline    INTEGER NOT NULL DEFAULT 0,
+    imported_at TEXT NOT NULL,
+    needs_link  INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (repo_id, path)
+);
+
+CREATE TABLE plan_source_items (
+    repo_id TEXT NOT NULL,
+    path    TEXT NOT NULL,
+    task_no INTEGER NOT NULL,
+    step_no INTEGER NOT NULL DEFAULT 0,
+    node_id TEXT NOT NULL,
+    title   TEXT NOT NULL,
+    PRIMARY KEY (repo_id, path, task_no, step_no)
+);
+
+CREATE TABLE waits (
+    wait_id        TEXT PRIMARY KEY,
+    repo_id        TEXT NOT NULL,
+    session_id     TEXT NOT NULL,
+    target_repo_id TEXT,
+    target_task    TEXT,
+    target_text    TEXT NOT NULL,
+    reason         TEXT NOT NULL,
+    opened_at      TEXT NOT NULL,
+    cleared_at     TEXT,
+    cleared_why    TEXT,
+    cleared_sha    TEXT
+);
+
+CREATE INDEX waits_target ON waits (target_repo_id, target_task, cleared_at);
+CREATE INDEX waits_session ON waits (session_id);
 ";

@@ -36,7 +36,16 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
     totals per scope and cost at read time from `config.toml` prices (`mod.rs`)
   - `forecast/` — calibration ratios, the seeded Monte Carlo (`rng.rs`, no `rand`), hours/day
     and dates, refusal below 3 finished tasks, `forecast_ran` history (`project.rs`) (§9.3)
+  - `import/` — superpowers plan files (§12.1): the pure parser (`parse.rs`), the pure diff to
+    plan ops with predicted ids (`diff.rs`), `plan_imported`/`plan_file_seen` → `plan_sources`,
+    `plan_source_items` (`project.rs`), `scan` (SessionStart budget: 20 files, 1 MiB, stat
+    first; baseline for a hand-planned repo) and `import_path` (`mod.rs`); files are only read
+  - `init.rs` — `bridge-screen init` evidence (read-only) and `init_plan`'s `apply` (§12.2)
+  - `waits/` — `waiting_on`/`wait_cleared`, the `waits` view, `clear_for` (same transaction as
+    any L2+ `verified`), promote to a plan link, the wait note (§9.1)
+  - `view/groups.rs` — branch groups on the glance (§10.1)
 - `crates/bridge-screen/` — the single binary: CLI, `hook`, `mcp`, `status`, `ui`, `watch`
+  - `src/onboard.rs` — `bridge-screen import`, `init` and `wait list|clear|promote`
   - `src/ui/` — `bridge-screen ui`: lock/token/single instance (`mod.rs`), axum router with
     the JSON API and embedded SPA (`api.rs`); `build.rs` embeds `web/dist` and
     `web/dist-card` or a placeholder page when they aren't built
@@ -52,7 +61,9 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
     `start_detour`, `close_detour`, `resume`, `promote_detour`, `label_unit`, `claim_done`,
     `handoff_readback`, `handoff_note`, `resolve_leftover`, `verify`, `log_decision`,
     `show_progress` + the `ui://bridge-screen/progress` card resource, `owner_action`
-    (card-only: needs the card's nonce), `progress_report`, `report_published`)
+    (card-only: needs the card's nonce), `progress_report`, `report_published`, and in
+    `src/mcp/`: `init_plan` (`onboard.rs`), `waiting_on`, `clear_wait`, `promote_wait`
+    (`waits.rs`))
   - `tests/fixtures/hooks/` — one recorded-style hook payload per event
 - `plugin/` — the Claude Code plugin: `.claude-plugin/plugin.json`, `hooks/hooks.json`,
   `.mcp.json`, `skills/bridge-screen/SKILL.md`, `commands/bridge-screen.md`, and the
@@ -81,6 +92,9 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
 - Owner answers: `bridge-screen drift <session-prefix> continue|make-task|stop [--reason R] [--parent P --title T]`,
   `bridge-screen label <session-prefix> <unit_no> on-task|detour|drift|requested` (`requested`,
   alias `asked-for`: work the owner asked for — never drift)
+- Plans: `bridge-screen import [-C DIR] [FILE] [--into NODE] [--dry-run]` (plan files; read
+  only), `bridge-screen init [-C DIR] [--goal TEXT]` (a half-built repo's evidence and the
+  agent's steps), `bridge-screen wait list|clear <id>|promote <id> [-C DIR]` (owner)
 - Recovery: `bridge-screen resolve <leftover-id|prefix>… adopt|resume|undo [-C DIR]`;
   `bridge-screen squash [-C DIR] [--onto BASE] [--dry-run]`
 - Config: `bridge-screen config [-C DIR]` (shows the repo's tuned drift thresholds and test
@@ -95,7 +109,7 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
   owner-run, never a hook), `bridge-screen forecast [-C DIR]`; prices under `[prices."<model>"]`
   in `config.toml` (`bridge-screen config` shows them and which are defaults)
 - Plugin check: `claude plugin validate ./plugin` (read-only)
-- Hook latency (release, on demand; PostToolUse, the Stop scoring path, a prompt scoring a unit cut short, Stop and SubagentStop with a 512 KiB transcript backlog (Stop also finishing 512 KiB of a subagent's), UserPromptSubmit with verification and dependency notes, and — budget 150 ms — PostToolUse after `git commit` with a checkpoint pending and SessionStart's staleness scan over 50 verifications): `cargo test --release -p bridge-screen --test hooks -- --ignored hook_latency --nocapture`
+- Hook latency (release, on demand; PostToolUse, the Stop scoring path, a prompt scoring a unit cut short, Stop and SubagentStop with a 512 KiB transcript backlog (Stop also finishing 512 KiB of a subagent's), UserPromptSubmit with verification and dependency notes, UserPromptSubmit with 20 open waits and 5 links into another repo, and — budget 150 ms — PostToolUse after `git commit` with a checkpoint pending, SessionStart's staleness scan over 50 verifications, and SessionStart with 20 unchanged plan files or one changed 300 KiB plan file): `cargo test --release -p bridge-screen --test hooks -- --ignored hook_latency --nocapture`
 - Releases: see `docs/RELEASING.md` (`dist plan` to preview); keep `plugin/.claude-plugin/plugin.json`'s `version` equal to the workspace version (a test checks it)
 
 ## Rules

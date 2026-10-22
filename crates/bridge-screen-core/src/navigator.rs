@@ -711,48 +711,102 @@ fn verify_nudges(conn: &Connection, session: &Session, unit: &Unit) -> Result<Ve
 }
 
 /// Dependencies of the active task that reached L2 or above, verified by another session
-/// (spec §9.1): once per dependency and commit per session.
+/// (spec §9.1): once per dependency and commit per session. Links into other repos say
+/// which repo; waits that cleared because their target was done get the same note.
 fn dependency_ready(conn: &Connection, session: &Session) -> Result<Vec<Candidate>> {
+    let mut out = Vec::new();
     let Some(task) = &session.active_task else {
-        return Ok(Vec::new());
+        return wait_notes(conn, session, out);
     };
     let Some(node) = crate::plan::get_node(conn, &session.repo_id, task)? else {
-        return Ok(Vec::new());
+        return wait_notes(conn, session, out);
     };
-    let mut out = Vec::new();
-    for dep in node.depends_on {
-        let Some(v) =
-            crate::verify::top_verification(conn, &session.repo_id, &dep)?.filter(|v| v.level >= 2)
+    let local = node
+        .depends_on
+        .into_iter()
+        .map(|d| (session.repo_id.clone(), None, d));
+    let external = node
+        .external_deps
+        .into_iter()
+        .map(|d| (d.repo_id, Some(d.repo_name), d.id));
+    for (repo, repo_name, dep) in local.chain(external) {
+        let Some(v) = crate::verify::top_verification(conn, &repo, &dep)?.filter(|v| v.level >= 2)
         else {
             continue;
         };
         if v.session_id == session.session_id {
             continue;
         }
-        let key = format!("dep:{dep}:{}", v.sha);
-        let sent: i64 = conn
-            .prepare_cached(
-                "SELECT count(*) FROM notes_sent WHERE session_id = ?1 AND state_key = ?2",
-            )?
-            .query_row(params![session.session_id, key], |r| r.get(0))?;
-        if sent > 0 {
+        let key = link_key(&session.repo_id, &repo, &dep, &v.sha);
+        if note_was_sent(conn, &session.session_id, &key)?
+            || crate::waits::noted_by_wait(conn, session, &repo, &dep, &v.sha)?
+        {
             continue;
         }
-        let title = task_title(conn, &session.repo_id, &dep)?.unwrap_or_default();
-        let branch = session::get(conn, &v.session_id)?.and_then(|s| s.branch);
-        let short: String = v.sha.chars().take(7).collect();
-        let on = branch.map_or_else(String::new, |b| format!(" on `{b}`"));
+        let title = task_title(conn, &repo, &dep)?.unwrap_or_default();
+        let shown = match &repo_name {
+            None => dep.clone(),
+            Some(name) => format!("{name}:{dep}"),
+        };
         out.push(Candidate::new(
             NoteKind::DependencyReady,
             Channel::PromptSubmit,
-            format!(
-                "bridge-screen: {dep} {title} is done{on} @{short}. Merge or rebase to pick it up."
-            )
-            .replace("  ", " "),
+            done_text(conn, &shown, &title, &v.session_id, &v.sha)?,
             key,
         ));
     }
-    Ok(out)
+    wait_notes(conn, session, out)
+}
+
+/// The state key of a plan link's "done" note: `dep:<id>:<sha>` in this repo,
+/// `dep:<repo id>:<id>:<sha>` for another.
+pub(crate) fn link_key(here: &str, repo: &str, id: &str, sha: &str) -> String {
+    if repo == here {
+        format!("dep:{id}:{sha}")
+    } else {
+        format!("dep:{repo}:{id}:{sha}")
+    }
+}
+
+/// `links` plus the notes of waits that cleared because their target was done, leaving out
+/// one the plan link's note already says (same target, same commit).
+fn wait_notes(
+    conn: &Connection,
+    session: &Session,
+    mut links: Vec<Candidate>,
+) -> Result<Vec<Candidate>> {
+    for c in crate::waits::cleared_notes(conn, session)? {
+        if !links.iter().any(|l| l.text == c.text) {
+            links.push(c);
+        }
+    }
+    Ok(links)
+}
+
+/// Was a note with this state key sent to the session already?
+pub(crate) fn note_was_sent(conn: &Connection, session_id: &str, key: &str) -> Result<bool> {
+    let sent: i64 = conn
+        .prepare_cached("SELECT count(*) FROM notes_sent WHERE session_id = ?1 AND state_key = ?2")?
+        .query_row(params![session_id, key], |r| r.get(0))?;
+    Ok(sent > 0)
+}
+
+/// "bridge-screen: api:2.4 Login endpoint is done on `feat/auth` @abc1234. Merge or rebase
+/// to pick it up." — `by` is the session that verified it, for its branch.
+pub(crate) fn done_text(
+    conn: &Connection,
+    shown: &str,
+    title: &str,
+    by: &str,
+    sha: &str,
+) -> Result<String> {
+    let branch = session::get(conn, by)?.and_then(|s| s.branch);
+    let short: String = sha.chars().take(7).collect();
+    let on = branch.map_or_else(String::new, |b| format!(" on `{b}`"));
+    Ok(format!(
+        "bridge-screen: {shown} {title} is done{on} @{short}. Merge or rebase to pick it up."
+    )
+    .replace("  ", " "))
 }
 
 #[cfg(test)]

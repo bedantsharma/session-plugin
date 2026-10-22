@@ -122,3 +122,29 @@ Choices someone will later ask "why?" about. Newest last. Entries are never dele
 **Decision:** The next message closes that piece of work and scores it from the files it touched (there is no closing message to read, and none is read). Clearly off the task → marked drift at once; in between → the agent is asked to label it at its next stop; clearly on the task → on task. With no task files to compare with, the "unmapped folder" signal alone can only lead to a question, never to drift. Missing text no longer counts as evidence of drift at a normal stop either.
 **Consequences:** Interrupted off-task work now shows up; the check costs one extra scoring pass only on prompts that interrupt (same cost as a stop). At most one question per piece of work; if the newer piece needs its own question first, the interrupted one falls back to on task.
 
+## #25 A repo planned by hand records its plan files instead of importing them — Accepted; the "changed file with no matching milestone" rule is provisional, owner to confirm — 2026-10-21
+**Context:** bridge-screen now reads a repo's plan files (`docs/superpowers/plans/`) by itself. This repo, and any repo planned by hand, would get a duplicate milestone for every file it already has. This repo's milestones are titled like "SP7 Telemetry and forecast" and its plan files like "Sub-project 7: Telemetry and Forecast", so a title match can't be counted on.
+**Decision:** The first time bridge-screen sees the plan folder of a repo that already has a plan, it notes every file there as "already planned by hand" and creates nothing. Files added after that are imported. `bridge-screen import <file> --into <milestone>` links a file to an existing milestone by hand (tasks matched by title). When a hand-noted file changes: if a milestone (or the goal) has exactly the file's title, the file joins it, matched by title. **Provisional, owner to confirm:** if nothing matches, bridge-screen creates nothing, records the file as "needs a link", and says so in plain words once in the next session briefing and every time you run `bridge-screen import`: "<file> changed but isn't linked to a milestone, so nothing was imported; run `bridge-screen import --into <milestone> <file>` to link it."
+**Options considered for the no-match case:** (a) create a new milestone (an earlier build did this: loses nothing but duplicates this repo's hand-made milestones), (b) create nothing and ask for a link (chosen: loses nothing, duplicates nothing; costs one command), (c) guess the closest title (could attach work to the wrong milestone).
+**Consequences:** No duplicates in hand-planned repos. An edited old plan file stays unimported until you link it.
+
+## #26 Waits on free text are allowed; only waits on a task clear by themselves — Accepted — 2026-10-21
+**Context:** Agents are blocked on other tasks ("2.4", or a task in another repo) and on things outside bridge-screen ("Sam's API key").
+**Decision:** `waiting_on` takes either. A wait on a task clears when that task is verified (tests pass or better), in the same step as the verification, and the waiting session hears once. A free-text wait is cleared by the agent or by you. A wait is never a needs-you item (the session isn't blocked on you); it shows as an amber "waiting".
+**Consequences:** You can see who is waiting on what without being asked to do anything.
+
+## #27 A task's branch is the branch it was last claimed on — Accepted — 2026-10-21
+**Context:** Branch groups (the same branch in several repos) need to know which tasks belong to a branch.
+**Decision:** Each task remembers the branch of the session that last claimed it; nothing to fill in by hand. Branch groups leave out each repo's default branch (`main`, `master`, or what origin's HEAD points to, read as a file).
+**Consequences:** A task claimed again from another branch moves to that branch's group. A subtask without its own claim counts on its task's branch.
+
+## #28 A task in another repo is written `<repo name>:<task id>` — Accepted — 2026-10-21
+**Context:** Plan links and waits can point at a task in another repo.
+**Decision:** The repo is named by its folder name (or its id). A name two registered repos share is refused, listing both folders, so you pick by id.
+**Consequences:** Short to write; two checkouts with the same folder name need the id.
+
+## #29 A plan file is read up to 1000 tasks and steps (100 steps in one task) — Accepted, provisional, owner to confirm — 2026-10-22
+**Context:** Reviewing the import, a 1 MB file of nothing but checkboxes made `bridge-screen import` run for more than two minutes, and the same would have frozen the start of a Claude session.
+**Decision:** bridge-screen imports at most 1000 tasks and steps from one plan file, and at most 100 steps in one task; the rest is left out. Real plans have a few dozen. Also: plan files beyond the 20 read at one session start are picked up by the next one (they used to be skipped for good).
+**Consequences:** A very long plan file is imported in part, silently at session start. Say if you want it to flag this in the briefing.
+

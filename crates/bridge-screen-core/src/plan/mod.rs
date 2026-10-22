@@ -7,9 +7,12 @@ pub mod query;
 pub mod render;
 pub mod rollup;
 
-pub use model::{Hill, NodeKind, NodeStatus, PlanNode};
-pub use ops::{EditContext, EditOutcome, PlanError, PlanOp, plan_edit, plan_edit_in};
-pub use query::{get_node, is_in_subtree, load_tree, next_child, would_cycle};
+pub use model::{ExternalDep, Hill, NodeKind, NodeSource, NodeStatus, PlanNode};
+pub use ops::{
+    EditContext, EditOutcome, PlanError, PlanOp, plan_edit, plan_edit_in, plan_edit_in_sourced,
+    resolve_repo,
+};
+pub use query::{get_node, is_in_subtree, load_tree, next_child, would_cycle, would_cycle_across};
 pub use render::{render_annotated, render_text};
 pub use rollup::{Rollup, is_done, rollup_of, rollups, shown_status};
 
@@ -169,6 +172,208 @@ mod tests {
         assert!(is_in_subtree(s.conn(), "r", "1", "1.2").unwrap());
         assert!(is_in_subtree(s.conn(), "r", "1", "1").unwrap());
         assert!(!is_in_subtree(s.conn(), "r", "1", "2").unwrap());
+    }
+
+    #[test]
+    fn a_task_remembers_the_branch_it_was_last_claimed_on() {
+        let mut s = sample();
+        for (sid, branch) in [("s1", "feat/a"), ("s2", "feat/b")] {
+            s.append(EventDraft::new(
+                "r",
+                sid,
+                "session_started",
+                json!({"cwd": "/x", "branch": branch, "source": "startup"}),
+            ))
+            .unwrap();
+        }
+        let claim = |sid: &str| {
+            EventDraft::new(
+                "r",
+                sid,
+                "task_claimed",
+                json!({"task_id": "1.1", "mode": "confirmed", "confidence": 1.0}),
+            )
+            .task("1.1")
+        };
+        s.append(claim("s1")).unwrap();
+        let n = get_node(s.conn(), "r", "1.1").unwrap().unwrap();
+        assert_eq!(n.branch.as_deref(), Some("feat/a"));
+        s.append(claim("s2")).unwrap();
+        let n = get_node(s.conn(), "r", "1.1").unwrap().unwrap();
+        assert_eq!(n.branch.as_deref(), Some("feat/b"));
+        assert_eq!(n.source, NodeSource::Manual);
+    }
+
+    #[test]
+    fn node_source_round_trips() {
+        for src in [
+            NodeSource::Manual,
+            NodeSource::Init,
+            NodeSource::File {
+                file: "docs/p.md".into(),
+                task: 3,
+                step: Some(2),
+            },
+            NodeSource::File {
+                file: "docs/p.md".into(),
+                task: 3,
+                step: None,
+            },
+        ] {
+            assert_eq!(NodeSource::from_column(&src.to_column()), src);
+            let v = serde_json::to_value(&src).unwrap();
+            assert_eq!(serde_json::from_value::<NodeSource>(v).unwrap(), src);
+        }
+        assert_eq!(
+            NodeSource::File {
+                file: "a.md".into(),
+                task: 1,
+                step: None
+            }
+            .to_column(),
+            r#"{"file":"a.md","task":1}"#
+        );
+        assert_eq!(NodeSource::from_column("garbage"), NodeSource::Manual);
+    }
+
+    fn repos(s: &Store, rows: &[(&str, &str, &str)]) {
+        for (id, name, root) in rows {
+            s.conn()
+                .execute(
+                    "INSERT INTO repos (id, name, root, created_at) VALUES (?1, ?2, ?3, 't')",
+                    rusqlite::params![id, name, root],
+                )
+                .unwrap();
+        }
+    }
+
+    fn two_repos() -> Store {
+        let mut s = sample();
+        for (id, parent, kind, title) in [
+            ("G", None, "goal", "API"),
+            ("2", Some("G"), "milestone", "Auth"),
+            ("2.1", Some("2"), "task", "Login endpoint"),
+        ] {
+            s.append(EventDraft::new(
+                "b",
+                "owner",
+                "node_added",
+                json!({"id": id, "parent_id": parent, "kind": kind, "title": title,
+                       "intent": (kind != "task").then_some("why")}),
+            ))
+            .unwrap();
+        }
+        repos(&s, &[("r", "web", "/src/web"), ("b", "api", "/src/api")]);
+        s
+    }
+
+    fn ctx(repo: &str) -> EditContext {
+        EditContext {
+            repo_id: repo.into(),
+            session_id: "owner".into(),
+            actor: crate::store::Actor::default(),
+            reason: None,
+            replan: false,
+        }
+    }
+
+    fn dep(id: &str, on: &str, repo: Option<&str>) -> PlanOp {
+        PlanOp::AddDep {
+            id: id.into(),
+            depends_on: on.into(),
+            repo: repo.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn cross_repo_dep_by_name() {
+        let mut s = two_repos();
+        plan_edit(&mut s, &ctx("r"), &[dep("1.1", "2.1", Some("api"))]).unwrap();
+        let n = get_node(s.conn(), "r", "1.1").unwrap().unwrap();
+        assert_eq!(n.depends_on, Vec::<String>::new());
+        assert_eq!(
+            n.external_deps,
+            vec![ExternalDep {
+                repo_id: "b".into(),
+                repo_name: "api".into(),
+                id: "2.1".into()
+            }]
+        );
+        // By id too; the same link twice is refused; a missing task is not found.
+        let again = plan_edit(&mut s, &ctx("r"), &[dep("1.1", "2.1", Some("b"))]);
+        assert!(
+            again
+                .unwrap_err()
+                .to_string()
+                .contains("already depends on api:2.1")
+        );
+        let missing = plan_edit(&mut s, &ctx("r"), &[dep("1.1", "9.9", Some("api"))]);
+        assert!(missing.unwrap_err().to_string().contains("9.9 not found"));
+        // Its own repo by name is a plain link.
+        plan_edit(&mut s, &ctx("r"), &[dep("1.2", "1.1", Some("web"))]).unwrap();
+        assert_eq!(
+            get_node(s.conn(), "r", "1.2").unwrap().unwrap().depends_on,
+            vec!["1.1".to_string()]
+        );
+        // Removal names the repo the same way; removing the target drops the link.
+        plan_edit(
+            &mut s,
+            &ctx("r"),
+            &[PlanOp::RemoveDep {
+                id: "1.1".into(),
+                depends_on: "2.1".into(),
+                repo: Some("api".into()),
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            get_node(s.conn(), "r", "1.1")
+                .unwrap()
+                .unwrap()
+                .external_deps,
+            vec![]
+        );
+        plan_edit(&mut s, &ctx("r"), &[dep("1.1", "2.1", Some("api"))]).unwrap();
+        s.append(EventDraft::new(
+            "b",
+            "owner",
+            "node_removed",
+            json!({"id": "2"}),
+        ))
+        .unwrap();
+        assert_eq!(
+            get_node(s.conn(), "r", "1.1")
+                .unwrap()
+                .unwrap()
+                .external_deps,
+            vec![]
+        );
+    }
+
+    #[test]
+    fn ambiguous_repo_name_is_refused() {
+        let mut s = two_repos();
+        repos(&s, &[("c", "api", "/other/api")]);
+        let err = plan_edit(&mut s, &ctx("r"), &[dep("1.1", "2.1", Some("api"))]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "op 0: api matches several repos: /other/api, /src/api"
+        );
+        let err = plan_edit(&mut s, &ctx("r"), &[dep("1.1", "2.1", Some("nope"))]).unwrap_err();
+        assert_eq!(err.to_string(), "op 0: no repo named nope");
+    }
+
+    #[test]
+    fn cross_repo_cycle_is_refused() {
+        let mut s = two_repos();
+        plan_edit(&mut s, &ctx("r"), &[dep("1.1", "2.1", Some("api"))]).unwrap();
+        let err = plan_edit(&mut s, &ctx("b"), &[dep("2.1", "1.1", Some("web"))]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "op 0: 2.1 depending on web:1.1 would create a cycle"
+        );
+        assert!(would_cycle_across(s.conn(), "b", "2.1", "r", "1.1").unwrap());
+        assert!(!would_cycle_across(s.conn(), "b", "2.1", "r", "1.2").unwrap());
     }
 
     #[test]

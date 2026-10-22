@@ -42,6 +42,10 @@ export function milestoneHill(m: { hill: string | null; done_pct: number; status
 /** A session's status chip: the state in words with a distinct shape per state. */
 export function sessionWord(s: Pick<SessionRow, 'state_label' | 'light' | 'light_word'>): Word {
   const tone: ChipTone = s.light === 'green' ? 'ok' : s.light === 'amber' ? 'warn' : 'bad'
+  // Waiting on a task or something outside, and nothing redder (spec §10.1).
+  if (s.light_word === 'waiting' && s.state_label !== 'working' && s.state_label !== 'needs you') {
+    return { icon: '◷', text: 'Waiting', tone: 'warn' }
+  }
   switch (s.state_label) {
     case 'working': {
       const extra = s.light_word === 'on task' ? '' : ` · ${s.light_word}`
@@ -232,4 +236,21 @@ export function jargonIn(text: string): string[] {
       out.push(token)
   }
   return out
+}
+
+/** `waiting on 2.4 Login form` (`+N more`), or null without open waits. */
+export function waitingText(waits: { target: string }[] | undefined): string | null {
+  if (!waits?.length) return null
+  const more = waits.length > 1 ? ` (+${waits.length - 1} more)` : ''
+  return `waiting on ${waits[0].target}${more}`
+}
+
+/** A branch group's %: `45%`, or why there is none yet. */
+export function groupPct(pct: number | null): string {
+  return pct === null ? 'no tasks on this branch yet' : `${pct}%`
+}
+
+/** `2 repos`. */
+export function reposWord(n: number): string {
+  return n === 1 ? '1 repo' : `${n} repos`
 }

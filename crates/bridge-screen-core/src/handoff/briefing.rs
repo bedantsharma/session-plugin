@@ -26,6 +26,9 @@ const IF_THEN_SHOWN: usize = 5;
 const DEPS_SHOWN: usize = 5;
 const DECISIONS_SHOWN: usize = 5;
 
+/// The briefing's goal line when the repo has no plan (spec §12.2).
+pub const NO_PLAN: &str = "No plan yet. If this repo has work already, run `bridge-screen init` and follow it; otherwise ask the owner what the goal is.";
+
 /// Asking for the read-back at the end of a briefing.
 pub const READBACK_ASK: &str = "Read back before your first edit: call handoff_readback with the goal, what's in flight, and your next action.";
 
@@ -136,7 +139,8 @@ fn is_done(status: NodeStatus) -> bool {
     )
 }
 
-/// `id ready`, `id waiting` or `id waiting on <session>` for each dependency of `task`.
+/// `id ready`, `id waiting` or `id waiting on <session>` for each dependency of `task`,
+/// then `<repo>:<id> ready|waiting` for each link into another repo.
 fn deps_of(conn: &Connection, repo: &str, task: &str) -> Result<Vec<String>> {
     let mut deps = Vec::new();
     let Some(node) = get_node(conn, repo, task)? else {
@@ -161,7 +165,36 @@ fn deps_of(conn: &Connection, repo: &str, task: &str) -> Result<Vec<String>> {
             None => format!("{d} waiting"),
         });
     }
+    // Links to tasks in other repos (spec §9.1).
+    for d in node.external_deps {
+        let ready = get_node(conn, &d.repo_id, &d.id)?.is_some_and(|n| is_done(n.status));
+        deps.push(format!(
+            "{}:{} {}",
+            d.repo_name,
+            d.id,
+            if ready { "ready" } else { "waiting" }
+        ));
+    }
     Ok(deps)
+}
+
+/// Sessions (live, the previous one, this one) that missed a checkpoint still pending.
+fn missed_checkpoints(
+    conn: &Connection,
+    me: &Session,
+    prev: Option<&Session>,
+) -> Result<Vec<Session>> {
+    Ok(session::list_live(conn, Some(&me.repo_id))?
+        .into_iter()
+        .chain(prev.cloned())
+        .chain(std::iter::once(me.clone()))
+        .filter(|s| s.checkpoint_missed != 0 && s.checkpoint_pending.is_some())
+        .fold(Vec::<Session>::new(), |mut acc, s| {
+            if !acc.iter().any(|a| a.session_id == s.session_id) {
+                acc.push(s);
+            }
+            acc
+        }))
 }
 
 fn gather(conn: &Connection, me: &Session) -> Result<Facts> {
@@ -201,17 +234,7 @@ fn gather(conn: &Connection, me: &Session) -> Result<Facts> {
         });
         unverified_tasks.push((n.id.clone(), verify::current_level(conn, repo, &n.id)?));
     }
-    let missed = session::list_live(conn, Some(repo))?
-        .into_iter()
-        .chain(prev.clone())
-        .chain(std::iter::once(me.clone()))
-        .filter(|s| s.checkpoint_missed != 0 && s.checkpoint_pending.is_some())
-        .fold(Vec::<Session>::new(), |mut acc, s| {
-            if !acc.iter().any(|a| a.session_id == s.session_id) {
-                acc.push(s);
-            }
-            acc
-        });
+    let missed = missed_checkpoints(conn, me, prev.as_ref())?;
     let mut detours = Vec::new();
     let mut suspended = Vec::new();
     for s in &sessions {
@@ -222,7 +245,7 @@ fn gather(conn: &Connection, me: &Session) -> Result<Facts> {
             }
         }
     }
-    let (milestone, checkpoint, cue, note, deps) = match &task {
+    let (milestone, checkpoint, cue, note, mut deps) = match &task {
         Some(t) => {
             let checkpoint = match latest_checkpoint_for_task(conn, repo, t)? {
                 Some(c) => Some(c),
@@ -244,6 +267,14 @@ fn gather(conn: &Connection, me: &Session) -> Result<Facts> {
         }
         None => (None, None, None, None, Vec::new()),
     };
+    // Open waits, and waits whose target was done since the last session (spec §9.1).
+    let since = prev.as_ref().and_then(|p| p.ended_at.clone());
+    deps.extend(crate::waits::briefing_items(
+        conn,
+        &sessions,
+        since.as_deref(),
+        jiff::Timestamp::now(),
+    )?);
     let leftovers = leftovers(conn, repo, true)?
         .into_iter()
         .filter(|l| l.state == LeftoverState::Open)
@@ -307,7 +338,7 @@ fn goal_line(f: &Facts) -> String {
         )
         .trim_end_matches([' ', '—'])
         .to_string(),
-        None => "No plan yet — ask the owner whether to create one (bridge-screen plan edit / plan_edit tool).".to_string(),
+        None => NO_PLAN.to_string(),
     }
 }
 

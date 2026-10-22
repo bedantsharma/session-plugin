@@ -6,13 +6,14 @@
   import Chip from '$lib/ui/Chip.svelte'
   import { changed } from '$lib/changed'
   import { flagText } from '$lib/format'
-  import { sessionWord } from '$lib/words'
+  import { sessionWord, waitingText } from '$lib/words'
   import type { SessionRow } from '$lib/types'
 
   let { session, onOpen }: { session: SessionRow; onOpen?: (id: string) => void } = $props()
 
   const word = $derived(sessionWord(session))
   const working = $derived(session.state_label === 'working')
+  const waiting = $derived(waitingText(session.waiting))
 </script>
 
 <li
@@ -50,6 +51,7 @@
         {:else}
           <span class="text-muted">(no task)</span>
         {/if}
+        {#if waiting}<span class="text-warn" data-testid="waiting"> · {waiting}</span>{/if}
       </span>
     </div>
     {#if session.branch || session.flags.length}

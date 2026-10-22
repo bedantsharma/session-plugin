@@ -34,13 +34,23 @@ Use it for new work, wrong estimates, dropped tasks, dependencies, or a mileston
 from uphill (unknowns remain) to downhill. Always give a `reason`; a deliberate re-plan
 sets `"replan": true`. Ops apply together or not at all; an error names the failing op
 (`op 2: …`) — fix it and resend. Goals and milestones need an intent (2–3 sentences of
-purpose and end state). If the repo has no plan, ask the owner before adding a goal.
+purpose and end state). If the repo has no plan, see "Starting on a repo with no plan".
 
 ```json
 {"ops": [{"op": "add_node", "parent": "1", "kind": "task", "title": "Audit log", "estimate_min": 45},
          {"op": "set_estimate", "id": "1.2", "estimate_min": 20}],
  "reason": "Audit log came up while building login"}
 ```
+
+### Starting on a repo with no plan
+
+- Plan files in `docs/superpowers/plans/` are imported by themselves at SessionStart (or
+  with `bridge-screen import`); a ticked step is recorded as claimed, not verified.
+- A repo with work but no plan: run `bridge-screen init` and follow it. Draft the goal,
+  milestones and tasks (with estimates) from its evidence, mark the tasks that look done
+  with the files that show it, **show the draft to the owner once**, then call
+  `init_plan` with the draft and their words (`owner_said`).
+- A brand-new repo: ask the owner what the goal is.
 
 ## 3. Detours: tangent work that blocks your task
 
@@ -57,6 +67,14 @@ tangent to another agent; declare it and do it:
 - A detour that grows into real work: `promote_detour` with a parent and title.
 - Work the **owner asked for** in this session that isn't your task ("also add a
   licence"): `start_detour` with `"requested_by_owner": true` — never drift or away time.
+
+### Waiting on something
+
+Blocked on another task (`2.4`, or `api:2.4` in another repo) or on something outside
+(`Sam's API key`)? Call `waiting_on` with the target and a reason, and keep working on what
+you can. A task wait clears by itself when the task is verified (L2+) and you get a note;
+clear a free-text one with `clear_wait`. Make it a plan link (`promote_wait`) only when the
+owner agrees your task always needs it.
 
 ## 4. Labels and navigator notes
 

@@ -111,7 +111,32 @@ export interface SessionRow {
   branch: string | null
   worktree: string | null
   cost: CostRow | null
+  /** Open waits: amber "Waiting" when nothing redder applies. */
+  waiting: WaitRef[]
   rank: number
+}
+
+/** An open wait on a session (spec §9.1). */
+export interface WaitRef {
+  wait_id: string
+  /** `2.4 Login form`, `api:2.4 Login endpoint`, or the free text. */
+  target: string
+  since_min: number
+}
+
+/** The same branch with live sessions in two or more repos. */
+export interface BranchGroup {
+  branch: string
+  repos: {
+    repo_id: string
+    name: string
+    done_pct: number | null
+    claimed_pct: number | null
+    sessions: number
+  }[]
+  /** Over every repo's tasks on the branch; null before any. */
+  done_pct: number | null
+  claimed_pct: number | null
 }
 
 /** A parent's status from its tasks, derived when read. */
@@ -153,6 +178,7 @@ export interface Glance {
   needs_you: NeedsYou[]
   needs_you_count: number
   escalated: boolean
+  branch_groups: BranchGroup[]
 }
 
 export interface TreeNode {
@@ -169,6 +195,11 @@ export interface TreeNode {
   estimate_min: number | null
   actual_min: number
   depends_on: string[]
+  /** Links to tasks in other repos. */
+  external_deps: { label: string; title: string; ready: boolean }[]
+  /** `from sp7 plan, task 3`, `drafted at setup`; null when added by hand. */
+  source_text: string | null
+  branch: string | null
   decisions: number
   depth: number
 }
@@ -227,6 +258,15 @@ export interface SessionDrill {
   readback: string
   owner_answers: { ts: string; answer: string; reason: string | null }[]
   cost: CostRow | null
+  waits: {
+    wait_id: string
+    target: string
+    reason: string
+    open: boolean
+    /** `waiting 40m`, `done @abc1234`, `cleared by hand`, `now a plan link`. */
+    state_text: string
+    actions: ActionSpec[]
+  }[]
 }
 
 export interface Decision {

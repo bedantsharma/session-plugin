@@ -44,6 +44,16 @@ bridge-screen is one program on the owner's computer that sits next to Claude Co
 - **Talks to:** the database only.
 - **Lives in:** `crates/bridge-screen-core/src/forecast/`
 
+### Imports and onboarding
+- **Does:** reads the repo's plan files (`docs/superpowers/plans/`) at each session start and with `bridge-screen import`, and turns new or changed ones into plan changes (never writing to the files); `bridge-screen init` lists what a half-built repo shows so an agent can draft its plan for you to confirm.
+- **Talks to:** the repo's files (read-only), git (only for `init`, run by hand), the database.
+- **Lives in:** `crates/bridge-screen-core/src/import/`, `crates/bridge-screen-core/src/init.rs`, `crates/bridge-screen/src/onboard.rs`
+
+### Waits and links across repos
+- **Does:** keeps each session's "waiting on" list, ends a wait when its task is verified and tells the waiting session; lets plan links point at a task in another repo; groups the same branch across repos on the glance.
+- **Talks to:** the database only.
+- **Lives in:** `crates/bridge-screen-core/src/waits/`, `crates/bridge-screen-core/src/view/groups.rs`
+
 ### The event log and views (also called the store)
 - **Does:** an append-only record of everything that happened; the current picture (views) is rebuilt from it and can always be regenerated.
 - **Holds:** all bridge-screen data, in `~/.bridge-screen/`.
@@ -67,5 +77,5 @@ bridge-screen is one program on the owner's computer that sits next to Claude Co
 ## Deliberately absent
 - No server or cloud; nothing runs when no session or screen is open.
 - No AI model calls from bridge-screen.
-- Not yet built: automatic plan import and onboarding of existing repos (8), archiving old projects (9).
+- Not yet built: archiving old projects (9). Plan files are imported in the superpowers format only (no GitHub issues, Linear or TODO.md).
 - No live price lookups: prices come from the config file (defaults taken 2026-10-21).

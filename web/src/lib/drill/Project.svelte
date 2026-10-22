@@ -277,6 +277,12 @@
                     <span>{n.actual_min} of {n.estimate_min ?? '?'} min</span>
                   {/if}
                   {#if n.depends_on.length}<span>after {n.depends_on.join(', ')}</span>{/if}
+                  {#each n.external_deps ?? [] as x (x.label)}<span
+                      data-testid="external-dep"
+                      title={x.title}>after {x.label} · {x.ready ? 'ready' : 'waiting'}</span
+                    >{/each}
+                  {#if n.branch}<span class="font-mono">{n.branch}</span>{/if}
+                  {#if n.source_text}<span data-testid="source">{n.source_text}</span>{/if}
                   {#if n.decisions}<span
                       >{n.decisions} {n.decisions === 1 ? 'decision' : 'decisions'}</span
                     >{/if}

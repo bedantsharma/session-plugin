@@ -53,8 +53,65 @@ pub struct TreeNode {
     /// Active minutes recorded against it.
     pub actual_min: i64,
     pub depends_on: Vec<String>,
+    /// Links to tasks in other repos, with whether each is done (spec §10.2).
+    pub external_deps: Vec<ExternalDepRow>,
+    /// Where it came from: `from sp7 plan, task 3`, `drafted at setup`; `None` by hand.
+    pub source_text: Option<String>,
+    /// The branch it was last claimed on.
+    pub branch: Option<String>,
     pub decisions: usize,
     pub depth: usize,
+}
+
+/// A link to a task in another repo.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExternalDepRow {
+    /// `api:2.4`.
+    pub label: String,
+    pub title: String,
+    pub ready: bool,
+}
+
+/// `from sp7-telemetry plan, task 3` (step `k` too), `drafted at setup`, or `None`.
+pub fn source_text(source: &crate::plan::NodeSource) -> Option<String> {
+    use crate::plan::NodeSource;
+    match source {
+        NodeSource::Manual => None,
+        NodeSource::Init => Some("drafted at setup".into()),
+        NodeSource::File { file, task, step } => {
+            let name = crate::import::short_name(file);
+            // `2026-10-21-sp7-x` → `sp7-x`.
+            let name = match name.get(..11) {
+                Some(date)
+                    if date.len() == 11
+                        && date.as_bytes()[10] == b'-'
+                        && date[..10].chars().all(|c| c.is_ascii_digit() || c == '-') =>
+                {
+                    &name[11..]
+                }
+                _ => name,
+            };
+            Some(match step {
+                Some(k) => format!("from {name} plan, task {task}, step {k}"),
+                None => format!("from {name} plan, task {task}"),
+            })
+        }
+    }
+}
+
+fn external_rows(conn: &Connection, n: &PlanNode) -> Result<Vec<ExternalDepRow>> {
+    let mut out = Vec::new();
+    for d in &n.external_deps {
+        let target = crate::plan::get_node(conn, &d.repo_id, &d.id)?;
+        out.push(ExternalDepRow {
+            label: format!("{}:{}", d.repo_name, d.id),
+            title: target.as_ref().map(|t| t.title.clone()).unwrap_or_default(),
+            ready: target.is_some_and(|t| {
+                matches!(t.status, NodeStatus::L2 | NodeStatus::L3 | NodeStatus::L4)
+            }),
+        });
+    }
+    Ok(out)
 }
 
 /// Total live estimate and the part done, at one moment (spec §5.6 scope line).
@@ -107,9 +164,13 @@ pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectD
     let decisions = decision_counts(conn, repo)?;
     let nodes = load_tree(conn, repo, false)?;
     let rolled = crate::plan::rollups(&nodes);
-    let tree = nodes
-        .into_iter()
-        .map(|n: PlanNode| TreeNode {
+    let mut tree = Vec::with_capacity(nodes.len());
+    for n in nodes {
+        let external_deps = external_rows(conn, &n)?;
+        tree.push(TreeNode {
+            external_deps,
+            source_text: source_text(&n.source),
+            branch: n.branch.clone(),
             rollup: rolled.get(&n.id).copied(),
             stale: marks.get(&n.id).is_some_and(|m| m == "stale"),
             owner_checked: marks.get(&n.id).is_some_and(|m| m == "✓owner"),
@@ -125,8 +186,8 @@ pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectD
             estimate_min: n.estimate_min,
             depends_on: n.depends_on,
             depth: n.depth,
-        })
-        .collect();
+        });
+    }
     let mut stmt = conn.prepare(
         "SELECT ts, json_extract(data, '$.reason'), COALESCE(json_extract(data, '$.op_count'), 0),
                 session_id
@@ -411,6 +472,68 @@ pub struct SessionDrill {
     pub owner_answers: Vec<OwnerAnswer>,
     /// Tokens and cost of the whole session; `None` before any usage.
     pub cost: Option<CostRow>,
+    /// Its waits (spec §9.1): open first, then cleared.
+    pub waits: Vec<WaitRow>,
+}
+
+/// One wait on the session drill.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WaitRow {
+    pub wait_id: String,
+    /// `2.4 Login form`, `api:2.4 Login endpoint`, or the free text.
+    pub target: String,
+    pub reason: String,
+    pub open: bool,
+    /// `waiting 40m`, `done @abc1234`, `cleared by hand`, `now a plan link`.
+    pub state_text: String,
+    /// Clear, and for a task target "Make it a plan link" (open waits only).
+    pub actions: Vec<ActionSpec>,
+}
+
+fn wait_rows(conn: &Connection, id: &str, now: Timestamp) -> Result<Vec<WaitRow>> {
+    let mut rows: Vec<WaitRow> = crate::waits::of_session(conn, id)?
+        .into_iter()
+        .map(|w| {
+            let open = w.is_open();
+            let state_text = match (w.cleared_why, &w.cleared_sha) {
+                (None, _) => format!("waiting {}m", w.since_min(now)),
+                (Some(crate::waits::ClearedWhy::TargetDone), Some(sha)) => {
+                    format!("done @{}", sha.chars().take(7).collect::<String>())
+                }
+                (Some(crate::waits::ClearedWhy::Promoted), _) => "now a plan link".into(),
+                (Some(_), _) => "cleared by hand".into(),
+            };
+            let mut actions = Vec::new();
+            if open {
+                actions.push(button(
+                    "Clear",
+                    OwnerAction::ClearWait {
+                        wait_id: w.wait_id.clone(),
+                    },
+                    Tone::Neutral,
+                ));
+                if w.target_task.is_some() {
+                    actions.push(button(
+                        "Make it a plan link",
+                        OwnerAction::PromoteWait {
+                            wait_id: w.wait_id.clone(),
+                        },
+                        Tone::Primary,
+                    ));
+                }
+            }
+            WaitRow {
+                wait_id: w.wait_id,
+                target: w.target_text,
+                reason: w.reason,
+                open,
+                state_text,
+                actions,
+            }
+        })
+        .collect();
+    rows.sort_by_key(|r| !r.open);
+    Ok(rows)
 }
 
 /// The session's units and where their time went.
@@ -543,7 +666,6 @@ pub fn session(
     cfg: &Config,
     now: Timestamp,
 ) -> Result<Option<SessionDrill>> {
-    let _ = now;
     let Some(s) = session::get(conn, id)? else {
         return Ok(None);
     };
@@ -599,6 +721,7 @@ pub fn session(
         leftovers,
         readback: s.readback,
         cost: super::cost_row(conn, &Scope::Session(id.to_string()), cfg)?,
+        waits: wait_rows(conn, id, now)?,
     }))
 }
 
