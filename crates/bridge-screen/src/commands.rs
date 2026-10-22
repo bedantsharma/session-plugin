@@ -72,6 +72,7 @@ pub fn run(cli: Cli) -> Result<()> {
         } => crate::onboard::import(&dir, file.as_deref(), into.as_deref(), dry_run),
         Command::Init { goal, dir } => crate::onboard::init(&dir, goal.as_deref()),
         Command::Wait { action, dir } => crate::onboard::wait(&dir, action),
+        Command::Pages { action, dir } => crate::onboard::pages(&dir, &action),
         Command::Rebuild => rebuild(),
         Command::Config { action: None, dir } => config(&dir),
         Command::Config {

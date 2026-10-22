@@ -177,6 +177,11 @@ fn plugin_package_is_consistent() {
     let manifest = json(&plugin.join(".claude-plugin/plugin.json"));
     assert_eq!(manifest["name"], "bridge-screen");
     assert_eq!(manifest["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(
+        core_dependency_version(),
+        env!("CARGO_PKG_VERSION"),
+        "crates/bridge-screen/Cargo.toml: the bridge-screen-core dependency's version must equal the workspace version (crates.io needs both)"
+    );
 
     let market = json(&checkout().join(".claude-plugin/marketplace.json"));
     assert_eq!(market["name"], "bridge-screen");
@@ -224,6 +229,68 @@ fn plugin_package_is_consistent() {
     let skill = std::fs::read_to_string(plugin.join("skills/bridge-screen/SKILL.md")).unwrap();
     assert!(skill.lines().count() <= 150);
     assert!(skill.starts_with("---\nname: bridge-screen\n"));
+}
+
+/// The `version = "…"` of the `bridge-screen-core` dependency in the binary's `Cargo.toml`.
+fn core_dependency_version() -> String {
+    let manifest =
+        std::fs::read_to_string(checkout().join("crates/bridge-screen/Cargo.toml")).unwrap();
+    let line = manifest
+        .lines()
+        .find(|l| l.trim_start().starts_with("bridge-screen-core"))
+        .expect("a bridge-screen-core dependency");
+    let after = line
+        .split("version")
+        .nth(1)
+        .expect("a version on that line");
+    after
+        .split('"')
+        .nth(1)
+        .expect("a quoted version")
+        .to_string()
+}
+
+#[test]
+fn plugin_ships_lead_briefing_skill() {
+    let dir = checkout().join("plugin/skills/lead-briefing");
+    for file in [
+        "SKILL.md",
+        "references/why-it-works.md",
+        "references/living-docs.md",
+    ] {
+        let text = std::fs::read_to_string(dir.join(file))
+            .unwrap_or_else(|e| panic!("{file} missing from the plugin: {e}"));
+        assert!(!text.trim().is_empty(), "{file} is empty");
+    }
+    let skill = std::fs::read_to_string(dir.join("SKILL.md")).unwrap();
+    assert!(
+        skill.starts_with("---\nname: lead-briefing\n"),
+        "{skill:.80}"
+    );
+    // The page templates the program writes come from the living-docs reference.
+    let docs = std::fs::read_to_string(dir.join("references/living-docs.md")).unwrap();
+    for heading in ["## 1. Intent", "## 3. Current state", "## 4. Decision log"] {
+        assert!(docs.contains(heading), "{heading}");
+    }
+}
+
+#[test]
+fn bridge_screen_skill_mentions_pages_and_lead_briefing() {
+    let skill =
+        std::fs::read_to_string(checkout().join("plugin/skills/bridge-screen/SKILL.md")).unwrap();
+    for needle in [
+        "lead-briefing",
+        "lead_page_read",
+        "lead_page_write",
+        "lead_pages",
+        "owner_said",
+        "current-state",
+        "decision-log",
+        "glossary",
+    ] {
+        assert!(skill.contains(needle), "the skill never says {needle}");
+    }
+    assert!(skill.lines().count() <= 150, "{}", skill.lines().count());
 }
 
 /// The target triple the launcher picks on this machine.
@@ -381,6 +448,64 @@ fn launcher_prefers_a_matching_binary_on_path() {
     let release = fake_release(true);
     let out = launch(release.path(), data.path(), &path, &["status"]);
     assert_eq!(stdout(&out), "downloaded bridge-screen status\n");
+}
+
+/// A PATH where `uname -s` says this is Git Bash on Windows.
+fn windows_path() -> (tempfile::TempDir, String) {
+    let fake = tempfile::tempdir().unwrap();
+    write_script(
+        &fake.path().join("uname"),
+        "#!/bin/sh\nif [ \"$1\" = -s ]; then echo MINGW64_NT-10.0-19045; else echo x86_64; fi\n",
+    );
+    let path = format!("{}:{SYSTEM_PATH}", fake.path().display());
+    (fake, path)
+}
+
+#[test]
+fn launcher_on_windows_hook_exits_zero_and_logs() {
+    let (_fake, path) = windows_path();
+    let release = fake_release(true);
+    let data = tempfile::tempdir().unwrap();
+    let out = launch(release.path(), data.path(), &path, &["hook", "stop"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(stdout(&out), "");
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "");
+    let log = std::fs::read_to_string(data.path().join("launcher.log")).unwrap();
+    assert!(log.contains("doesn't support Windows"), "{log}");
+}
+
+#[test]
+fn launcher_on_windows_run_explains_install() {
+    let (_fake, path) = windows_path();
+    let release = fake_release(true);
+    let data = tempfile::tempdir().unwrap();
+    let out = launch(release.path(), data.path(), &path, &["--version"]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        err.trim(),
+        "bridge-screen's plugin launcher doesn't support Windows yet. Install the program with the PowerShell installer from the release page and make sure `bridge-screen` is on your PATH, then run `bridge-screen install`."
+    );
+    assert!(!data.path().join("bin").exists(), "nothing was downloaded");
+}
+
+#[test]
+fn launcher_still_uses_matching_binary_on_path_on_windows() {
+    let (fake, _) = windows_path();
+    let version = env!("CARGO_PKG_VERSION");
+    write_script(
+        &fake.path().join("bridge-screen"),
+        &format!(
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'bridge-screen {version}'; else echo \"path bridge-screen $*\"; fi\n"
+        ),
+    );
+    let path = format!("{}:{SYSTEM_PATH}", fake.path().display());
+    let data = tempfile::tempdir().unwrap();
+    let nowhere = tempfile::tempdir().unwrap();
+    let out = launch(nowhere.path(), data.path(), &path, &["status"]);
+    assert_eq!(stdout(&out), "path bridge-screen status\n");
+    let out = launch(nowhere.path(), data.path(), &path, &["hook", "stop"]);
+    assert_eq!(stdout(&out), "path bridge-screen hook stop\n");
 }
 
 #[test]

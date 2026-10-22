@@ -8,6 +8,7 @@ use bridge_screen_core::config::Config;
 use bridge_screen_core::error::Error;
 use bridge_screen_core::handoff::EndKind;
 use bridge_screen_core::import;
+use bridge_screen_core::paths::Home;
 use bridge_screen_core::repo;
 use bridge_screen_core::session::{
     self, FileEvent, NeedsOwner, NeedsOwnerKind, OwnerQuestion, Prompt, QuestionSource, Session,
@@ -71,6 +72,7 @@ pub fn handle(
     input: &HookInput,
     store: &mut Store,
     config: &Config,
+    home: &Home,
 ) -> Result<Option<HookOutput>> {
     let Some(ctx) = resolve(event, input, store)? else {
         return Ok(None);
@@ -154,7 +156,7 @@ pub fn handle(
     let context = match event {
         HookEvent::SessionStart => {
             let imported = start_steps(store, config, input, &ctx.repo_id)?;
-            handoff::start_context(store, input)?.map(|text| with_imports(&text, &imported))
+            handoff::start_context(store, input, home, &imported)?
         }
         HookEvent::UserPromptSubmit => {
             let session = stored_session(store, input)?;
@@ -255,19 +257,6 @@ fn import_plans(store: &mut Store, input: &HookInput, repo_id: &str) -> Vec<Stri
             Vec::new()
         }
     }
-}
-
-/// The briefing with the import lines after its goal line.
-fn with_imports(text: &str, imported: &[String]) -> String {
-    if imported.is_empty() {
-        return text.to_string();
-    }
-    let mut lines: Vec<&str> = text.lines().collect();
-    let at = lines.len().min(2);
-    for (i, line) in imported.iter().enumerate() {
-        lines.insert(at + i, line);
-    }
-    lines.join("\n")
 }
 
 /// Append the hook's events, then the checkpoint and navigator steps, in one transaction.

@@ -15,6 +15,7 @@
   import HistoryView from '$lib/drill/History.svelte'
   import TuningView from '$lib/drill/Tuning.svelte'
   import CalibrationView from '$lib/drill/Calibration.svelte'
+  import PagesView from '$lib/drill/Pages.svelte'
   import type { Glance, OwnerAction } from '$lib/types'
 
   type Screen =
@@ -25,6 +26,7 @@
     | { kind: 'history'; repo: string }
     | { kind: 'tuning'; repo: string }
     | { kind: 'calibration'; repo: string }
+    | { kind: 'pages'; repo: string }
 
   const MAX_PROJECTS = 5
   const MAX_SESSIONS = 8
@@ -126,6 +128,7 @@
           onOpenHistory={(repo) => (screen = { kind: 'history', repo })}
           onOpenTuning={(repo) => (screen = { kind: 'tuning', repo })}
           onOpenCalibration={(repo) => (screen = { kind: 'calibration', repo })}
+          onOpenPages={(repo) => (screen = { kind: 'pages', repo })}
         />
       {:else if screen.kind === 'session'}
         <SessionView {client} id={screen.id} {version} />
@@ -137,6 +140,8 @@
         <TuningView {client} repo={screen.repo} {version} {act} />
       {:else if screen.kind === 'calibration'}
         <CalibrationView {client} repo={screen.repo} {version} />
+      {:else if screen.kind === 'pages'}
+        <PagesView {client} repo={screen.repo} {version} />
       {/if}
     </div>
   {:else if glance}

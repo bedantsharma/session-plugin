@@ -122,7 +122,7 @@ Choices someone will later ask "why?" about. Newest last. Entries are never dele
 **Decision:** The next message closes that piece of work and scores it from the files it touched (there is no closing message to read, and none is read). Clearly off the task → marked drift at once; in between → the agent is asked to label it at its next stop; clearly on the task → on task. With no task files to compare with, the "unmapped folder" signal alone can only lead to a question, never to drift. Missing text no longer counts as evidence of drift at a normal stop either.
 **Consequences:** Interrupted off-task work now shows up; the check costs one extra scoring pass only on prompts that interrupt (same cost as a stop). At most one question per piece of work; if the newer piece needs its own question first, the interrupted one falls back to on task.
 
-## #25 A repo planned by hand records its plan files instead of importing them — Accepted; the "changed file with no matching milestone" rule is provisional, owner to confirm — 2026-10-21
+## #25 A repo planned by hand records its plan files instead of importing them — Accepted; owner confirmed the "changed file with no matching milestone" rule on 2026-10-22 — 2026-10-21
 **Context:** bridge-screen now reads a repo's plan files (`docs/superpowers/plans/`) by itself. This repo, and any repo planned by hand, would get a duplicate milestone for every file it already has. This repo's milestones are titled like "SP7 Telemetry and forecast" and its plan files like "Sub-project 7: Telemetry and Forecast", so a title match can't be counted on.
 **Decision:** The first time bridge-screen sees the plan folder of a repo that already has a plan, it notes every file there as "already planned by hand" and creates nothing. Files added after that are imported. `bridge-screen import <file> --into <milestone>` links a file to an existing milestone by hand (tasks matched by title). When a hand-noted file changes: if a milestone (or the goal) has exactly the file's title, the file joins it, matched by title. **Provisional, owner to confirm:** if nothing matches, bridge-screen creates nothing, records the file as "needs a link", and says so in plain words once in the next session briefing and every time you run `bridge-screen import`: "<file> changed but isn't linked to a milestone, so nothing was imported; run `bridge-screen import --into <milestone> <file>` to link it."
 **Options considered for the no-match case:** (a) create a new milestone (an earlier build did this: loses nothing but duplicates this repo's hand-made milestones), (b) create nothing and ask for a link (chosen: loses nothing, duplicates nothing; costs one command), (c) guess the closest title (could attach work to the wrong milestone).
@@ -143,8 +143,42 @@ Choices someone will later ask "why?" about. Newest last. Entries are never dele
 **Decision:** The repo is named by its folder name (or its id). A name two registered repos share is refused, listing both folders, so you pick by id.
 **Consequences:** Short to write; two checkouts with the same folder name need the id.
 
-## #29 A plan file is read up to 1000 tasks and steps (100 steps in one task) — Accepted, provisional, owner to confirm — 2026-10-22
+## #29 A plan file is read up to 1000 tasks and steps (100 steps in one task) — Accepted; owner confirmed (keep as is, no warning) on 2026-10-22 — 2026-10-22
 **Context:** Reviewing the import, a 1 MB file of nothing but checkboxes made `bridge-screen import` run for more than two minutes, and the same would have frozen the start of a Claude session.
 **Decision:** bridge-screen imports at most 1000 tasks and steps from one plan file, and at most 100 steps in one task; the rest is left out. Real plans have a few dozen. Also: plan files beyond the 20 read at one session start are picked up by the next one (they used to be skipped for good).
 **Consequences:** A very long plan file is imported in part, silently at session start. Say if you want it to flag this in the briefing.
 
+## #30 Project pages live in bridge-screen's folder, not in the repo — Accepted; owner decided the "no repo writes" part on 2026-10-22 — 2026-10-22
+**Context:** A friend's repo has no living docs (intent, project map, current state, decision log, glossary), so every new session or new worktree makes the owner re-explain the project. You ruled out writing into the repo or committing anything.
+**Decision:** The five pages are plain Markdown files in `~/.bridge-screen/lead/<repo-id>/`. All worktrees of a repo share the folder, so a new worktree sees them at once. They are created only after the owner says yes once. The intent page changes only with the owner's words; the decision log only grows (two sessions adding at once both land); a replaced page keeps its previous version.
+**Consequences:** No repo writes, no merge conflicts, and every worktree sees the same pages. The pages are not shared between people or machines (a later "export into the repo" command is possible). "The owner said yes" is the agent's word: the tool can't tell a real answer from an invented one, so the owner's own command (`bridge-screen pages set-up`) is the reliable route.
+
+## #31 The offer to set up project pages repeats for at most three sessions — Accepted (owner to check); the "no plan yet" exclusion is superseded by #35 — 2026-10-22
+**Context:** A session that never asks, or an owner who is busy, would otherwise mean the offer is never seen; asking every session would nag.
+**Decision:** The session briefing carries the offer in up to three sessions of a repo, ranked last and dropped first when the briefing is full, never next to the "no plan yet" or plan-import notes, and never after a compaction. A yes or a no ends it at once. After three, only the command remains.
+**Consequences:** One small file write per offering session. An owner who ignores three offers has to run the command themselves.
+
+## #32 The lead-briefing skill ships inside the plugin — Accepted; owner decided 2026-10-22 — 2026-10-22
+**Context:** The report style you use (effect first, plain words, checked vs believed, details last) existed only as your own installed skill.
+**Decision:** A copy of that skill (unchanged) is part of the plugin, and the bridge-screen skill tells agents to use it for any status, problem or checklist and how to keep the pages current.
+**Consequences:** A friend who installs the plugin gets the same reporting style. The copy can drift from your own installed one; the licence and credit for it are still open (this repo is PolyForm Strict) and block the release, not the build.
+
+## #33 crates.io: the core library first, then the program — Accepted — 2026-10-22
+**Context:** `cargo install bridge-screen` needs both crates on crates.io, and the program depends on the library.
+**Decision:** A workflow publishes `bridge-screen-core` and then `bridge-screen` on each real release tag, and skips prerelease tags because a published version can never be taken back. The program's dependency names both the path and the version, and a test fails if that version differs from the workspace version. The crates carry no dashboard: `cargo install` gives a program whose dashboard page says how to build it.
+**Consequences:** One more secret to set up (`CARGO_REGISTRY_TOKEN`) and two crate names to claim. The crates.io build has no dashboard; the other routes do.
+
+## #34 Windows: the program is released, the plugin's own launcher is not — Accepted; real support is the owner's call, not made — 2026-10-22
+**Context:** The release builds a Windows program, but the plugin launcher is a shell script that downloads a Unix binary and nobody has a Windows machine to test on.
+**Decision:** On Windows the launcher says so in plain words and, from a hook, exits quietly. A `bridge-screen` already on the PATH is still used. The README and the first-release checklist say this.
+**Consequences:** Windows users install the program themselves and then the plugin works through it. Real support needs a Windows machine; left as a follow-up.
+
+## #35 The offer also shows in a brand-new repo, after the "no plan yet" note — Accepted; owner decided 2026-10-22 (changes part of #31) — 2026-10-22
+**Context:** #31 kept the offer out of any session whose briefing carried the "no plan yet" note. A brand-new repo has no plan, so a friend's first project never saw the offer until a plan existed, although a new project is the best moment for it. The reviewer confirmed there is room: the offer is two lines and the briefing cap still holds.
+**Decision:** The "no plan yet" note no longer blocks the offer; both appear, the offer after the note. The plan-import note still blocks it, and a compaction re-briefing still carries the pointer only. Everything else in #31 stands (up to three sessions, ranked last, dropped first when full).
+**Consequences:** A new repo's first briefing asks two things of the owner (the goal, and the pages). The offer still stops at a yes, a no or the third session.
+
+## #36 The lead-briefing skill stays under the repo's licence, with a credit line — Accepted; owner decided 2026-10-22 — 2026-10-22
+**Context:** The skill is the owner's own work and ships inside the plugin (#32), but carried no author or licence line, so it fell under this repo's licence (PolyForm Strict, #8) by default.
+**Decision:** Keep it that way: people may use it, not modify or redistribute it. A `NOTICE.md` beside the skill names the author and says it is covered by the repo's licence. The skill's own files are copied unchanged.
+**Consequences:** Friends can use the skill through the plugin but not reuse it separately. Opening it up later is possible; a more open licence, once given, can't be taken back.

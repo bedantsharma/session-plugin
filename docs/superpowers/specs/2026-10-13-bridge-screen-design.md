@@ -199,6 +199,7 @@ Active task; suspended items (each with `resume_cue`); state (working, idle, nee
   ui.lock              # dashboard single-instance guard (pid, port, token)
   bridge-screen.db     # SQLite, WAL mode, all repos
   snapshots/<repo-id>/ # records of pre-undo stashes and rescue branches
+  lead/<repo-id>/      # project pages: intent, project-map, current-state, decision-log, glossary (.md), plus .offered / .declined markers (outside the database; `rebuild` never touches it)
   archive/<repo-id>/   # compressed monthly archive files (§6.5)
 ```
 
@@ -367,6 +368,7 @@ No LLM is called from hooks. Judgement comes from the agent itself, through `lab
 - **Read-back:** before its first edit the agent calls `handoff_readback(goal, in_flight, next_action)`. bridge-screen compares it with the log (same task ids, next action matching the cue). On a mismatch it sends one correction note. `PreToolUse` nudges once if an edit starts without a read-back, but **does not block**.
 - **Stable sessions with nothing pending** get a 3-line briefing and no read-back.
 - **After compaction** (`SessionStart` with source `compact`): a short re-briefing with the active task, its resume cue and this session's decisions.
+- **Project pages note:** one last line, if there is room under the 40 lines. Pages set up: a pointer ("read intent and current state first; keep current state true; last updated <date>"). Not set up and the owner hasn't said no: a two-line offer asking the agent to ask the owner once, in plain words, whether to set them up (at most three sessions, counted in `.offered`; dropped first when the briefing is full; left out beside the "no plan yet" or plan-import notes; the re-briefing after compaction gets the pointer only). The pages and the offer are described in `2026-10-22-project-pages-and-lead-bundle-design.md`.
 - **Handoff note:** requested whenever a task reaches done or is suspended. It holds what's in flight and the if/then warnings.
 
 ### 8.5 Verification ladder
@@ -431,6 +433,7 @@ No LLM is called from hooks. Judgement comes from the agent itself, through `lab
 - **Task:** decisions with their superseded-by chains, verification evidence, tokens and cost, actors, retries.
 - **History:** the raw event stream with filters. Hidden by default.
 - **Calibration:** ratios per model and the forecast's convergence over time.
+- **Project pages:** the repo's five project pages as plain text with their last-updated dates (read-only; `GET /api/pages/{repo}`); a sentence and the command to run when they aren't set up or were declined.
 
 ### 10.3 Terminal screen
 
@@ -497,6 +500,9 @@ Hooks must finish in **≤ 50 ms** for the common case. Git and transcript work 
 | `handoff_note(in_flight, if_then[])` | Note for the next session |
 | `resolve_leftover(id, action)` | adopt, resume or undo (undo is always a snapshot) |
 | `waiting_on(target, reason)` | Ad-hoc dependency |
+| `lead_pages(action, owner_said?)` | Project pages: `set_up` / `decline` (both need the owner's words) or `status` |
+| `lead_page_read(page)` | Read one project page |
+| `lead_page_write(page, content, mode?, reason, owner_said?)` | Write a page: the intent needs the owner's words, the decision log is append-only, at most 64 KiB |
 | `status()` | Compact text state for the agent |
 | `archive_search(query, filters)` | Search archived projects and history (§6.5) |
 | `show_progress(scope?)` | Inline progress card in the desktop app, or text elsewhere (§10.5) |
@@ -513,7 +519,7 @@ Hooks must finish in **≤ 50 ms** for the common case. Git and transcript work 
 - log decisions
 - climb the verification ladder honestly
 
-It stays under about 150 lines.
+It stays under about 150 lines. It also says when to use the bundled `lead-briefing` skill (any status, problem or checklist for the owner) and how to keep the project pages current. That skill ships beside it in `skills/lead-briefing/` (with `references/why-it-works.md` and `references/living-docs.md`), copied unchanged.
 
 ## 12. Plan sources
 
@@ -597,12 +603,14 @@ The name `bridge-screen` was unclaimed on PyPI, crates.io, npm and Homebrew on 2
 
 - **Plugin first.** The plugin ships a small launcher script (outside a top-level `bin/` directory). On first use it downloads the prebuilt binary for the machine's OS and CPU from the matching GitHub Release into `${CLAUDE_PLUGIN_DATA}`, checks it against the published SHA-256, and runs it. Hooks and the MCP server call the launcher. Plugin updates bring the matching binary version.
 - **Package manager first.** `brew`, `pipx`, `npx` or the shell installer put the binary on the PATH; then `bridge-screen install` adds the marketplace and enables the plugin through Claude Code's plugin CLI. If a PATH binary of the same version exists, the launcher uses it instead of downloading.
+- **Windows:** the program is released for Windows; the launcher is not supported there (it says so, and exits quietly from a hook). A `bridge-screen` on the PATH is still used.
 - The terminal command (`bridge-screen ui`, `watch`, `status`) needs the binary on the shell PATH, which the package-manager route provides. Plugin-only users start the dashboard with `/bridge-screen ui`.
 
 ### 16.3 Release pipeline
 
 - **cargo-dist** builds release binaries for macOS (arm64, x86_64), Linux (x86_64, arm64, musl) and Windows (x86_64) from one git tag. It publishes the GitHub Release with checksums, the shell and PowerShell installers, the Homebrew tap formula and the npm packages.
 - A **maturin** job in the same workflow builds and uploads the PyPI wheels.
+- A **crates.io** workflow publishes `bridge-screen-core`, then `bridge-screen`, on real release tags (prerelease tags are skipped). The crates carry no dashboard; the program built from them serves a page saying how to build it.
 - The Svelte frontend is built before the Rust build so the assets are embedded.
 - The plugin manifest's `version` is bumped from the same tag.
 

@@ -5,10 +5,11 @@ import { describe, expect, it, vi } from 'vitest'
 import NeedsYou from '../src/lib/glance/NeedsYou.svelte'
 import ProjectRow from '../src/lib/glance/ProjectRow.svelte'
 import Task from '../src/lib/drill/Task.svelte'
+import Pages from '../src/lib/drill/Pages.svelte'
 import Card from '../src/card/Card.svelte'
 import type { CardHost, ToolResult } from '../src/card/host'
 import type { Client } from '../src/lib/api'
-import type { TaskDrill } from '../src/lib/types'
+import type { PagesView, TaskDrill } from '../src/lib/types'
 import { FLAG, STATUS, jargonIn, levelWord, readbackWord, statusWord } from '../src/lib/words'
 import { flagText } from '../src/lib/format'
 import { COST, forecast, glance, item, leftover, project, question } from './fixtures'
@@ -88,6 +89,32 @@ describe('no jargon on screens', () => {
     const { container } = render(Task, { client, repo: 'r1', id: '1.1', version: 1 })
     await screen.findByText(/tests pass/)
     clean(container.textContent)
+  })
+
+  it('the project pages screen, in each state', async () => {
+    const views: PagesView[] = [
+      { state: 'not_set_up', pages: [] },
+      { state: 'declined', pages: [] },
+      {
+        state: 'set_up',
+        pages: ['What this project is for', 'Where things stand'].map((title) => ({
+          title,
+          updated: '2026-10-22',
+          text: 'Plain words.',
+        })),
+      },
+    ]
+    for (const v of views) {
+      const client: Client = {
+        get: async <T>() => v as T,
+        act: async () => ({ ok: true, reply: '' }),
+      }
+      const { container, unmount } = render(Pages, { client, repo: 'r1', version: 1 })
+      await screen.findByRole('heading', { name: 'Project pages' })
+      await vi.waitFor(() => expect(container.textContent).toMatch(/pages|Plain words/))
+      clean(container.textContent)
+      unmount()
+    }
   })
 
   it('the desktop card', async () => {

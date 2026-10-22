@@ -39,6 +39,17 @@ fail() {
     exit 1
 }
 
+# Windows (Git Bash, MSYS, Cygwin): the plugin launcher doesn't download a binary there yet.
+# A matching bridge-screen on PATH is still used (step 1 below).
+unsupported_windows() {
+    message="bridge-screen's plugin launcher doesn't support Windows yet. Install the program with the PowerShell installer from the release page and make sure \`bridge-screen\` is on your PATH, then run \`bridge-screen install\`."
+    if [ "$mode" = hook ]; then
+        fail "$message"
+    fi
+    printf '%s\n' "$message" >&2
+    exit 1
+}
+
 want=$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
     "$root/.claude-plugin/plugin.json" 2>/dev/null | head -n 1)
 [ -n "$want" ] || fail "could not read the plugin version from $root/.claude-plugin/plugin.json"
@@ -56,6 +67,7 @@ if [ ! -x "$bin" ]; then
     case "$(uname -s)" in
         Darwin) os=apple-darwin ;;
         Linux) os=unknown-linux-gnu ;;
+        MINGW* | MSYS* | CYGWIN*) unsupported_windows ;;
         *) fail "no prebuilt binary for $(uname -s)" ;;
     esac
     case "$(uname -m)" in

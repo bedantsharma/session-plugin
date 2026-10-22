@@ -49,8 +49,10 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 mod onboard;
+mod pages;
 mod waits;
 
+pub use pages::{LeadPageReadInput, LeadPageWriteInput, LeadPagesInput};
 pub use waits::{WaitIdInput, WaitingOnInput};
 
 const NO_SESSION: &str =
@@ -503,6 +505,36 @@ impl Bridge {
     )]
     async fn init_plan(&self, Parameters(args): Parameters<Args<InitDraft>>) -> CallToolResult {
         text(self.do_init_plan(&args))
+    }
+
+    #[tool(
+        description = "Project pages: five short pages (intent, project map, current state, decision log, glossary) kept for this repo, shared by every worktree and never written into the repo. action \"status\" lists them. When the briefing says the repo has none, ask the owner once whether to set them up, then relay their answer: action \"set_up\" or \"decline\" with their own words in owner_said. Never set up or decline without asking."
+    )]
+    async fn lead_pages(
+        &self,
+        Parameters(args): Parameters<Args<LeadPagesInput>>,
+    ) -> CallToolResult {
+        text(self.do_lead_pages(&args))
+    }
+
+    #[tool(
+        description = "Read one project page: intent, project-map, current-state, decision-log or glossary. Read intent and current-state at the start of work."
+    )]
+    async fn lead_page_read(
+        &self,
+        Parameters(args): Parameters<Args<LeadPageReadInput>>,
+    ) -> CallToolResult {
+        text(self.do_lead_page_read(&args))
+    }
+
+    #[tool(
+        description = "Write a project page, with a one-line reason. current-state, project-map and glossary are replaced whole (read first); the decision-log only grows (mode \"append\", one entry per choice someone will later ask why about); the intent belongs to the owner and changes only with their own words in owner_said."
+    )]
+    async fn lead_page_write(
+        &self,
+        Parameters(args): Parameters<Args<LeadPageWriteInput>>,
+    ) -> CallToolResult {
+        text(self.do_lead_page_write(&args))
     }
 
     #[tool(

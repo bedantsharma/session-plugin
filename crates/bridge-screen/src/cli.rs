@@ -168,6 +168,15 @@ pub enum Command {
         #[arg(short = 'C', long = "dir", default_value = ".", global = true)]
         dir: PathBuf,
     },
+    /// The repo's project pages (what it is for, how it fits, where things stand, why, words):
+    /// `pages set-up | decline | show | path`. Kept in bridge-screen's folder, never in the repo.
+    Pages {
+        #[command(subcommand)]
+        action: PagesCommand,
+        /// Any directory inside the repo.
+        #[arg(short = 'C', long = "dir", default_value = ".", global = true)]
+        dir: PathBuf,
+    },
     /// Rebuild all views from the event log.
     Rebuild,
     /// Print the effective configuration (and this repo's tuned drift thresholds).
@@ -194,6 +203,18 @@ pub enum Command {
         #[arg(value_enum)]
         event: HookEvent,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PagesCommand {
+    /// Create the five pages (yes, set them up). Pages that exist are never overwritten.
+    SetUp,
+    /// No project pages for this repo: nothing more is offered.
+    Decline,
+    /// The folder and each page's title, last-updated date and size.
+    Show,
+    /// Print the folder only.
+    Path,
 }
 
 #[derive(Debug, Subcommand)]

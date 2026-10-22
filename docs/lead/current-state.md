@@ -1,36 +1,42 @@
 # Current state — 2026-10-22
 
-**Bottom line:** Eight of nine sub-projects are merged: sub-project 8 (imports and onboarding) and the card-notes fix landed this morning. Once you reinstall, a repo you open gets its plan without hand-seeding. — Green: on track.
+**Bottom line:** The first release (v0.1.0) is live and installable; the project pages and the bundled reporting skill are built and checked on a branch, with a pull request (#18) waiting to merge. npm is the one install route still failing. — Amber: npm unfinished; the new work never tried in a real Claude session or a browser.
 
 **What works today (on main):**
-- Sessions are tracked automatically: active task, time, and whether each piece of work was on task, a detour, drift, or **asked for** by you. Work cut short by one of your messages is checked for drift too (it used to be marked on task unchecked).
+- Sessions are tracked automatically: active task, time, and whether each piece of work was on task, a detour, drift, or **asked for** by you. Work cut short by one of your messages is checked for drift too.
 - Crashed or abandoned sessions are detected; their half-finished changes are offered back, and every new session gets a short briefing.
 - "Done" means verified: claimed → code exists → tests pass → end-to-end → you signed it off; you can take a sign-off back.
 - Milestones and the goal show done / in progress / needs attention from their tasks.
 - Decisions are recorded with their reasons; cost per task, session and project; a finish range per project.
-- Three readable screens (terminal, browser dashboard, desktop-app card) in plain words. **New:** a session's notes wrap onto a second line inside the dashboard's Sessions card instead of running past its edge.
+- Plan files are read by themselves; agents can say what they wait on; plan links reach other repos; three readable screens in plain words.
 
-**New with sub-project 8 (merged):**
-- Plan files in `docs/superpowers/plans/` are read by themselves at each session start and kept up to date when they change; the files are never written. A ticked step counts as claimed, not checked. A repo already planned by hand (like this one) has its files noted, not imported — no duplicates.
-- `bridge-screen init` for a repo with work but no plan: the agent drafts a plan from the repo's history, you confirm it once, tasks that look done are checked for "the code exists".
-- An agent can say "I'm waiting on 2.4" (or on a task in another repo, or on "Sam's API key"); the session shows an amber "waiting", and it hears once when the task's tests pass. You can clear a wait or turn it into a plan link.
-- Plan links can point at a task in another repo (`api:2.4`); the same branch in two repos shows as one line with a combined %.
+**Released (v0.1.0, from main):**
+- **GitHub release:** programs for Mac (Apple and Intel), Linux and Windows, the shell and PowerShell installers, with checksums. The plugin downloads from here.
+- **Homebrew:** the formula is in your tap (`bedantsharma/homebrew-tap`).
+- **PyPI:** `bridge-screen` 0.1.0 with five wheels is live.
+- **npm:** not live. The publish keeps failing on a one-time-code request.
+- **crates.io:** not published; it ships with the next version.
 
-**In flight:** nothing running.
+**New on the branch (pull request #18, not merged):**
+- **Project pages:** a repo with none gets one offer in the session briefing (up to three sessions, also in a brand-new repo with no plan yet); your yes (or `bridge-screen pages set-up`) creates five pages outside the repo, shared by every worktree. Agents read and update them with three tools; your intent page changes only with your words; the decision log only grows. The dashboard shows them read-only under a project's "Project pages".
+- **The reporting skill** (`lead-briefing`) is part of the plugin, unchanged, under the repo's licence with a credit line.
+- **Release:** a crates.io publish workflow (core first, then the program), a plain Windows message from the plugin launcher, and a first-release checklist.
+
+**In flight:** pull request #18 (merging once its automatic checks pass).
 
 **Open problems:**
-- **Friends can't install it yet:** no published release. — Open; needs a first release.
-- **An old plan file you edit in a hand-planned repo isn't imported until you link it.** bridge-screen says so in the briefing and in `bridge-screen import`, with the command to link it. — By design, provisional (decision #25); your call.
-- **A very long plan file is imported only in part** (first 1000 tasks and steps), silently. — Provisional (decision #29); say if you want a warning.
-- **"Asked for" relies on the agent saying so.** — By design.
-- **On `status`, a drifting session doesn't say which command answers it.** — Open; one-line fix.
-- **Fast-mode work shows "cost unknown".** — Open; your choice.
+- **npm:** the publish asks for a one-time code that a build server can't give; the token's two-factor bypass setting needs fixing, or the first version can be published by hand.
+- **"The owner said yes" is the agent's word.** The tool cannot tell a real answer from an invented one; the command you run yourself is the reliable route (decision #30).
+- **Windows plugin launcher is not supported** (decision #34); the program is released for Windows but nobody has run it there.
+- Earlier items still open: fast-mode work shows "cost unknown".
+
+**Decided today:** keep #25 (link, don't duplicate) and #29 (size cap); the offer also shows in a brand-new repo (#35); the bundled skill stays under the repo's licence with a credit line (#36).
 
 **Needs your decision:**
-- Confirm the two provisional choices (#25 link-not-duplicate, #29 size cap). Recommended: keep both.
+- Confirm the provisional choices: offer repeats up to three sessions (#31), crates.io skips prerelease tags (#33), launcher message on Windows (#34). Recommended: keep all three.
 - Confirm or correct the intent page (`docs/lead/intent.md`).
-- Next: sub-project 9 (archive) or the first release?
+- Next: sub-project 9 (archive) or the next release (v0.1.1, with the pages and crates.io)?
 
-**Next:** reinstall (rebuild the web dashboard and the program) and start a new session to get everything above; then sub-project 9 or the first release.
+**Next:** merge #18, fix npm, reinstall and try the offer in a real session; then release v0.1.1.
 
-**How sure:** Both merges passed all four CI checks on GitHub (Rust on macOS and Linux, web, browser test) — checked. Before merging, sub-project 8's session reported the full Rust suite, web checks, hook speed checks and plugin check passing, a reviewer's five fixes, and a database upgrade on a copy of your real data that kept every row — relayed from that session, not re-run for this page. Nobody has clicked through the new dashboard parts by hand yet.
+**How sure:** Checked by running: on the branch, the Rust suite (579 passed, 0 failed), the web tests (163 passed) and clippy; the v0.1.0 release (every build step passed, the Mac program's checksum matched and it reports 0.1.0); the Homebrew formula file exists in the tap; PyPI lists 0.1.0 with its wheels. Relayed from the reviewing agent, not re-run: the browser tests (6 passed), the speed checks and the smoke test in a temporary home. Not checked: `brew install` and `npx` on a real machine, the crates.io workflow (never run), a real Claude session seeing the offer, the new dashboard screen in a browser, anything on Windows.

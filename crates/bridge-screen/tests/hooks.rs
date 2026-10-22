@@ -413,10 +413,15 @@ fn claim_for(env: &Env, session: &str, task: &str) {
 fn session_start_without_a_plan_asks_for_one() {
     let env = Env::new();
     let out = env.hook("session-start", "s1");
-    assert_eq!(
-        context_of(&out, "SessionStart"),
-        "bridge-screen briefing — stable\nNo plan yet. If this repo has work already, run `bridge-screen init` and follow it; otherwise ask the owner what the goal is."
+    let text = context_of(&out, "SessionStart");
+    // The "no plan yet" note comes first; the project-pages offer follows it.
+    assert!(
+        text.starts_with(
+            "bridge-screen briefing — stable\nNo plan yet. If this repo has work already, run `bridge-screen init` and follow it; otherwise ask the owner what the goal is."
+        ),
+        "{text}"
     );
+    assert!(text.contains("no project pages yet"), "{text}");
     // No plan, no claim reminders.
     for _ in 0..4 {
         assert_eq!(env.hook("user-prompt-submit", "s1"), "");
@@ -426,6 +431,7 @@ fn session_start_without_a_plan_asks_for_one() {
 #[test]
 fn session_start_names_goal_and_active_task() {
     let env = Env::new();
+    env.decline_pages();
     seed_plan(&env);
     let out = env.hook("session-start", "s1");
     assert_eq!(
@@ -1125,6 +1131,52 @@ fn hook_latency_session_start_plan_import() {
         changed,
         150,
     );
+}
+
+/// SessionStart on the large database while the project-pages offer is made (one small file
+/// write) and while the pointer is shown (one stat per page): p95 under the 150 ms
+/// SessionStart budget, like the other SessionStart paths.
+#[test]
+#[ignore = "perf check: run on demand with --release"]
+fn hook_latency_session_start_pages_offer() {
+    use std::time::Instant;
+
+    let env = Env::new();
+    big_database(&env);
+    // A plan, so the briefing has room and no "no plan yet" note (which would hide the offer).
+    seed_plan(&env);
+    let id = bridge_screen_core::repo::identify(env.repo.path())
+        .unwrap()
+        .id;
+    let home = bridge_screen_core::paths::Home::at(env.home.path());
+    let offers = (0..40)
+        .map(|i| {
+            // Reset the count so every start makes the offer (and writes the marker).
+            let _ = std::fs::remove_file(home.lead_dir(&id).join(".offered"));
+            let payload =
+                common::fixture("session-start", &format!("offer-{i:03}"), &env.repo_path());
+            let start = Instant::now();
+            let out = env.hook_raw("session-start", &payload);
+            let took = start.elapsed();
+            assert!(out.contains("no project pages yet"), "{out}");
+            took
+        })
+        .collect();
+    report_within("hook session-start (project pages offer)", offers, 150);
+    bridge_screen_core::pages::set_up(&home, &id, "yes").unwrap();
+    let pointers = (0..40)
+        .map(|i| {
+            let payload =
+                common::fixture("session-start", &format!("point-{i:03}"), &env.repo_path());
+            let start = Instant::now();
+            let out = env.hook_raw("session-start", &payload);
+            let took = start.elapsed();
+            assert!(out.contains("Project pages: read"), "{out}");
+            took
+        })
+        .collect();
+    assert_eq!(env.log(), "");
+    report_within("hook session-start (project pages pointer)", pointers, 150);
 }
 
 /// UserPromptSubmit for a session with 20 open waits and an active task with 5 links into

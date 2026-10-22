@@ -381,3 +381,9 @@ export interface TuningDrill {
   changes: { ts: string; key: string; old: number | null; new: number; samples: number }[]
   revert: ActionSpec | null
 }
+
+/** The read-only project pages screen (GET /api/pages/{repo}). */
+export interface PagesView {
+  state: 'set_up' | 'not_set_up' | 'declined'
+  pages: { title: string; updated: string | null; text: string }[]
+}

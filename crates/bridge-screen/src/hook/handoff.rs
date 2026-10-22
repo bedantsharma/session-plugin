@@ -9,8 +9,11 @@ use bridge_screen_core::config::Config;
 use bridge_screen_core::decision;
 use bridge_screen_core::error::Result;
 use bridge_screen_core::git::{self, HeadCommit};
+use bridge_screen_core::handoff::briefing::MAX_LINES;
 use bridge_screen_core::handoff::{self, EndKind, ReadbackState};
 use bridge_screen_core::navigator::{Candidate, Channel, NoteKind, note_sent_draft};
+use bridge_screen_core::pages;
+use bridge_screen_core::paths::Home;
 use bridge_screen_core::recovery;
 use bridge_screen_core::session::{self, Session};
 use bridge_screen_core::session::{NeedsOwner, NeedsOwnerKind};
@@ -212,7 +215,16 @@ pub fn staleness(store: &mut Store, repo_id: &str, session_id: &str) -> Result<(
 
 /// At SessionStart: the briefing (recorded as `briefed`), or the short re-briefing after
 /// a compaction.
-pub fn start_context(store: &mut Store, input: &HookInput) -> Result<Option<String>> {
+///
+/// `imported` are the plan-import lines to show after the goal line. The briefing ends with
+/// the project-pages pointer or, once per session up to three times, the offer to set them
+/// up (spec 2026-10-22); a problem with the pages folder is logged and the note left out.
+pub fn start_context(
+    store: &mut Store,
+    input: &HookInput,
+    home: &Home,
+    imported: &[String],
+) -> Result<Option<String>> {
     let Some(me) = session::get(store.conn(), &input.session_id)? else {
         return Ok(None);
     };
@@ -225,7 +237,8 @@ pub fn start_context(store: &mut Store, input: &HookInput) -> Result<Option<Stri
                 "compact",
             ))?;
         }
-        return Ok(Some(text));
+        // After a compaction: the pointer only, never the offer.
+        return Ok(Some(with_pages_note(home, &me.repo_id, text, true)));
     }
     let b = handoff::briefing(store.conn(), &me)?;
     let data = handoff::Briefed {
@@ -250,7 +263,36 @@ pub fn start_context(store: &mut Store, input: &HookInput) -> Result<Option<Stri
         }
         Ok(())
     })?;
-    Ok(Some(b.text))
+    // A brand-new repo ("no plan yet") still gets the offer: it is the best moment for it.
+    let onboarding = !imported.is_empty();
+    let text = with_imports(&b.text, imported);
+    Ok(Some(with_pages_note(home, &me.repo_id, text, onboarding)))
+}
+
+/// The briefing plus the project-pages note, if there is room and anything to say.
+fn with_pages_note(home: &Home, repo_id: &str, text: String, onboarding: bool) -> String {
+    let room = MAX_LINES.saturating_sub(text.lines().count());
+    match pages::briefing_note(home, repo_id, room, onboarding) {
+        Ok(Some(note)) => format!("{text}\n{note}"),
+        Ok(None) => text,
+        Err(e) => {
+            super::log_error(home, "session-start", &format!("project pages: {e}"));
+            text
+        }
+    }
+}
+
+/// The briefing with the import lines after its goal line.
+fn with_imports(text: &str, imported: &[String]) -> String {
+    if imported.is_empty() {
+        return text.to_string();
+    }
+    let mut lines: Vec<&str> = text.lines().collect();
+    let at = lines.len().min(2);
+    for (i, line) in imported.iter().enumerate() {
+        lines.insert(at + i, line);
+    }
+    lines.join("\n")
 }
 
 /// PreToolUse on an edit tool while a read-back is pending: the nudge, once per session

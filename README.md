@@ -107,8 +107,9 @@ shows you exactly what it holds, and publishes it as an Artifact after you confi
 | Homebrew | `brew install bedantsharma/tap/bridge-screen`, then `bridge-screen install` |
 | PyPI | `pipx install bridge-screen` (or `uv tool install bridge-screen`), then `bridge-screen install` |
 | npm | `npx bridge-screen install` |
-| Shell installer | `curl -LsSf <release-url>/bridge-screen-installer.sh \| sh`, then `bridge-screen install` |
-| crates.io | `cargo install bridge-screen`, then `bridge-screen install` |
+| Shell installer (macOS, Linux) | `curl -LsSf https://github.com/bedantsharma/session-plugin/releases/latest/download/bridge-screen-installer.sh \| sh`, then `bridge-screen install` |
+| crates.io | `cargo install bridge-screen`, then `bridge-screen install` (builds without the dashboard; `bridge-screen ui` then says how to build it) |
+| Windows | The program: yes (PowerShell installer from the release page, `pipx`, or `npx`), then `bridge-screen install`. The plugin's own launcher: not yet. Put `bridge-screen` on your PATH and the plugin uses it. |
 
 `bridge-screen install` creates `~/.bridge-screen/` and registers the plugin through
 Claude Code's `claude plugin` CLI. The plugin alone also works: its launcher downloads

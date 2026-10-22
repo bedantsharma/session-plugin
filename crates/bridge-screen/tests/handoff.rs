@@ -17,6 +17,7 @@ const SEED: &str = r#"[
 
 fn env() -> Env {
     let env = Env::new();
+    env.decline_pages();
     assert!(env.run(&["plan", "edit"], SEED).status.success());
     env
 }

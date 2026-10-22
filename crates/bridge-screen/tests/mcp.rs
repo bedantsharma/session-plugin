@@ -51,6 +51,9 @@ fn lists_three_tools_with_schemas() {
             "handoff_readback",
             "init_plan",
             "label_unit",
+            "lead_page_read",
+            "lead_page_write",
+            "lead_pages",
             "log_decision",
             "owner_action",
             "plan_edit",
@@ -1110,4 +1113,279 @@ fn a_newer_data_format_tells_the_agent_to_start_a_new_session() {
         "{text}"
     );
     assert!(text.contains("data format 99"), "{text}");
+}
+
+/// Project pages through the tools (spec 2026-10-22).
+mod project_pages {
+    use super::*;
+    use common::{call_as, git};
+
+    fn page_call(
+        mcp: &mut Mcp,
+        env: &Env,
+        session: &str,
+        tool: &str,
+        args: &serde_json::Value,
+    ) -> (bool, String) {
+        call_as(mcp, env, session, tool, args)
+    }
+
+    fn set_up(mcp: &mut Mcp, env: &Env) {
+        let (err, text) = page_call(
+            mcp,
+            env,
+            "s1",
+            "lead_pages",
+            &json!({"action": "set_up", "owner_said": "yes, set them up"}),
+        );
+        assert!(!err, "{text}");
+    }
+
+    #[test]
+    fn lead_pages_set_up_needs_owner_words() {
+        let env = setup();
+        let mut mcp = Mcp::start(&env, "/nonexistent");
+        let (err, text) = page_call(
+            &mut mcp,
+            &env,
+            "s1",
+            "lead_pages",
+            &json!({"action": "set_up"}),
+        );
+        assert!(err);
+        assert!(text.contains("owner"), "{text}");
+        let (err, _) = page_call(
+            &mut mcp,
+            &env,
+            "s1",
+            "lead_pages",
+            &json!({"action": "set_up", "owner_said": "  "}),
+        );
+        assert!(err);
+        let (err, text) = page_call(
+            &mut mcp,
+            &env,
+            "s1",
+            "lead_pages",
+            &json!({"action": "decline"}),
+        );
+        assert!(err, "{text}");
+        let (err, text) = page_call(
+            &mut mcp,
+            &env,
+            "s1",
+            "lead_pages",
+            &json!({"action": "decline", "owner_said": "no thanks"}),
+        );
+        assert!(!err, "{text}");
+        assert!(text.contains("won't offer"), "{text}");
+        let (err, text) = page_call(
+            &mut mcp,
+            &env,
+            "s1",
+            "lead_pages",
+            &json!({"action": "status"}),
+        );
+        assert!(!err);
+        assert!(text.contains("declined"), "{text}");
+    }
+
+    #[test]
+    fn set_up_then_read_returns_template() {
+        let env = setup();
+        let mut mcp = Mcp::start(&env, "/nonexistent");
+        let (_, before) = page_call(
+            &mut mcp,
+            &env,
+            "s1",
+            "lead_page_read",
+            &json!({"page": "glossary"}),
+        );
+        assert!(before.contains("not set up"), "{before}");
+        let (err, text) = page_call(
+            &mut mcp,
+            &env,
+            "s1",
+            "lead_pages",
+            &json!({"action": "set_up", "owner_said": "yes please"}),
+        );
+        assert!(!err, "{text}");
+        assert!(text.contains("current-state"), "next steps: {text}");
+        assert!(text.contains("lead-briefing"), "{text}");
+        let (err, page) = page_call(
+            &mut mcp,
+            &env,
+            "s1",
+            "lead_page_read",
+            &json!({"page": "glossary"}),
+        );
+        assert!(!err);
+        assert!(page.contains("# Glossary"), "{page}");
+        let (_, status) = page_call(
+            &mut mcp,
+            &env,
+            "s1",
+            "lead_pages",
+            &json!({"action": "status"}),
+        );
+        for name in [
+            "intent",
+            "project-map",
+            "current-state",
+            "decision-log",
+            "glossary",
+        ] {
+            assert!(status.contains(name), "{status}");
+        }
+    }
+
+    #[test]
+    fn write_current_state_then_read_back() {
+        let env = setup();
+        let mut mcp = Mcp::start(&env, "/nonexistent");
+        set_up(&mut mcp, &env);
+        let (err, text) = page_call(
+            &mut mcp,
+            &env,
+            "s1",
+            "lead_page_write",
+            &json!({"page": "current-state", "content": "# Current state — today\nAll green.", "reason": "after merge"}),
+        );
+        assert!(!err, "{text}");
+        assert_eq!(text, "Saved.");
+        let (_, page) = page_call(
+            &mut mcp,
+            &env,
+            "s1",
+            "lead_page_read",
+            &json!({"page": "current-state"}),
+        );
+        assert_eq!(page, "# Current state — today\nAll green.");
+    }
+
+    #[test]
+    fn write_intent_refused_without_owner_words() {
+        let env = setup();
+        let mut mcp = Mcp::start(&env, "/nonexistent");
+        set_up(&mut mcp, &env);
+        let args = json!({"page": "intent", "content": "# Intent", "reason": "draft"});
+        let (err, text) = page_call(&mut mcp, &env, "s1", "lead_page_write", &args);
+        assert!(err);
+        assert!(text.contains("owner"), "{text}");
+        let args = json!({"page": "intent", "content": "# Intent — mine", "reason": "confirmed", "owner_said": "yes, that is it"});
+        let (err, text) = page_call(&mut mcp, &env, "s1", "lead_page_write", &args);
+        assert!(!err, "{text}");
+    }
+
+    #[test]
+    fn decision_log_append_via_tool() {
+        let env = setup();
+        let mut mcp = Mcp::start(&env, "/nonexistent");
+        set_up(&mut mcp, &env);
+        for entry in ["## #1 first choice", "## #2 second choice"] {
+            let args = json!({"page": "decision-log", "content": entry, "mode": "append", "reason": "decided"});
+            let (err, text) = page_call(&mut mcp, &env, "s1", "lead_page_write", &args);
+            assert!(!err, "{text}");
+        }
+        let args = json!({"page": "decision-log", "content": "wipe", "reason": "oops"});
+        let (err, text) = page_call(&mut mcp, &env, "s1", "lead_page_write", &args);
+        assert!(err);
+        assert!(text.contains("append"), "{text}");
+        let (_, page) = page_call(
+            &mut mcp,
+            &env,
+            "s1",
+            "lead_page_read",
+            &json!({"page": "decision-log"}),
+        );
+        assert!(
+            page.contains("#1 first choice") && page.contains("#2 second choice"),
+            "{page}"
+        );
+        assert!(page.find("#1 first").unwrap() < page.find("#2 second").unwrap());
+    }
+
+    #[test]
+    fn unknown_page_refused() {
+        let env = setup();
+        let mut mcp = Mcp::start(&env, "/nonexistent");
+        set_up(&mut mcp, &env);
+        for bad in ["../x", "intent.md", "INTENT", ""] {
+            let (err, text) = page_call(
+                &mut mcp,
+                &env,
+                "s1",
+                "lead_page_read",
+                &json!({"page": bad}),
+            );
+            assert!(err, "{bad}: {text}");
+            assert!(text.contains("project-map"), "lists the names: {text}");
+            let args = json!({"page": bad, "content": "x", "reason": "r"});
+            let (err, _) = page_call(&mut mcp, &env, "s1", "lead_page_write", &args);
+            assert!(err, "{bad}");
+        }
+    }
+
+    #[test]
+    fn write_before_set_up_is_refused() {
+        let env = setup();
+        let mut mcp = Mcp::start(&env, "/nonexistent");
+        let args = json!({"page": "glossary", "content": "x", "reason": "r"});
+        let (err, text) = page_call(&mut mcp, &env, "s1", "lead_page_write", &args);
+        assert!(err);
+        assert!(text.contains("not set up"), "{text}");
+    }
+
+    #[test]
+    fn worktrees_share_pages() {
+        let env = setup();
+        let second = tempfile::tempdir().unwrap();
+        let wt = second.path().join("wt2");
+        git(
+            env.repo.path(),
+            &["worktree", "add", "-q", "-b", "other", wt.to_str().unwrap()],
+        );
+        // A session that starts in the second worktree.
+        env.hook_raw(
+            "session-start",
+            &common::fixture("session-start", "w2", wt.to_str().unwrap()),
+        );
+        let mut mcp = Mcp::start(&env, "/nonexistent");
+        set_up(&mut mcp, &env);
+        let (err, text) = page_call(
+            &mut mcp,
+            &env,
+            "s1",
+            "lead_page_write",
+            &json!({"page": "current-state", "content": "written from the main checkout", "reason": "test"}),
+        );
+        assert!(!err, "{text}");
+        // The w2 session reads it: bind its call with its own cwd.
+        let args = json!({"page": "current-state"});
+        let mut p = fixture_json("pre-tool-use", "w2", wt.to_str().unwrap());
+        p["tool_name"] = json!(format!("{}lead_page_read", common::PREFIX));
+        p["tool_input"] = args.clone();
+        p["tool_use_id"] = json!("toolu_w2");
+        assert_eq!(env.hook_raw("pre-tool-use", &p.to_string()), "");
+        let (err, page) = mcp.call("lead_page_read", &args);
+        assert!(!err, "{page}");
+        assert_eq!(page, "written from the main checkout");
+        // And it writes; the main checkout's session sees that.
+        let mut p = fixture_json("pre-tool-use", "w2", wt.to_str().unwrap());
+        let args = json!({"page": "glossary", "content": "- **term**: from w2", "reason": "test"});
+        p["tool_name"] = json!(format!("{}lead_page_write", common::PREFIX));
+        p["tool_input"] = args.clone();
+        p["tool_use_id"] = json!("toolu_w2b");
+        assert_eq!(env.hook_raw("pre-tool-use", &p.to_string()), "");
+        let (err, text) = mcp.call("lead_page_write", &args);
+        assert!(!err, "{text}");
+        let (_, page) = page_call(
+            &mut mcp,
+            &env,
+            "s1",
+            "lead_page_read",
+            &json!({"page": "glossary"}),
+        );
+        assert_eq!(page, "- **term**: from w2");
+    }
 }
