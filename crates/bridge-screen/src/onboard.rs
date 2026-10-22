@@ -209,11 +209,20 @@ fn render_pages(home: &Home, repo_id: &str, repo_name: &str) -> String {
         );
         let _ = writeln!(
             out,
-            "  {} ({}) — {when}, {} KiB",
+            "\n== {} ({}) — {when}, {} KiB ==",
             info.page.title(),
             info.page.file_name(),
             info.bytes.div_ceil(1024)
         );
+        match pages::read(home, repo_id, info.page) {
+            Ok(Some(text)) => {
+                let _ = writeln!(out, "{}", text.trim_end());
+            }
+            Ok(None) => {}
+            Err(e) => {
+                let _ = writeln!(out, "(could not be read: {e})");
+            }
+        }
     }
     out
 }

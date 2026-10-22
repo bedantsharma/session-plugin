@@ -393,6 +393,30 @@ fn cli_show_lists_five_pages() {
 }
 
 #[test]
+fn cli_show_prints_each_pages_text() {
+    let env = Env::new();
+    env.ok(&["pages", "set-up"], None);
+    let id = bridge_screen_core::repo::identify(env.repo.path())
+        .unwrap()
+        .id;
+    let home = bridge_screen_core::paths::Home::at(env.home.path());
+    bridge_screen_core::pages::write(
+        &home,
+        &id,
+        bridge_screen_core::pages::Page::CurrentState,
+        "Login works; payments are not started yet.",
+        bridge_screen_core::pages::WriteMode::Replace,
+        None,
+    )
+    .unwrap();
+    let shown = env.ok(&["pages", "show"], None);
+    assert!(
+        shown.contains("Login works; payments are not started yet."),
+        "{shown}"
+    );
+}
+
+#[test]
 fn cli_path_prints_folder_for_any_worktree() {
     let env = Env::new();
     let wt = second_worktree(&env);
