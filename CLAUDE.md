@@ -41,11 +41,16 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
     `plan_source_items` (`project.rs`), `scan` (SessionStart budget: 20 files, 1 MiB, stat
     first; baseline for a hand-planned repo) and `import_path` (`mod.rs`); files are only read
   - `init.rs` — `bridge-screen init` evidence (read-only) and `init_plan`'s `apply` (§12.2)
+  - `pages/` — project pages (spec 2026-10-22): five Markdown pages per repo in
+    `~/.bridge-screen/lead/<repo-id>/` (`mod.rs` storage, owner-only intent, append-only log under a
+    file lock, offer and pointer note `briefing_note`; `templates.rs` + `templates/*.md` from the
+    lead-briefing skill; `view.rs` the dashboard read model); marker files, no events, no schema
   - `waits/` — `waiting_on`/`wait_cleared`, the `waits` view, `clear_for` (same transaction as
     any L2+ `verified`), promote to a plan link, the wait note (§9.1)
   - `view/groups.rs` — branch groups on the glance (§10.1)
 - `crates/bridge-screen/` — the single binary: CLI, `hook`, `mcp`, `status`, `ui`, `watch`
-  - `src/onboard.rs` — `bridge-screen import`, `init` and `wait list|clear|promote`
+  - `src/onboard.rs` — `bridge-screen import`, `init`, `wait list|clear|promote` and
+    `pages set-up|decline|show|path`
   - `src/ui/` — `bridge-screen ui`: lock/token/single instance (`mod.rs`), axum router with
     the JSON API and embedded SPA (`api.rs`); `build.rs` embeds `web/dist` and
     `web/dist-card` or a placeholder page when they aren't built
@@ -63,10 +68,11 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
     `show_progress` + the `ui://bridge-screen/progress` card resource, `owner_action`
     (card-only: needs the card's nonce), `progress_report`, `report_published`, and in
     `src/mcp/`: `init_plan` (`onboard.rs`), `waiting_on`, `clear_wait`, `promote_wait`
-    (`waits.rs`))
+    (`waits.rs`), `lead_pages`, `lead_page_read`, `lead_page_write` (`pages.rs`))
   - `tests/fixtures/hooks/` — one recorded-style hook payload per event
 - `plugin/` — the Claude Code plugin: `.claude-plugin/plugin.json`, `hooks/hooks.json`,
-  `.mcp.json`, `skills/bridge-screen/SKILL.md`, `commands/bridge-screen.md`, and the
+  `.mcp.json`, `skills/bridge-screen/SKILL.md`, `skills/lead-briefing/` (the owner's reporting
+  skill, copied unchanged), `commands/bridge-screen.md`, and the
   `scripts/bridge-screen` launcher (POSIX sh; uses a matching PATH binary or downloads one)
 - `.claude-plugin/marketplace.json` — marketplace `bridge-screen` listing `./plugin`
 - `web/` — Svelte 5 + Vite + Tailwind + shadcn-svelte + LayerChart, embedded into the binary
@@ -95,6 +101,8 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
 - Plans: `bridge-screen import [-C DIR] [FILE] [--into NODE] [--dry-run]` (plan files; read
   only), `bridge-screen init [-C DIR] [--goal TEXT]` (a half-built repo's evidence and the
   agent's steps), `bridge-screen wait list|clear <id>|promote <id> [-C DIR]` (owner)
+- Project pages: `bridge-screen pages set-up | decline | show | path [-C DIR]` (owner; the pages
+  live in `~/.bridge-screen/lead/<repo-id>/`, never in the repo)
 - Recovery: `bridge-screen resolve <leftover-id|prefix>… adopt|resume|undo [-C DIR]`;
   `bridge-screen squash [-C DIR] [--onto BASE] [--dry-run]`
 - Config: `bridge-screen config [-C DIR]` (shows the repo's tuned drift thresholds and test

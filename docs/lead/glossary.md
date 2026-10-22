@@ -37,4 +37,5 @@
 - **Desktop card:** the inline progress view inside the Claude desktop app.
 - **Hook:** the moment Claude Code hands an event to bridge-screen. **MCP tools (agent tools):** the functions agents call on bridge-screen. **Skill:** the instructions that teach agents the protocol.
 - **Worktree:** a second working folder of the same repo, so parallel sessions don't trip over each other.
-- **Living docs:** these five pages in `docs/lead/`: intent, project map, current state, decision log, glossary.
+- **Living docs:** these five pages in `docs/lead/`: intent, project map, current state, decision log, glossary. For any other repo bridge-screen offers the same five as *project pages*.
+- **Project pages:** the same five pages (what the project is for, how it fits together, where things stand, why choices were made, the words used) for any repo bridge-screen is used in. Kept in bridge-screen's own folder (`~/.bridge-screen/lead/`), never in the repo, and shared by every worktree. Created only after you say yes once (`bridge-screen pages set-up`); agents read and update them; the dashboard shows them read-only. See: project map, Project pages.

@@ -148,3 +148,27 @@ Choices someone will later ask "why?" about. Newest last. Entries are never dele
 **Decision:** bridge-screen imports at most 1000 tasks and steps from one plan file, and at most 100 steps in one task; the rest is left out. Real plans have a few dozen. Also: plan files beyond the 20 read at one session start are picked up by the next one (they used to be skipped for good).
 **Consequences:** A very long plan file is imported in part, silently at session start. Say if you want it to flag this in the briefing.
 
+## #30 Project pages live in bridge-screen's folder, not in the repo — Accepted; owner decided the "no repo writes" part on 2026-10-22 — 2026-10-22
+**Context:** A friend's repo has no living docs (intent, project map, current state, decision log, glossary), so every new session or new worktree makes the owner re-explain the project. You ruled out writing into the repo or committing anything.
+**Decision:** The five pages are plain Markdown files in `~/.bridge-screen/lead/<repo-id>/`. All worktrees of a repo share the folder, so a new worktree sees them at once. They are created only after the owner says yes once. The intent page changes only with the owner's words; the decision log only grows (two sessions adding at once both land); a replaced page keeps its previous version.
+**Consequences:** No repo writes, no merge conflicts, and every worktree sees the same pages. The pages are not shared between people or machines (a later "export into the repo" command is possible). "The owner said yes" is the agent's word: the tool can't tell a real answer from an invented one, so the owner's own command (`bridge-screen pages set-up`) is the reliable route.
+
+## #31 The offer to set up project pages repeats for at most three sessions — Accepted (owner to check) — 2026-10-22
+**Context:** A session that never asks, or an owner who is busy, would otherwise mean the offer is never seen; asking every session would nag.
+**Decision:** The session briefing carries the offer in up to three sessions of a repo, ranked last and dropped first when the briefing is full, never next to the "no plan yet" or plan-import notes, and never after a compaction. A yes or a no ends it at once. After three, only the command remains.
+**Consequences:** One small file write per offering session. An owner who ignores three offers has to run the command themselves.
+
+## #32 The lead-briefing skill ships inside the plugin — Accepted; owner decided 2026-10-22 — 2026-10-22
+**Context:** The report style you use (effect first, plain words, checked vs believed, details last) existed only as your own installed skill.
+**Decision:** A copy of that skill (unchanged) is part of the plugin, and the bridge-screen skill tells agents to use it for any status, problem or checklist and how to keep the pages current.
+**Consequences:** A friend who installs the plugin gets the same reporting style. The copy can drift from your own installed one; the licence and credit for it are still open (this repo is PolyForm Strict) and block the release, not the build.
+
+## #33 crates.io: the core library first, then the program — Accepted — 2026-10-22
+**Context:** `cargo install bridge-screen` needs both crates on crates.io, and the program depends on the library.
+**Decision:** A workflow publishes `bridge-screen-core` and then `bridge-screen` on each real release tag, and skips prerelease tags because a published version can never be taken back. The program's dependency names both the path and the version, and a test fails if that version differs from the workspace version. The crates carry no dashboard: `cargo install` gives a program whose dashboard page says how to build it.
+**Consequences:** One more secret to set up (`CARGO_REGISTRY_TOKEN`) and two crate names to claim. The crates.io build has no dashboard; the other routes do.
+
+## #34 Windows: the program is released, the plugin's own launcher is not — Accepted; real support is the owner's call, not made — 2026-10-22
+**Context:** The release builds a Windows program, but the plugin launcher is a shell script that downloads a Unix binary and nobody has a Windows machine to test on.
+**Decision:** On Windows the launcher says so in plain words and, from a hook, exits quietly. A `bridge-screen` already on the PATH is still used. The README and the first-release checklist say this.
+**Consequences:** Windows users install the program themselves and then the plugin works through it. Real support needs a Windows machine; left as a follow-up.

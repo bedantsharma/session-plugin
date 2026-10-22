@@ -26,7 +26,7 @@ bridge-screen is one program on the owner's computer that sits next to Claude Co
 - **Lives in:** `crates/bridge-screen/src/hook/`
 
 ### Agent tools (also called the MCP server, `bridge-screen mcp`)
-- **Does:** gives agents tools: claim a task, edit the plan, open/close a detour, say a task is done, verify it, log a decision, leave a handoff note, show progress.
+- **Does:** gives agents tools: claim a task, edit the plan, open/close a detour, say a task is done, verify it, log a decision, leave a handoff note, show progress, and read or update the project pages.
 - **Talks to:** Claude Code (agents call it), the database, git.
 - **Lives in:** `crates/bridge-screen/src/mcp.rs`
 
@@ -54,6 +54,12 @@ bridge-screen is one program on the owner's computer that sits next to Claude Co
 - **Talks to:** the database only.
 - **Lives in:** `crates/bridge-screen-core/src/waits/`, `crates/bridge-screen-core/src/view/groups.rs`
 
+### Project pages
+- **Does:** keeps five short pages per repo (intent, project map, current state, decision log, glossary) that every agent session in any worktree can read and keep true. The session briefing offers them once (up to three sessions) and then points at them; agents use `lead_pages`, `lead_page_read` and `lead_page_write`; you use `bridge-screen pages set-up | decline | show | path`; the dashboard shows them read-only ("Project pages" on a project).
+- **Talks to:** its own folder only (no database, no git, nothing in the repo).
+- **Holds:** the pages, as plain Markdown, plus small marker files for "offered" and "declined".
+- **Lives in:** `crates/bridge-screen-core/src/pages/`, `crates/bridge-screen/src/mcp/pages.rs`, `crates/bridge-screen/src/onboard.rs`, `web/src/lib/drill/Pages.svelte`
+
 ### The event log and views (also called the store)
 - **Does:** an append-only record of everything that happened; the current picture (views) is rebuilt from it and can always be regenerated.
 - **Holds:** all bridge-screen data, in `~/.bridge-screen/`.
@@ -65,7 +71,7 @@ bridge-screen is one program on the owner's computer that sits next to Claude Co
 - **Desktop-app card:** `/bridge-screen` in Claude shows an inline card (text where cards aren't supported). `web/src/card/`
 
 ### Plugin package
-- **Does:** what Claude Code installs: hook wiring, the agent tools, the skill that teaches agents the protocol, the `/bridge-screen` command, and a launcher that fetches the program.
+- **Does:** what Claude Code installs: hook wiring, the agent tools, the skill that teaches agents the protocol, the `lead-briefing` skill (how to report to you), the `/bridge-screen` command, and a launcher that fetches the program (not yet on Windows).
 - **Lives in:** `plugin/`, `.claude-plugin/marketplace.json`
 
 ## Where data and secrets live
@@ -73,6 +79,7 @@ bridge-screen is one program on the owner's computer that sits next to Claude Co
 - `~/.bridge-screen/config.toml`: settings.
 - `~/.bridge-screen/ui.lock`: the dashboard's private access token (only `bridge-screen ui` prints the link with it).
 - `~/.bridge-screen/snapshots/`: records of undone work (the work itself is in git stash).
+- `~/.bridge-screen/lead/<repo-id>/`: each repo's project pages (not in the database; `rebuild` never touches them; not shared between people).
 
 ## Deliberately absent
 - No server or cloud; nothing runs when no session or screen is open.

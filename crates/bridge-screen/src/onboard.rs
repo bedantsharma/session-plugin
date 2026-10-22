@@ -245,3 +245,26 @@ pub fn render(outcomes: &[ImportOutcome], dry_run: bool) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use bridge_screen_core::pages;
+    use bridge_screen_core::paths::Home;
+
+    use super::render_pages;
+    use crate::words::jargon_in;
+
+    #[test]
+    fn pages_show_reads_in_plain_words_in_every_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path());
+        let mut shown = vec![render_pages(&home, "r1", "shop")];
+        pages::decline(&home, "r1", "no").unwrap();
+        shown.push(render_pages(&home, "r1", "shop"));
+        pages::set_up(&home, "r1", "yes").unwrap();
+        shown.push(render_pages(&home, "r1", "shop"));
+        for text in shown {
+            assert_eq!(jargon_in(&text), Vec::<String>::new(), "{text}");
+        }
+    }
+}
