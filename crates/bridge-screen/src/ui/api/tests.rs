@@ -405,3 +405,61 @@ async fn history_pages_and_filters() {
     let (s, _) = f.get("/api/history/r1?limit=100000").await;
     assert_eq!(s, StatusCode::OK);
 }
+
+#[tokio::test]
+async fn api_pages_returns_five_pages_after_set_up() {
+    let f = Fixture::new();
+    bridge_screen_core::pages::set_up(&Home::at(f.home.path()), "r1", "yes").unwrap();
+    let (s, body) = f.get("/api/pages/r1").await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["state"], "set_up");
+    let pages = v["pages"].as_array().unwrap();
+    assert_eq!(pages.len(), 5);
+    assert_eq!(pages[2]["title"], "Where things stand");
+    assert!(pages[2]["text"].as_str().unwrap().contains("Current state"));
+    assert!(pages[2]["updated"].is_string());
+}
+
+#[tokio::test]
+async fn api_pages_requires_token() {
+    let f = Fixture::new();
+    let (s, _) = f
+        .send(
+            Request::get("/api/pages/r1")
+                .header("host", HOST)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, _) = f
+        .send(
+            Request::get("/api/pages/r1")
+                .header("host", "evil.example:4321")
+                .header("authorization", format!("Bearer {TOKEN}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn api_pages_not_set_up_has_no_pages() {
+    let f = Fixture::new();
+    let (s, body) = f.get("/api/pages/r1").await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["state"], "not_set_up");
+    assert_eq!(v["pages"].as_array().unwrap().len(), 0);
+    bridge_screen_core::pages::decline(&Home::at(f.home.path()), "r1", "no").unwrap();
+    let (_, body) = f.get("/api/pages/r1").await;
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["state"],
+        "declined"
+    );
+    // An id that is not a plain id never becomes a path.
+    let (s, _) = f.get("/api/pages/..%2F..").await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}

@@ -9,6 +9,7 @@
 mod templates;
 #[cfg(test)]
 mod tests;
+pub mod view;
 
 use std::fs::{self, File};
 use std::io::{ErrorKind, Write as _};
@@ -16,6 +17,8 @@ use std::path::Path;
 
 use crate::error::{Error, Result};
 use crate::paths::Home;
+
+pub use view::{PageView, PagesView, view};
 
 /// The largest single write, in bytes.
 pub const MAX_WRITE_BYTES: usize = 64 * 1024;

@@ -290,3 +290,39 @@ fn briefing_note_errors_on_broken_folder() {
     std::fs::write(home.lead_dir(ID), "i am a file").unwrap();
     assert!(briefing_note(&home, ID, 10, false).is_err());
 }
+
+#[test]
+fn view_has_five_plain_titled_pages_after_set_up() {
+    let (_d, home) = home();
+    let v = super::view(&home, ID).unwrap();
+    assert_eq!((v.state, v.pages.len()), ("not_set_up", 0));
+    set_up(&home, ID, "yes").unwrap();
+    let v = super::view(&home, ID).unwrap();
+    assert_eq!(v.state, "set_up");
+    let titles: Vec<_> = v.pages.iter().map(|p| p.title).collect();
+    assert_eq!(
+        titles,
+        [
+            "What this project is for",
+            "How it fits together",
+            "Where things stand",
+            "Why we chose what we chose",
+            "Words we use"
+        ]
+    );
+    assert!(
+        v.pages
+            .iter()
+            .all(|p| p.updated.is_some() && !p.text.is_empty())
+    );
+}
+
+#[test]
+fn view_declined_and_odd_ids() {
+    let (_d, home) = home();
+    decline(&home, ID, "no").unwrap();
+    assert_eq!(super::view(&home, ID).unwrap().state, "declined");
+    for bad in ["", "../x", "a/b", "..", "a b"] {
+        assert!(super::view(&home, bad).is_err(), "{bad:?}");
+    }
+}

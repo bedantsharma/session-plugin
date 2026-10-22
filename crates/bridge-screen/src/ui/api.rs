@@ -71,6 +71,7 @@ pub fn router(state: AppState) -> Router {
         .route("/history/{repo}", get(history))
         .route("/tuning/{repo}", get(tuning))
         .route("/calibration/{repo}", get(calibration))
+        .route("/pages/{repo}", get(pages))
         .route("/action", post(action))
         .fallback(|| async { error(StatusCode::NOT_FOUND, "no such API route") })
         .layer(middleware::from_fn_with_state(state.clone(), require_token));
@@ -265,6 +266,14 @@ async fn tuning(State(st): State<AppState>, Path(repo): Path<String>) -> Respons
 async fn calibration(State(st): State<AppState>, Path(repo): Path<String>) -> Response {
     with_store(&st, move |s, st| {
         view::drill::calibration(s.conn(), &repo, &st.cfg, jiff::Timestamp::now())
+    })
+    .await
+}
+
+/// The project pages of a repo (read-only; the pages live in bridge-screen's folder).
+async fn pages(State(st): State<AppState>, Path(repo): Path<String>) -> Response {
+    with_store(&st, move |_, st| {
+        bridge_screen_core::pages::view(&st.home, &repo)
     })
     .await
 }
