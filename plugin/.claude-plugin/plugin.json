@@ -1,6 +1,6 @@
 {
   "name": "bridge-screen",
-  "version": "0.1.1-rc.1",
+  "version": "0.1.1",
   "description": "Keeps track of where your Claude Code agents are: progress toward the goal, the task each session is on, and agent-active time.",
   "author": {
     "name": "Bedant Sharma"
