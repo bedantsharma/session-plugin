@@ -223,7 +223,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-screen"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -246,7 +246,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-screen-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "jiff",
  "rusqlite",

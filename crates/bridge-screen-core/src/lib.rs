@@ -41,7 +41,9 @@ mod tests {
 
     #[test]
     fn version_is_semver() {
-        let parts: Vec<&str> = VERSION.split('.').collect();
+        // A prerelease suffix (`0.1.1-rc.1`) is allowed after the three numbers.
+        let numbers = VERSION.split('-').next().unwrap_or(VERSION);
+        let parts: Vec<&str> = numbers.split('.').collect();
         assert_eq!(parts.len(), 3);
         assert!(parts.iter().all(|p| p.parse::<u32>().is_ok()));
     }
