@@ -19,6 +19,10 @@ pub const MAX_DEPTH: usize = 8;
 /// Most directory entries looked at in one walk.
 pub const MAX_ENTRIES: usize = 3000;
 
+/// Most files returned: a checkout full of look-alike names must not turn one SessionStart
+/// into thousands of events.
+pub const MAX_FILES: usize = 200;
+
 /// Folders never entered (dot-folders are skipped as well).
 const SKIPPED_DIRS: [&str; 5] = ["node_modules", "target", "dist", "build", "vendor"];
 
@@ -73,9 +77,8 @@ fn find(root: &Path, preferred: &str, is_match: fn(&str) -> bool) -> Result<Vec<
         Ok(entries) => {
             first = entries
                 .filter_map(std::result::Result::ok)
-                .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
                 .map(|e| e.path())
-                .filter(|p| p.extension().is_some_and(|x| x == "md"))
+                .filter(|p| p.extension().is_some_and(|x| x == "md") && p.is_file())
                 .collect();
             first.sort();
         }
@@ -125,6 +128,7 @@ fn find(root: &Path, preferred: &str, is_match: fn(&str) -> bool) -> Result<Vec<
     }
     rest.sort();
     first.extend(rest.into_iter().map(|(_, _, p)| p));
+    first.truncate(MAX_FILES);
     Ok(first)
 }
 
@@ -243,6 +247,19 @@ mod tests {
         }
         let n = plan_files(d.path()).unwrap().len();
         assert!(n > 0 && n <= MAX_ENTRIES, "{n}");
+        assert_eq!(n, MAX_FILES, "the result is capped");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_folders_are_not_followed() {
+        let d = tempfile::tempdir().unwrap();
+        touch(d.path(), "plans/a.md");
+        std::os::unix::fs::symlink(d.path(), d.path().join("plans/loop")).unwrap();
+        assert_eq!(
+            rels(d.path(), &plan_files(d.path()).unwrap()),
+            vec!["plans/a.md"]
+        );
     }
 
     #[test]

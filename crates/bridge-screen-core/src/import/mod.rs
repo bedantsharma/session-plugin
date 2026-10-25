@@ -345,9 +345,10 @@ fn file_stem(rel: &str) -> String {
     parse::one_line(short_name(rel))
 }
 
-/// A live goal or milestone whose title is `title` (case-insensitive).
+/// A live goal or milestone of the current run whose title is `title` (case-insensitive);
+/// a closed run is never reopened by a new file.
 fn container_titled(conn: &Connection, repo_id: &str, title: &str) -> Result<Option<String>> {
-    Ok(load_tree(conn, repo_id, false)?
+    Ok(crate::plan::runs::run_tree(conn, repo_id)?
         .into_iter()
         .find(|n| {
             matches!(n.kind, NodeKind::Goal | NodeKind::Milestone)

@@ -145,7 +145,7 @@ fn titles(p: &ProjectRow) -> String {
         let ms: Vec<String> = p
             .milestones
             .iter()
-            .map(|m| format!("{} {}", m.id, m.title))
+            .map(|m| format!("{} {}", m.shown, m.title))
             .collect();
         parts.push(format!("milestones {}", ms.join(", ")));
     }
@@ -221,7 +221,7 @@ fn project_html(
             let _ = write!(
                 html,
                 "<li>{} {}{mark}{hill} — {}%{stuck}</li>",
-                esc(&m.id),
+                esc(&m.shown),
                 esc(&m.title),
                 m.done_pct
             );
