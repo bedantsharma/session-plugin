@@ -4,7 +4,7 @@ description = "Keeps track of where your Claude Code agents are: progress, tange
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+license-file.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
@@ -14,7 +14,7 @@ workspace = true
 [dependencies]
 anyhow = "1.0.104"
 axum = "0.8.9"
-bridge-screen-core = { version = "0.1.1", path = "../bridge-screen-core" }
+bridge-screen-core = { version = "0.1.2", path = "../bridge-screen-core" }
 clap = { version = "4.6.7", features = ["derive"] }
 getrandom = "0.4.3"
 jiff = "0.2.38"
