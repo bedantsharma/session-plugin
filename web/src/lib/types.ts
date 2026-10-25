@@ -388,15 +388,24 @@ export interface CalibrationDrill {
   notes: string[]
 }
 
+export interface HistoryEvent {
+  pos: number
+  ts: string
+  kind: string
+  session_id: string
+  task_id: string | null
+  /** The task's number as the owner reads it, and its title. */
+  task_shown?: string | null
+  task_title?: string | null
+  /** What happened, in a plain sentence; the raw payload is behind "details". */
+  summary?: string
+  data: unknown
+}
+
 export interface HistoryPage {
-  events: {
-    pos: number
-    ts: string
-    kind: string
-    session_id: string
-    task_id: string | null
-    data: unknown
-  }[]
+  events: HistoryEvent[]
+  /** The kinds of event this repo has: (kind, plain label). */
+  kinds?: { kind: string; label: string }[]
   next_before: number | null
 }
 

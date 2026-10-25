@@ -1084,15 +1084,29 @@ pub struct HistoryRow {
     pub kind: String,
     pub session_id: String,
     pub task_id: Option<String>,
+    /// The task's number as the owner reads it, and its title.
+    pub task_shown: Option<String>,
+    pub task_title: Option<String>,
+    /// What happened, in a plain sentence (the raw payload is behind "details").
+    pub summary: String,
     pub actor: Value,
     /// The payload; a string cut at [`HISTORY_DATA_MAX`] bytes when larger.
     pub data: Value,
+}
+
+/// One entry of the history's kind filter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct KindOption {
+    pub kind: String,
+    pub label: String,
 }
 
 /// A page of history, newest first.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct HistoryPage {
     pub events: Vec<HistoryRow>,
+    /// The kinds of event this repo has, for the filter menu: (kind, plain label).
+    pub kinds: Vec<KindOption>,
     /// Pass as `before` for the next page; `None` on the last page.
     pub next_before: Option<i64>,
 }
@@ -1127,8 +1141,22 @@ pub fn history(conn: &Connection, repo: &str, f: &HistoryFilter) -> Result<Histo
         },
     )?;
     let mut events = Vec::new();
+    let runs = crate::plan::runs::load(conn, repo)?;
     for row in rows {
         let (pos, ts, kind, session_id, task_id, actor, data) = row?;
+        let full: Value = serde_json::from_str(&data).unwrap_or(Value::Null);
+        let task_title = match &task_id {
+            Some(t) => crate::claim::task_title(conn, repo, t)?,
+            None => None,
+        };
+        let task_shown = task_id.as_deref().map(|t| runs.shown(t));
+        let label = task_shown
+            .clone()
+            .map(|shown| super::history_text::TaskLabel {
+                shown,
+                title: task_title.clone().unwrap_or_default(),
+            });
+        let summary = super::history_text::summarize(&kind, &full, &session_id, label.as_ref());
         let data = if data.len() > HISTORY_DATA_MAX {
             let mut cut = HISTORY_DATA_MAX;
             while !data.is_char_boundary(cut) {
@@ -1136,7 +1164,7 @@ pub fn history(conn: &Connection, repo: &str, f: &HistoryFilter) -> Result<Histo
             }
             Value::String(format!("{}…", &data[..cut]))
         } else {
-            serde_json::from_str(&data)?
+            full
         };
         events.push(HistoryRow {
             pos,
@@ -1144,6 +1172,9 @@ pub fn history(conn: &Connection, repo: &str, f: &HistoryFilter) -> Result<Histo
             kind,
             session_id,
             task_id,
+            task_shown,
+            task_title,
+            summary,
             actor: serde_json::from_str(&actor)?,
             data,
         });
@@ -1154,8 +1185,20 @@ pub fn history(conn: &Connection, repo: &str, f: &HistoryFilter) -> Result<Histo
     } else {
         None
     };
+    let mut kinds_stmt =
+        conn.prepare("SELECT DISTINCT kind FROM events WHERE repo_id = ?1 ORDER BY kind")?;
+    let kinds = kinds_stmt
+        .query_map([repo], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?
+        .into_iter()
+        .map(|kind| KindOption {
+            label: super::history_text::kind_label(&kind),
+            kind,
+        })
+        .collect();
     Ok(HistoryPage {
         events,
+        kinds,
         next_before,
     })
 }

@@ -1075,3 +1075,48 @@ fn a_closed_run_leaves_the_numbers_and_stays_readable() {
     // The scope line counts the current run only.
     assert_eq!(d.scope.last().map(|p| p.total_min), Some(20));
 }
+
+#[test]
+fn history_rows_carry_a_sentence_the_task_and_the_kinds_present() {
+    let mut s = store();
+    start(&mut s, "a1b2c3dd", 0);
+    claim(&mut s, "a1b2c3dd", 1, "1.1");
+    ev(
+        &mut s,
+        "owner",
+        20,
+        "verified",
+        json!({"verif_id": "v1", "task_id": "1.1", "level": 2, "sha": "abc",
+               "evidence": "t", "by": "agent"}),
+    );
+    let page = drill::history(
+        s.conn(),
+        "r",
+        &drill::HistoryFilter {
+            limit: 50,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let verified = page.events.iter().find(|e| e.kind == "verified").unwrap();
+    assert_eq!(verified.summary, "Task 1.1 (T1.1) passed its tests");
+    assert_eq!(verified.task_shown.as_deref(), Some("1.1"));
+    assert_eq!(verified.task_title.as_deref(), Some("T1.1"));
+    let claimed = page
+        .events
+        .iter()
+        .find(|e| e.kind == "task_claimed")
+        .unwrap();
+    assert!(
+        claimed.summary.ends_with("claimed by session a1b2c3"),
+        "{}",
+        claimed.summary
+    );
+    let kinds: Vec<&str> = page.kinds.iter().map(|k| k.kind.as_str()).collect();
+    assert!(kinds.contains(&"verified") && kinds.contains(&"task_claimed"));
+    assert!(
+        page.kinds
+            .iter()
+            .any(|k| k.kind == "verified" && k.label == "Checked and passed")
+    );
+}

@@ -215,6 +215,109 @@ mod tests {
     }
 
     #[test]
+    fn history_sentences_and_labels_hold_no_jargon() {
+        use bridge_screen_core::view::history_text::{TaskLabel, kind_label, summarize};
+        let task = TaskLabel {
+            shown: "1.2".into(),
+            title: "Login form".into(),
+        };
+        let kinds = [
+            "session_started",
+            "session_ended",
+            "session_crashed",
+            "prompt",
+            "unit_stopped",
+            "subagent_stopped",
+            "precompact",
+            "branch_changed",
+            "tool_intent",
+            "file_changed",
+            "needs_owner",
+            "owner_question",
+            "question_answered",
+            "task_claimed",
+            "task_released",
+            "claimed_done",
+            "verified",
+            "verification_failed",
+            "verification_stale",
+            "verification_withdrawn",
+            "verify_nudged",
+            "broken",
+            "node_added",
+            "node_edited",
+            "node_moved",
+            "node_removed",
+            "dep_added",
+            "dep_removed",
+            "intent_set",
+            "estimate_set",
+            "hill_moved",
+            "replan",
+            "plan_imported",
+            "plan_file_seen",
+            "plan_scope_asked",
+            "plan_scope_answered",
+            "run_closed",
+            "detour_opened",
+            "detour_closed",
+            "detour_promoted",
+            "item_suspended",
+            "item_resumed",
+            "unit_labeled",
+            "drift_flagged",
+            "nav_state_changed",
+            "owner_action",
+            "note_sent",
+            "config_changed",
+            "tuning_ran",
+            "checkpoint_due",
+            "checkpoint",
+            "checkpoint_missed",
+            "leftover_found",
+            "leftovers_analysed",
+            "leftover_resolved",
+            "handoff_note",
+            "readback",
+            "briefed",
+            "squashed",
+            "squash_failed",
+            "decision",
+            "decision_asked",
+            "usage",
+            "forecast_ran",
+            "waiting_on",
+            "wait_cleared",
+            "report_published",
+            "archived",
+            "restored",
+        ];
+        // Payloads full of codes: none may reach the sentence.
+        let data = serde_json::json!({
+            "level": 4, "by": "owner", "to": "red", "label": "on_task", "hill": "uphill",
+            "kind": "permission_prompt", "result": "pass", "action": "make_task",
+            "answer": "make_task", "mode": "some_done", "source": "compact",
+            "key": "drift_lower", "old": 0.4, "new": 0.5, "op_count": 2,
+        });
+        for kind in kinds {
+            let sentence = summarize(
+                kind,
+                &data,
+                "3f2a1b4c-0000-4000-8000-1234567890ab",
+                Some(&task),
+            );
+            assert!(!sentence.is_empty(), "{kind}");
+            assert_eq!(
+                jargon_in(&sentence),
+                Vec::<String>::new(),
+                "{kind}: {sentence}"
+            );
+            let label = kind_label(kind);
+            assert_eq!(jargon_in(&label), Vec::<String>::new(), "{kind}: {label}");
+        }
+    }
+
+    #[test]
     fn statuses_read_as_words() {
         assert_eq!(status("l2"), "tests pass");
         assert_eq!(status("done"), "done");

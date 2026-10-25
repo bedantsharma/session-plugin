@@ -8,6 +8,7 @@
 
 pub mod drill;
 pub mod groups;
+pub mod history_text;
 
 pub use groups::{BranchGroup, GroupRepo, branch_groups};
 
