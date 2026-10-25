@@ -871,3 +871,24 @@ fn rebuild_keeps_import_views() {
     r.store.rebuild().unwrap();
     assert_eq!(dump(&r.store), before);
 }
+
+#[test]
+fn plans_outside_the_superpowers_folder_import() {
+    let mut r = Repo::new();
+    std::fs::create_dir_all(r.root.join("planning")).unwrap();
+    std::fs::write(
+        r.root.join("planning/login.md"),
+        plan_text("Login", &[("Endpoint", &[])]),
+    )
+    .unwrap();
+    // A matched name that is no plan costs a read, never an import.
+    std::fs::write(r.root.join("todo.md"), "# Todo\n\n- buy milk\n").unwrap();
+    let out = r.scan();
+    assert!(
+        out.iter().any(
+            |o| matches!(o, ImportOutcome::Imported { path, .. } if path == "planning/login.md")
+        ),
+        "{out:?}"
+    );
+    assert_eq!(r.tree().len(), 2, "goal and its task: {out:?}");
+}

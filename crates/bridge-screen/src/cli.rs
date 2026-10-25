@@ -135,7 +135,8 @@ pub enum Command {
         #[arg(short = 'C', long = "dir", default_value = ".")]
         dir: PathBuf,
     },
-    /// Import the repo's superpowers plan files (docs/superpowers/plans/*.md) into the plan.
+    /// Import the repo's plan files (any *.md named plan, roadmap, todo or tasks, in any folder;
+    /// docs/superpowers/plans is the usual place) into the plan.
     /// Files are only read. With no FILE, every new or changed file is imported.
     Import {
         /// One plan file to import.

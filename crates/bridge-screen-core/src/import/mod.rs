@@ -7,6 +7,7 @@
 //! `bridge-screen import` runs it without the file limit, or [`import_path`] for one file.
 
 pub mod diff;
+pub mod find;
 pub mod parse;
 pub mod project;
 
@@ -28,11 +29,9 @@ use crate::plan::{
 use crate::store::{Actor, EventDraft, Store, append_in};
 
 pub use diff::{ImportDiff, ImportTarget, ItemLink, SourceItem};
+pub use find::{PLANS_DIR, plan_files, spec_files};
 pub use parse::{ParsedPlan, ParsedStep, ParsedTask, parse};
 pub use project::{IMPORT_KINDS, ImportedItem, PlanFileSeen, PlanImported, project};
-
-/// The plan folder, relative to the checkout.
-pub const PLANS_DIR: &str = "docs/superpowers/plans";
 
 /// Largest plan file read.
 pub const MAX_FILE_BYTES: u64 = 1 << 20;
@@ -731,23 +730,6 @@ pub fn import_path(
     run(store, ctx.dry_run, |tx| {
         import_in(tx, repo_id, root, path, ctx, into)
     })
-}
-
-/// The plan files under `root`, `*.md` sorted by name. A missing folder has none.
-pub fn plan_files(root: &Path) -> Result<Vec<PathBuf>> {
-    let dir = root.join(PLANS_DIR);
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(e.into()),
-    };
-    let mut files: Vec<PathBuf> = entries
-        .filter_map(std::result::Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "md") && p.is_file())
-        .collect();
-    files.sort();
-    Ok(files)
 }
 
 /// Check the plan folder and import new or changed files (spec §12.1). Files whose size and
