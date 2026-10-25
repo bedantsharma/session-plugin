@@ -91,12 +91,16 @@ fn session_start_survives_bad_plans() {
     std::fs::write(dir.join("empty.md"), "").unwrap();
     std::fs::write(dir.join("notes.md"), "# Notes\n- [ ] not a task\n").unwrap();
     std::fs::write(dir.join("bin.md"), [0xff_u8, 0xfe, 0, 7]).unwrap();
-    std::fs::write(dir.join("dup.md"), "### Task 1: A\n### Task 1: B\n").unwrap();
+    std::fs::write(
+        dir.join("dup.md"),
+        "### Task 1: A\n- [x] s\n### Task 1: B\n",
+    )
+    .unwrap();
     std::fs::write(dir.join("huge.md"), "y".repeat(5 << 20)).unwrap();
     let text = context(&env.hook("session-start", "s1"));
     assert!(text.starts_with("bridge-screen briefing"), "{text}");
     // Only dup.md had a task.
-    assert_eq!(titles(&env), vec!["G dup", "1 A"]);
+    assert_eq!(titles(&env), vec!["G dup", "1 A", "1.1 s"]);
 
     // An unreadable folder: the briefing still goes out, the problem goes to the log.
     #[cfg(unix)]
@@ -207,4 +211,47 @@ fn changed_hand_planned_file_says_it_needs_a_link_once() {
     assert!(!out.contains("isn't linked"), "{out}");
     assert!(titles(&env).contains(&"1.2 Forecast".to_string()));
     assert_eq!(std::fs::read_to_string(&file).unwrap(), edited);
+}
+
+const UNTICKED: &str = "# Search Implementation Plan\n\n**Goal:** People can search.\n\n\
+                        ### Task 1: Index\n\n- [ ] **Step 1: Build it**\n";
+
+#[test]
+fn unticked_plans_ask_the_owner_and_import_nothing_until_answered() {
+    let env = Env::new();
+    let dir = plans_dir(&env);
+    std::fs::write(dir.join("login.md"), UNTICKED).unwrap();
+    std::fs::write(dir.join("search.md"), UNTICKED.replace("Search", "Find")).unwrap();
+    let text = context(&env.hook("session-start", "s1"));
+    assert!(
+        text.contains("Found 2 plan files (login, search)"),
+        "{text}"
+    );
+    assert!(text.contains("Don't decide it for them"), "{text}");
+    assert_eq!(titles(&env), Vec::<String>::new());
+    // The owner answers from the CLI: login is finished, search is counted.
+    let out = env.run(&["import", "--done", "login"], "");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let said = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        said.contains("Noted 1 plan file as already finished"),
+        "{said}"
+    );
+    assert!(titles(&env).iter().any(|t| t.contains("Index")));
+    assert_eq!(titles(&env).len(), 3, "{:?}", titles(&env));
+    // A second answer is refused and records nothing more.
+    let again = env.run(&["import", "--fresh"], "");
+    assert!(!again.status.success());
+    let n = kinds(&env)
+        .iter()
+        .filter(|k| *k == "plan_scope_answered")
+        .count();
+    assert_eq!(n, 1);
+    // And the hook never asks again.
+    let text = context(&env.hook("session-start", "s2"));
+    assert!(!text.contains("Found 2 plan files"), "{text}");
 }

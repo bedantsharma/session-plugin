@@ -2,7 +2,8 @@
 // these as they are: ordering, words and lights are decided server-side.
 
 export type Light = 'green' | 'amber' | 'red'
-export type NeedsKind = 'drift_red' | 'question' | 'permission_wait' | 'verify_overdue' | 'leftover'
+export type NeedsKind =
+  'drift_red' | 'question' | 'permission_wait' | 'verify_overdue' | 'leftover' | 'plan_scope'
 export type Tone = 'primary' | 'neutral' | 'danger'
 
 export interface NodeRef {

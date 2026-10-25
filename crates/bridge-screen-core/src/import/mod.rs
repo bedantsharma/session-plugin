@@ -10,6 +10,7 @@ pub mod diff;
 pub mod find;
 pub mod parse;
 pub mod project;
+pub mod scope;
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -98,6 +99,11 @@ pub enum ImportOutcome {
     NeedsLink {
         path: String,
     },
+    /// Plan files were found but nothing says what is finished: nothing was imported; the
+    /// owner is asked once ([`scope`]).
+    NeedsScope {
+        paths: Vec<String>,
+    },
     /// Something went wrong importing this file; nothing of it was written.
     Failed {
         path: String,
@@ -114,6 +120,7 @@ impl ImportOutcome {
             | Self::Skipped { path, .. }
             | Self::NeedsLink { path }
             | Self::Failed { path, .. } => path,
+            Self::NeedsScope { paths } => paths.first().map_or("", String::as_str),
         }
     }
 
@@ -168,6 +175,7 @@ impl ImportOutcome {
             )),
             Self::Skipped { path, why } => Some(format!("Skipped {}: {why}", short_name(path))),
             Self::NeedsLink { path } => Some(needs_link_line(path)),
+            Self::NeedsScope { paths } => Some(scope::question_text(paths)),
             Self::Failed { path, error } => {
                 Some(format!("Could not import {}: {error}", short_name(path)))
             }
@@ -746,6 +754,9 @@ pub fn scan(
     let files = plan_files(root)?;
     if files.is_empty() {
         return Ok(Vec::new());
+    }
+    if let Some(asked) = scope::gate(store, repo_id, root, &files, ctx, budget)? {
+        return Ok(vec![asked]);
     }
     let known = sources(store.conn(), repo_id)?;
     if known.is_empty() && has_plan(store.conn(), repo_id)? {

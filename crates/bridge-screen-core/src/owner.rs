@@ -119,6 +119,13 @@ pub enum OwnerAction {
     ClearWait { wait_id: String },
     /// Turn a session's wait on a task into a plan link of its active task.
     PromoteWait { wait_id: String },
+    /// Answer "which plan files are already finished?" (spec §12.1): left out or empty is
+    /// a fresh run; otherwise the named files (commas or new lines) are already finished.
+    PlanScope {
+        repo: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        done: Option<String>,
+    },
 }
 
 /// Where an owner action runs.
@@ -282,6 +289,7 @@ pub fn act(store: &mut Store, ctx: &ActCtx, action: &OwnerAction) -> Result<Stri
                 w.target_text
             ))
         }),
+        OwnerAction::PlanScope { repo, done } => plan_scope(store, repo, done.as_deref()),
         OwnerAction::PromoteWait { wait_id } => store.write(|tx| {
             let w = crate::waits::find(tx, wait_id)?;
             let line = crate::waits::promote(tx, wait_id, None, &Actor::default())?;
@@ -293,6 +301,34 @@ pub fn act(store: &mut Store, ctx: &ActCtx, action: &OwnerAction) -> Result<Stri
             Ok(line)
         }),
     }
+}
+
+fn plan_scope(store: &mut Store, repo: &str, done: Option<&str>) -> Result<String> {
+    let root = crate::import::registered_root(store.conn(), repo)?
+        .ok_or_else(|| Error::NotFound(format!("no repo {repo}")))?;
+    let import_ctx = crate::import::ImportCtx {
+        session_id: OWNER_SESSION.to_string(),
+        actor: Actor::default(),
+        dry_run: false,
+    };
+    let names = crate::import::scope::split_names(done.unwrap_or_default());
+    let line = crate::import::scope::answer(store, repo, &root, &import_ctx, &names)?;
+    store.write(|tx| {
+        record(
+            tx,
+            repo,
+            &owner_data(
+                "plan_scope",
+                Some(if names.is_empty() {
+                    "fresh"
+                } else {
+                    "some_done"
+                }),
+                Some(repo.to_string()),
+            ),
+        )
+    })?;
+    Ok(line)
 }
 
 /// The first 6 characters of a session id.

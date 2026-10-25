@@ -82,7 +82,10 @@ fn init_says_import_first_and_stops_on_an_existing_plan() {
         "{text}"
     );
     assert!(text.contains("First: run `bridge-screen import`"), "{text}");
-    assert!(env.run(&["import"], "").status.success());
+    // Nothing in the file says what is finished, so the owner is asked first.
+    let asked = String::from_utf8(env.run(&["import"], "").stdout).unwrap();
+    assert!(asked.contains("Found 1 plan file"), "{asked}");
+    assert!(env.run(&["import", "--fresh"], "").status.success());
     let text = String::from_utf8(env.run(&["init"], "").stdout).unwrap();
     assert!(
         text.contains("already has a plan; nothing to set up"),

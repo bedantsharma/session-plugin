@@ -344,6 +344,8 @@ pub enum NeedsKind {
     VerifyOverdue,
     /// A dead session's uncommitted files: Adopt / Resume / Undo.
     Leftover,
+    /// Plan files were found and nothing says what is finished: Fresh run / Some are done.
+    PlanScope,
 }
 
 impl NeedsKind {
@@ -354,6 +356,7 @@ impl NeedsKind {
             Self::PermissionWait => "permission_wait",
             Self::VerifyOverdue => "verify_overdue",
             Self::Leftover => "leftover",
+            Self::PlanScope => "plan_scope",
         }
     }
 
@@ -363,7 +366,7 @@ impl NeedsKind {
         match self {
             Self::DriftRed => 0,
             Self::Question | Self::PermissionWait => 1,
-            Self::VerifyOverdue => 2,
+            Self::VerifyOverdue | Self::PlanScope => 2,
             Self::Leftover => 3,
         }
     }
@@ -1315,6 +1318,54 @@ fn milestones(conn: &Connection, repo_id: &str, tree: &[PlanNode]) -> Result<Vec
 }
 
 /// Repos worth a row: those with live sessions, needs-you items or a plan.
+/// The open "which plan files are finished?" question as a queue item.
+fn scope_items(
+    conn: &Connection,
+    repo_id: &str,
+    repo_name: &str,
+    now: Timestamp,
+) -> Result<Vec<NeedsYou>> {
+    let Some(q) = crate::import::scope::open(conn, repo_id)? else {
+        return Ok(Vec::new());
+    };
+    let mut some = button(
+        "Some are done",
+        OwnerAction::PlanScope {
+            repo: repo_id.to_string(),
+            done: Some(String::new()),
+        },
+        Tone::Neutral,
+    );
+    some.inputs = vec![input("done", "which files are already finished", true)];
+    Ok(vec![NeedsYou {
+        id: format!("plan_scope:{repo_id}"),
+        kind: NeedsKind::PlanScope,
+        repo_id: repo_id.to_string(),
+        repo_name: repo_name.to_string(),
+        session_id: None,
+        task: None,
+        title: crate::import::scope::question_text(&q.paths),
+        detail:
+            "Until you answer, no plan file is counted. \"Fresh run\" counts progress from now."
+                .to_string(),
+        files: q.paths.clone(),
+        actions: vec![
+            button(
+                "Fresh run",
+                OwnerAction::PlanScope {
+                    repo: repo_id.to_string(),
+                    done: None,
+                },
+                Tone::Primary,
+            ),
+            some,
+        ],
+        respond_in: None,
+        rank: NeedsKind::PlanScope.rank(),
+        age_s: age(now, Some(&q.since)).unwrap_or(0),
+    }])
+}
+
 fn repo_ids(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT id FROM repos r WHERE
@@ -1322,6 +1373,9 @@ fn repo_ids(conn: &Connection) -> Result<Vec<String>> {
            OR EXISTS (SELECT 1 FROM plan_nodes n WHERE n.repo_id = r.id AND n.status != 'dropped')
            OR EXISTS (SELECT 1 FROM leftovers l WHERE l.repo_id = r.id AND l.state != 'resolved')
            OR EXISTS (SELECT 1 FROM verify_nudges v WHERE v.repo_id = r.id AND v.escalated = 1)
+           OR (SELECT kind FROM events e WHERE e.repo_id = r.id
+                 AND e.kind IN ('plan_scope_asked', 'plan_scope_answered')
+               ORDER BY e.pos DESC LIMIT 1) = 'plan_scope_asked'
          UNION
          SELECT DISTINCT repo_id FROM sessions WHERE state != 'ended'",
     )?;
@@ -1355,6 +1409,7 @@ pub fn glance(conn: &Connection, cfg: &Config, now: Timestamp) -> Result<Glance>
         rows.sort_by_key(|r| r.rank);
         items.extend(verify_items(conn, &repo_id, &name, now)?);
         items.extend(leftover_items(conn, &repo_id, &name, now)?);
+        items.extend(scope_items(conn, &repo_id, &name, now)?);
         let tree = load_tree(conn, &repo_id, false)?;
         let goal = get_node(conn, &repo_id, "G")?
             .filter(|g| g.status != NodeStatus::Dropped)

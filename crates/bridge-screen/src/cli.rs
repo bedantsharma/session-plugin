@@ -147,6 +147,13 @@ pub enum Command {
         /// Show what would change; write nothing.
         #[arg(long)]
         dry_run: bool,
+        /// Answer "which plan files are finished?": none are, count progress from now.
+        #[arg(long, conflicts_with_all = ["file", "into", "dry_run", "done"])]
+        fresh: bool,
+        /// Answer "which plan files are finished?": these are already done (names or
+        /// paths); the rest are imported.
+        #[arg(long, num_args = 1.., value_name = "FILE", conflicts_with_all = ["file", "into", "dry_run"])]
+        done: Vec<String>,
         /// Any directory inside the repo.
         #[arg(short = 'C', long = "dir", default_value = ".")]
         dir: PathBuf,

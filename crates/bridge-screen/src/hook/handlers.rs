@@ -249,6 +249,11 @@ fn import_plans(store: &mut Store, input: &HookInput, repo_id: &str) -> Vec<Stri
                 }
                 import::ImportOutcome::Imported { .. }
                 | import::ImportOutcome::NeedsLink { .. } => o.summary(),
+                import::ImportOutcome::NeedsScope { paths } => Some(format!(
+                    "{} Nothing is imported until the owner answers (dashboard, or `bridge-screen \
+                     import --fresh` / `--done <file>…`). Don't decide it for them.",
+                    import::scope::question_text(paths)
+                )),
                 _ => None,
             })
             .collect(),

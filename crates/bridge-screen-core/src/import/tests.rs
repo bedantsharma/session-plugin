@@ -193,6 +193,7 @@ fn huge_checkbox_lists_are_capped() {
 use std::path::{Path, PathBuf};
 
 use super::{ImportCtx, ImportOutcome, ScanBudget, import_path, scan};
+use crate::error::Error;
 use crate::plan::{
     EditContext, NodeKind, NodeSource, NodeStatus, PlanOp, get_node, load_tree, plan_edit,
 };
@@ -205,7 +206,29 @@ struct Repo {
 }
 
 impl Repo {
+    /// A repo whose owner already answered "which plans are finished" (a fresh run), so a
+    /// scan imports at once.
     fn new() -> Self {
+        let mut r = Self::undecided();
+        r.store
+            .write(|tx| {
+                crate::store::append_in(
+                    tx,
+                    EventDraft::new(
+                        "r",
+                        "owner",
+                        "plan_scope_answered",
+                        serde_json::json!({"mode": "fresh"}),
+                    ),
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        r
+    }
+
+    /// A repo nobody has been asked about yet.
+    fn undecided() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
         std::fs::create_dir_all(root.join(super::PLANS_DIR)).unwrap();
@@ -242,6 +265,7 @@ impl Repo {
             .unwrap()
             .into_iter()
             .map(|e| e.kind)
+            .filter(|k| !k.starts_with("plan_scope_"))
             .collect()
     }
 
@@ -891,4 +915,173 @@ fn plans_outside_the_superpowers_folder_import() {
         "{out:?}"
     );
     assert_eq!(r.tree().len(), 2, "goal and its task: {out:?}");
+}
+
+fn scope_events(r: &Repo) -> Vec<String> {
+    read_all(r.store.conn(), Some("r"))
+        .unwrap()
+        .into_iter()
+        .map(|e| e.kind)
+        .filter(|k| k.starts_with("plan_scope_"))
+        .collect()
+}
+
+#[test]
+fn plans_with_nothing_ticked_raise_one_question_and_import_nothing() {
+    let mut r = Repo::undecided();
+    r.write(
+        "a.md",
+        &plan_text("Login", &[("Endpoint", &[("t", false)])]),
+    );
+    r.write("b.md", &plan_text("Search", &[("Index", &[])]));
+    let out = r.scan();
+    assert!(
+        matches!(&out[..], [ImportOutcome::NeedsScope { paths }] if paths.len() == 2),
+        "{out:?}"
+    );
+    assert_eq!(r.tree(), vec![]);
+    // Asked once: later scans repeat the question without a new event.
+    let again = r.scan();
+    assert!(matches!(&again[..], [ImportOutcome::NeedsScope { .. }]));
+    assert_eq!(scope_events(&r), vec!["plan_scope_asked"]);
+    let q = super::scope::open(r.store.conn(), "r").unwrap().unwrap();
+    assert_eq!(q.paths.len(), 2);
+    assert!(
+        out[0]
+            .summary()
+            .unwrap()
+            .starts_with("Found 2 plan files (a, b)")
+    );
+}
+
+#[test]
+fn a_ticked_step_means_the_ticks_are_the_status() {
+    let mut r = Repo::undecided();
+    r.write("a.md", &plan_text("Login", &[("Endpoint", &[("t", true)])]));
+    r.write("b.md", &plan_text("Search", &[("Index", &[])]));
+    let out = r.scan();
+    assert!(
+        out.iter()
+            .all(|o| matches!(o, ImportOutcome::Imported { .. })),
+        "{out:?}"
+    );
+    assert_eq!(scope_events(&r), Vec::<String>::new());
+}
+
+#[test]
+fn files_without_tasks_raise_no_question() {
+    let mut r = Repo::undecided();
+    r.write("notes.md", "# Notes\n\nnothing\n");
+    let out = r.scan();
+    assert!(
+        !out.iter()
+            .any(|o| matches!(o, ImportOutcome::NeedsScope { .. }))
+    );
+    assert_eq!(scope_events(&r), Vec::<String>::new());
+}
+
+#[test]
+fn a_fresh_run_imports_everything_at_zero_and_is_not_asked_again() {
+    let mut r = Repo::undecided();
+    r.write("a.md", &plan_text("Login", &[("Endpoint", &[])]));
+    r.write("b.md", &plan_text("Search", &[("Index", &[])]));
+    r.scan();
+    let line = super::scope::answer(&mut r.store, "r", &r.root, &ctx(), &[]).unwrap();
+    assert!(
+        line.starts_with("Fresh run: imported 2 plan files"),
+        "{line}"
+    );
+    assert_eq!(
+        r.tree().len(),
+        4,
+        "goal, milestone, two tasks: {:?}",
+        r.tree()
+    );
+    assert!(r.tree().iter().all(|(_, _, s)| *s == NodeStatus::Todo));
+    assert!(super::scope::open(r.store.conn(), "r").unwrap().is_none());
+    r.write("c.md", &plan_text("Billing", &[("Invoice", &[])]));
+    r.scan();
+    assert_eq!(
+        scope_events(&r),
+        vec!["plan_scope_asked", "plan_scope_answered"]
+    );
+    // A second answer is stale.
+    let again = super::scope::answer(&mut r.store, "r", &r.root, &ctx(), &[]);
+    assert!(matches!(again, Err(Error::Stale(_))), "{again:?}");
+}
+
+#[test]
+fn some_done_baselines_the_named_files_and_imports_the_rest() {
+    let mut r = Repo::undecided();
+    r.write("a.md", &plan_text("Login", &[("Endpoint", &[])]));
+    r.write("b.md", &plan_text("Search", &[("Index", &[])]));
+    r.scan();
+    let bad = super::scope::answer(&mut r.store, "r", &r.root, &ctx(), &["nope".into()]);
+    assert!(matches!(bad, Err(Error::Invalid(_))), "{bad:?}");
+    assert!(super::scope::open(r.store.conn(), "r").unwrap().is_some());
+    super::scope::answer(&mut r.store, "r", &r.root, &ctx(), &["a".into()]).unwrap();
+    let sources = super::sources(r.store.conn(), "r").unwrap();
+    let a = sources.iter().find(|s| s.path.ends_with("a.md")).unwrap();
+    let b = sources.iter().find(|s| s.path.ends_with("b.md")).unwrap();
+    assert!(a.baseline && a.node_id.is_none());
+    assert!(!b.baseline && b.node_id.is_some());
+    let titles: Vec<String> = r.tree().into_iter().map(|(_, t, _)| t).collect();
+    assert!(titles.contains(&"Index".to_string()) && !titles.contains(&"Endpoint".to_string()));
+}
+
+#[test]
+fn the_question_is_on_the_needs_you_queue_and_the_owner_answers_it() {
+    use crate::config::Config;
+    use crate::owner::{ActCtx, OwnerAction, act};
+    use crate::paths::Home;
+    use crate::view::{NeedsKind, glance};
+
+    let mut r = Repo::undecided();
+    r.store
+        .conn()
+        .execute(
+            "INSERT INTO repos (id, name, root, created_at) VALUES ('r', 'shop', ?1, 't')",
+            [r.root.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+    r.write("a.md", &plan_text("Login", &[("Endpoint", &[])]));
+    r.scan();
+    let now = jiff::Timestamp::now();
+    let g = glance(r.store.conn(), &Config::default(), now).unwrap();
+    let item = g
+        .needs_you
+        .iter()
+        .find(|i| i.kind == NeedsKind::PlanScope)
+        .expect("the question is queued");
+    let labels: Vec<&str> = item.actions.iter().map(|a| a.label.as_str()).collect();
+    assert_eq!(labels, vec!["Fresh run", "Some are done"]);
+    assert!(
+        item.title.starts_with("Found 1 plan file (a)"),
+        "{}",
+        item.title
+    );
+
+    let home_dir = tempfile::tempdir().unwrap();
+    let home = Home::at(home_dir.path());
+    let cfg = Config::default();
+    let ctx = ActCtx {
+        home: &home,
+        cfg: &cfg,
+        now,
+        dir: None,
+    };
+    let reply = act(&mut r.store, &ctx, &item.actions[0].action).unwrap();
+    assert!(reply.starts_with("Fresh run"), "{reply}");
+    let g = glance(r.store.conn(), &Config::default(), now).unwrap();
+    assert!(g.needs_you.iter().all(|i| i.kind != NeedsKind::PlanScope));
+    // A second click is stale.
+    let again = act(
+        &mut r.store,
+        &ctx,
+        &OwnerAction::PlanScope {
+            repo: "r".into(),
+            done: None,
+        },
+    );
+    assert!(matches!(again, Err(Error::Stale(_))), "{again:?}");
 }

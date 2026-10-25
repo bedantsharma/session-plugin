@@ -47,6 +47,10 @@ purpose and end state). If the repo has no plan, see "Starting on a repo with no
 - Plan files (any `*.md` whose folder or file name says plan, roadmap, todo or tasks,
   anywhere in the repo; `docs/superpowers/plans/` is just the usual place) are imported by
   themselves at SessionStart (or with `bridge-screen import`); a ticked step is recorded as claimed, not verified.
+- When plan files exist but none has a ticked step, nothing is imported: the briefing says the
+  owner is asked "count progress from now, or which are finished?". Relay it; **never answer it
+  yourself** (the owner answers on the dashboard or with `bridge-screen import --fresh` /
+  `--done <file>…`).
 - A repo with work but no plan: run `bridge-screen init` and follow it. Draft the goal,
   milestones and tasks (with estimates) from its evidence, mark the tasks that look done
   with the files that show it, **show the draft to the owner once**, then call

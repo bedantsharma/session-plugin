@@ -359,6 +359,7 @@ fn kind_word(kind: NeedsKind) -> &'static str {
         NeedsKind::PermissionWait => "waiting",
         NeedsKind::VerifyOverdue => "check",
         NeedsKind::Leftover => "unsaved",
+        NeedsKind::PlanScope => "plans",
     }
 }
 

@@ -1599,4 +1599,18 @@ mod tests {
         // Nothing was even opened.
         assert!(!home.path().join("bridge-screen.db").exists());
     }
+
+    #[test]
+    fn the_agent_cannot_answer_which_plans_are_finished() {
+        let home = tempfile::tempdir().unwrap();
+        let bridge = Bridge::new(Home::at(home.path()), None);
+        let raw = serde_json::json!({
+            "action": {"kind": "plan_scope", "repo": "r"},
+            "nonce": "guess"
+        });
+        let args: Args<OwnerActionInput> = serde_json::from_value(raw).unwrap();
+        let refused = bridge.do_owner_action(&args).unwrap_err();
+        assert!(refused.starts_with("refused"), "{refused}");
+        assert!(!home.path().join("bridge-screen.db").exists());
+    }
 }
