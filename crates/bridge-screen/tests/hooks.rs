@@ -1081,8 +1081,10 @@ fn hook_latency_session_start_plan_import() {
         .unwrap();
     }
     assert!(env.run(&["--version"], "").status.success());
-    // The first SessionStart imports them all; after that they are unchanged.
+    // Nothing in the files says what is finished, so the first SessionStart asks; the
+    // owner's answer imports them all, and after that they are unchanged.
     env.hook("session-start", "first-start");
+    assert!(env.run(&["import", "--fresh"], "").status.success());
     let unchanged = (0..40)
         .map(|i| {
             let payload =

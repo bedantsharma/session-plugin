@@ -45,7 +45,7 @@ bridge-screen is one program on the owner's computer that sits next to Claude Co
 - **Lives in:** `crates/bridge-screen-core/src/forecast/`
 
 ### Imports and onboarding
-- **Does:** reads the repo's plan files (`docs/superpowers/plans/`) at each session start and with `bridge-screen import`, and turns new or changed ones into plan changes (never writing to the files); `bridge-screen init` lists what a half-built repo shows so an agent can draft its plan for you to confirm.
+- **Does:** reads the repo's plan files (any `*.md` named plan, roadmap, todo or tasks, in any folder; `docs/superpowers/plans/` is just the usual place) at each session start and with `bridge-screen import`, and turns new or changed ones into plan changes (never writing to the files); `bridge-screen init` lists what a half-built repo shows so an agent can draft its plan for you to confirm. When plan files say nothing is finished it asks you once ("Fresh run" or "Some are done") before importing. A finished run is closed when a new plan arrives, so each plan round starts at 0% ("runs").
 - **Talks to:** the repo's files (read-only), git (only for `init`, run by hand), the database.
 - **Lives in:** `crates/bridge-screen-core/src/import/`, `crates/bridge-screen-core/src/init.rs`, `crates/bridge-screen/src/onboard.rs`
 
@@ -84,5 +84,5 @@ bridge-screen is one program on the owner's computer that sits next to Claude Co
 ## Deliberately absent
 - No server or cloud; nothing runs when no session or screen is open.
 - No AI model calls from bridge-screen.
-- Not yet built: archiving old projects (9). Plan files are imported in the superpowers format only (no GitHub issues, Linear or TODO.md).
+- Not yet built: archiving old projects (9). Plan files are imported in the superpowers format only (found in any folder) (no GitHub issues, Linear or TODO.md).
 - No live price lookups: prices come from the config file (defaults taken 2026-10-21).

@@ -424,6 +424,7 @@ No LLM is called from hooks. Judgement comes from the agent itself, through `lab
 - **One row per project:** done% bar in clay, a lighter clay segment for claimed%, hill pill (amber uphill, green downhill), P50 and P90 dates.
 - **One line per live session**, with a status light (green on task, amber detour or waiting, red needs you), the active task or detour, and the wait target.
 - **Branch groups:** same-named branches across repos, with a combined %.
+- **Runs** (notes 2026-10-26): one goal, its milestones in runs. A `run_closed` event (boundary = the goal's next milestone number) closes a run once every task passed its tests and a new milestone or plan file arrives, or the owner closes it (`bridge-screen run close`). Done%, the milestone list, the scope line and the forecast of what is left cover the current run; calibration keeps every run; closed runs are listed under "Completed runs". Owner-facing numbers restart at 1 per run (raw ids stay for agents and the CLI). A finished run with nothing new reads "Run finished — 100%, N tasks" and sorts below active projects.
 - **Parents show a roll-up** (polish round): a milestone and the goal read *done* when every live task under them passed its tests (L2+, the done% test), *needs attention* when one failed, *in progress* once any work started, else *to do*. Derived when read, never stored; adding a task to a finished milestone makes it *in progress* again. A done milestone shows no hill word.
 
 ### 10.2 Drill-downs (click to expand)
@@ -431,7 +432,7 @@ No LLM is called from hooks. Judgement comes from the agent itself, through `lab
 - **Project:** plan tree with intents, estimate vs actual, verification level and stale badges, dependencies, the scope line, and re-plan history.
 - **Session:** a timeline of labelled units, the time split (on-task, each detour, drift), suspended items, checkpoints, leftovers and their resolutions, the handoff note and read-back result.
 - **Task:** decisions with their superseded-by chains, verification evidence, tokens and cost, actors, retries.
-- **History:** the raw event stream with filters. Hidden by default.
+- **History:** one plain sentence per event (built in the core), the task's number and title, a kind menu of the kinds present, and the raw payload behind a "details" toggle. Hidden by default.
 - **Calibration:** ratios per model and the forecast's convergence over time.
 - **Project pages:** the repo's five project pages as plain text with their last-updated dates (read-only; `GET /api/pages/{repo}`); a sentence and the command to run when they aren't set up or were declined.
 
@@ -525,7 +526,8 @@ It stays under about 150 lines. It also says when to use the bundled `lead-brief
 
 ### 12.1 Superpowers import
 
-- Source files: `docs/superpowers/plans/YYYY-MM-DD-<feature>.md` (format as of superpowers 6.4.1). Specs in `docs/superpowers/specs/` are linked as references.
+- Source files: any `*.md` whose folder or file name contains plan, roadmap, todo or tasks, found by a bounded walk of the checkout (8 levels, 3000 entries; vendored and dot-folders skipped; `docs/superpowers/plans/YYYY-MM-DD-<feature>.md` listed first; format as of superpowers 6.4.1). The parser is the gate: a matched file with no `### Task N:` headings imports nothing. Spec files (a `spec`/`specs` folder, or "spec"/"design" in the name) are found the same way and linked as references. (Notes 2026-10-26.)
+- **Nobody says what is finished:** when plan files exist, the repo has no plan or import history, and no step is ticked, nothing is imported; the owner is asked once (`plan_scope_asked`/`plan_scope_answered`): *Fresh run* (all imported, progress from now) or *Some are done* (named files noted as already finished). Files with ticked steps import as before.
 - **Mapping:**
   - plan → milestone (or the goal for the repo's first plan)
   - `**Goal:**` → intent

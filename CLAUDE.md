@@ -36,7 +36,10 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
     totals per scope and cost at read time from `config.toml` prices (`mod.rs`)
   - `forecast/` — calibration ratios, the seeded Monte Carlo (`rng.rs`, no `rand`), hours/day
     and dates, refusal below 3 finished tasks, `forecast_ran` history (`project.rs`) (§9.3)
-  - `import/` — superpowers plan files (§12.1): the pure parser (`parse.rs`), the pure diff to
+  - `import/` — plan files (§12.1): `find.rs` (a bounded walk that finds plan and spec files by name in
+    any folder; `PLANS_DIR` is only listed first), `scope.rs` ("which plan files are finished?" asked
+    once when nothing is ticked: `plan_scope_asked`/`plan_scope_answered` events, derived when read, no
+    view table), the pure parser (`parse.rs`), the pure diff to
     plan ops with predicted ids (`diff.rs`), `plan_imported`/`plan_file_seen` → `plan_sources`,
     `plan_source_items` (`project.rs`), `scan` (SessionStart budget: 20 files, 1 MiB, stat
     first; baseline for a hand-planned repo) and `import_path` (`mod.rs`); files are only read
@@ -45,6 +48,11 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
     `~/.bridge-screen/lead/<repo-id>/` (`mod.rs` storage, owner-only intent, append-only log under a
     file lock, offer and pointer note `briefing_note`; `templates.rs` + `templates/*.md` from the
     lead-briefing skill; `view.rs` the dashboard read model); marker files, no events, no schema
+  - `plan/runs.rs` — runs (§10.1): `run_closed` boundary events read when asked (no view table),
+    `run_tree` (current run only: progress, glance, forecast of what is left), `Runs::shown` (the one
+    helper for the numbers the owner reads), `close_in` (refused with unverified tasks), automatic
+    close when a milestone is added after a finished run (`plan_edit_in_sourced`)
+  - `view/history_text.rs` — the History panel's plain sentences and kind labels
   - `waits/` — `waiting_on`/`wait_cleared`, the `waits` view, `clear_for` (same transaction as
     any L2+ `verified`), promote to a plan link, the wait note (§9.1)
   - `view/groups.rs` — branch groups on the glance (§10.1)
