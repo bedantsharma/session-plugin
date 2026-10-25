@@ -63,6 +63,16 @@
     if (new Set(times).size < 2) return false
     return Math.max(...times) - Math.min(...times) >= 60_000
   })
+  let closing = $state(false)
+  let closeMsg = $state<{ ok: boolean; text: string } | null>(null)
+  /** "Close this run": every task passed its tests, so the next plan starts fresh. */
+  async function closeRun() {
+    closing = true
+    closeMsg = null
+    const res = await client.act({ kind: 'close_run', repo })
+    closing = false
+    closeMsg = res.ok ? { ok: true, text: res.reply } : { ok: false, text: res.error }
+  }
   const latest = $derived(m.data?.scope.at(-1))
   const added = $derived(addedGroups(m.data?.scope ?? []))
 
@@ -98,10 +108,23 @@
   <header class="flex flex-col gap-4">
     <div class="flex flex-wrap items-start justify-between gap-4">
       <div class="flex min-w-0 flex-col gap-0.5">
-        <h2 class="text-xl font-semibold">{m.data.name}</h2>
+        <h2 class="text-xl font-semibold">
+          {m.data.name}{#if m.data.run_number > 1}<span
+              class="ml-2 text-meta font-normal text-muted"
+              data-testid="run-number">Run {m.data.run_number}</span
+            >{/if}
+        </h2>
         {#if row?.goal}<p class="text-meta text-muted">{row.goal.title}</p>{/if}
       </div>
       <div class="flex flex-wrap items-center gap-2">
+        {#if m.data.can_close_run}
+          <button
+            type="button"
+            class="inline-flex h-9 items-center rounded-lg border border-ok px-4 text-sm font-medium text-ok transition-colors duration-150 hover:bg-hover disabled:opacity-60"
+            disabled={closing}
+            onclick={closeRun}>Close this run</button
+          >
+        {/if}
         <button
           type="button"
           class="inline-flex h-9 items-center rounded-lg border border-edge px-4 text-sm font-medium transition-colors duration-150 hover:bg-hover"
@@ -124,6 +147,16 @@
         >
       </div>
     </div>
+    {#if closeMsg}
+      <p class={['text-row', closeMsg.ok ? 'text-ok' : 'text-warn']} role="status">
+        {closeMsg.text}
+      </p>
+    {/if}
+    {#if row?.run.finished}
+      <p class="text-row font-medium text-ok" data-testid="run-finished">
+        {row.run.finished.text}
+      </p>
+    {/if}
     {#if row}
       <div class="flex items-end gap-6">
         <div class="flex flex-col">
@@ -239,7 +272,13 @@
                   title={look.word}
                   aria-hidden="true">{look.icon}</span
                 >
-                <span class="w-10 shrink-0 font-mono text-meta text-muted">{n.id}</span>
+                <span class="w-14 shrink-0 font-mono text-meta text-muted"
+                  >{n.shown}{#if n.shown !== n.id}<span
+                      class="ml-1 text-[0.65rem] opacity-70"
+                      data-testid="raw-id"
+                      title="the id agents and the command line use">({n.id})</span
+                    >{/if}</span
+                >
                 <span class="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
                   {#if n.kind === 'task' || n.kind === 'subtask'}
                     <button
@@ -319,6 +358,44 @@
       {/each}
     </ul>
   </section>
+
+  {#if m.data.completed_runs.length}
+    <section class="flex flex-col gap-3" aria-labelledby="completed-runs">
+      <h3 id="completed-runs" class="text-base font-semibold">Completed runs</h3>
+      <ul class="flex flex-col divide-y divide-line border-y border-line">
+        {#each m.data.completed_runs as r (r.number)}
+          <li data-run={r.number}>
+            <Collapsible.Root>
+              <Collapsible.Trigger
+                class="flex min-h-10 w-full flex-wrap items-center gap-x-4 gap-y-1 py-1.5 text-left text-row hover:bg-hover"
+              >
+                <span class="font-medium">Run {r.number}: {r.title}</span>
+                <span class="text-meta text-muted tabular-nums"
+                  >finished {r.closed_at.slice(0, 10)} · {r.tasks}
+                  {r.tasks === 1 ? 'task' : 'tasks'}</span
+                >
+                <span class="text-meta text-ok tabular-nums">{r.done_pct}%</span>
+              </Collapsible.Trigger>
+              <Collapsible.Content class="pb-3">
+                <ul class="flex flex-col gap-1">
+                  {#each r.tree.filter((x) => x.kind === 'task' || x.kind === 'subtask') as t (t.id)}
+                    <li class="flex items-center gap-2 text-row">
+                      <span class="w-14 shrink-0 font-mono text-meta text-muted">{t.shown}</span>
+                      <button
+                        type="button"
+                        class="truncate text-left hover:underline"
+                        onclick={() => onOpenTask(repo, t.id)}>{t.title}</button
+                      >
+                    </li>
+                  {/each}
+                </ul>
+              </Collapsible.Content>
+            </Collapsible.Root>
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
 
   {#if m.data.replans.length}
     <section class="flex flex-col gap-3">

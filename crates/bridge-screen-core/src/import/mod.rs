@@ -99,6 +99,12 @@ pub enum ImportOutcome {
     NeedsLink {
         path: String,
     },
+    /// A finished run was closed because this file's plan arrived; its progress starts
+    /// from 0% (spec §10.1).
+    RunClosed {
+        number: u32,
+        tasks: usize,
+    },
     /// Plan files were found but nothing says what is finished: nothing was imported; the
     /// owner is asked once ([`scope`]).
     NeedsScope {
@@ -121,6 +127,7 @@ impl ImportOutcome {
             | Self::NeedsLink { path }
             | Self::Failed { path, .. } => path,
             Self::NeedsScope { paths } => paths.first().map_or("", String::as_str),
+            Self::RunClosed { .. } => "",
         }
     }
 
@@ -176,6 +183,11 @@ impl ImportOutcome {
             Self::Skipped { path, why } => Some(format!("Skipped {}: {why}", short_name(path))),
             Self::NeedsLink { path } => Some(needs_link_line(path)),
             Self::NeedsScope { paths } => Some(scope::question_text(paths)),
+            Self::RunClosed { number, tasks } => Some(format!(
+                "Run {number} is finished ({tasks} task{}, all passed their tests) and was closed; \
+                 the new plan starts a fresh run from 0%.",
+                if *tasks == 1 { "" } else { "s" }
+            )),
             Self::Failed { path, error } => {
                 Some(format!("Could not import {}: {error}", short_name(path)))
             }
@@ -800,9 +812,11 @@ pub fn scan(
         return store.dry_run(|tx| {
             for (path, rel) in due {
                 tx.execute_batch("SAVEPOINT import_file")?;
+                let before = closed_count(tx, repo_id)?;
                 match import_in(tx, repo_id, root, &path, ctx, None) {
                     Ok(o) => {
                         tx.execute_batch("RELEASE import_file")?;
+                        out.extend(run_closed_note(tx, repo_id, before)?);
                         out.push(o);
                     }
                     Err(e) => {
@@ -818,8 +832,12 @@ pub fn scan(
         });
     }
     for (path, rel) in due {
+        let before = closed_count(store.conn(), repo_id)?;
         match import_path(store, repo_id, root, &path, ctx, None) {
-            Ok(o) => out.push(o),
+            Ok(o) => {
+                out.extend(run_closed_note(store.conn(), repo_id, before)?);
+                out.push(o);
+            }
             Err(e) => out.push(ImportOutcome::Failed {
                 path: rel,
                 error: e.to_string(),
@@ -827,6 +845,29 @@ pub fn scan(
         }
     }
     Ok(out)
+}
+
+fn closed_count(conn: &Connection, repo_id: &str) -> Result<usize> {
+    Ok(crate::plan::runs::load(conn, repo_id)?.closed.len())
+}
+
+/// A note when the import just closed the finished run.
+fn run_closed_note(
+    conn: &Connection,
+    repo_id: &str,
+    before: usize,
+) -> Result<Option<ImportOutcome>> {
+    let runs = crate::plan::runs::load(conn, repo_id)?;
+    if runs.closed.len() <= before {
+        return Ok(None);
+    }
+    let Some(last) = runs.closed.last() else {
+        return Ok(None);
+    };
+    Ok(Some(ImportOutcome::RunClosed {
+        number: last.number,
+        tasks: crate::plan::runs::tasks_in(conn, repo_id, last)?,
+    }))
 }
 
 /// Record every existing plan file as already planned by hand. Files over the read budget

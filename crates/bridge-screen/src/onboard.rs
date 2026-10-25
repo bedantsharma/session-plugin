@@ -85,6 +85,20 @@ pub fn import_scope(dir: &Path, fresh: bool, done: &[String]) -> Result<()> {
     )
 }
 
+/// `bridge-screen run close [-C DIR]`: close the repo's finished run (an owner action).
+pub fn run_close(dir: &Path) -> Result<()> {
+    let repo = repo::identify(dir)?;
+    let home = Home::resolve()?;
+    let mut store = open_store(&home)?;
+    store.register_repo(&repo)?;
+    crate::commands::owner_cmd(
+        &home,
+        &mut store,
+        Some(dir),
+        &OwnerAction::CloseRun { repo: repo.id },
+    )
+}
+
 /// `bridge-screen init [-C DIR] [--goal TEXT]`: the evidence and the agent's steps. Reads
 /// only (git and files); writes nothing but the repo's registration.
 pub fn init(dir: &Path, goal: Option<&str>) -> Result<()> {

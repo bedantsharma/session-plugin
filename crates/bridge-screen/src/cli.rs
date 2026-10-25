@@ -168,6 +168,15 @@ pub enum Command {
         #[arg(short = 'C', long = "dir", default_value = ".")]
         dir: PathBuf,
     },
+    /// The goal's runs (spec §10.1): `run close` closes a finished run so the next plan
+    /// starts a fresh one. Refused while any task of the run hasn't passed its tests.
+    Run {
+        #[command(subcommand)]
+        action: RunCommand,
+        /// Any directory inside the repo.
+        #[arg(short = 'C', long = "dir", default_value = ".", global = true)]
+        dir: PathBuf,
+    },
     /// Sessions' waits (spec §9.1): `wait list`, `wait clear <id>`, `wait promote <id>`.
     Wait {
         #[command(subcommand)]
@@ -301,6 +310,12 @@ pub enum LabelArg {
     /// You asked for this work in the session: never drift.
     #[value(alias = "asked", alias = "asked-for")]
     Requested,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RunCommand {
+    /// Close the finished run (owner only).
+    Close,
 }
 
 #[derive(Debug, Subcommand)]

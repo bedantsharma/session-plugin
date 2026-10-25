@@ -11,7 +11,7 @@ const drill: SessionDrill = {
   state: 'working',
   branch: 'feat/x',
   worktree: '/wt/x',
-  task: { id: '1.1', title: 'Login form' },
+  task: { id: '1.1', shown: '1.1', title: 'Login form' },
   units: [
     {
       unit_no: 1,

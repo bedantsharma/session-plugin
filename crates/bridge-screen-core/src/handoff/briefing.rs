@@ -12,7 +12,7 @@ use super::{
 };
 use crate::claim::{keywords, task_title};
 use crate::error::Result;
-use crate::plan::{NodeKind, NodeStatus, PlanNode, get_node, load_tree};
+use crate::plan::{NodeKind, NodeStatus, PlanNode, get_node};
 use crate::session::{self, Session};
 use crate::tangent::{self, ItemKind};
 use crate::verify;
@@ -206,7 +206,7 @@ fn gather(conn: &Connection, me: &Session) -> Result<Facts> {
         .or_else(|| prev.as_ref().and_then(|p| p.last_task.clone()));
     let mut sessions: Vec<&Session> = vec![me];
     sessions.extend(prev.as_ref());
-    let tree = load_tree(conn, repo, false)?;
+    let tree = crate::plan::runs::run_tree(conn, repo)?;
     let goal = tree.iter().find(|n| n.kind == NodeKind::Goal).cloned();
     let mut unverified = Vec::new();
     let mut unverified_tasks = Vec::new();

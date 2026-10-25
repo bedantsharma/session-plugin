@@ -119,6 +119,9 @@ pub enum OwnerAction {
     ClearWait { wait_id: String },
     /// Turn a session's wait on a task into a plan link of its active task.
     PromoteWait { wait_id: String },
+    /// Close the repo's finished run (spec §10.1): refused unless every task of the run
+    /// passed its tests.
+    CloseRun { repo: String },
     /// Answer "which plan files are already finished?" (spec §12.1): left out or empty is
     /// a fresh run; otherwise the named files (commas or new lines) are already finished.
     PlanScope {
@@ -289,6 +292,7 @@ pub fn act(store: &mut Store, ctx: &ActCtx, action: &OwnerAction) -> Result<Stri
                 w.target_text
             ))
         }),
+        OwnerAction::CloseRun { repo } => close_run(store, repo),
         OwnerAction::PlanScope { repo, done } => plan_scope(store, repo, done.as_deref()),
         OwnerAction::PromoteWait { wait_id } => store.write(|tx| {
             let w = crate::waits::find(tx, wait_id)?;
@@ -301,6 +305,21 @@ pub fn act(store: &mut Store, ctx: &ActCtx, action: &OwnerAction) -> Result<Stri
             Ok(line)
         }),
     }
+}
+
+fn close_run(store: &mut Store, repo: &str) -> Result<String> {
+    store.write(|tx| {
+        let run = crate::plan::runs::close_in(tx, repo, OWNER_SESSION, &Actor::default())?;
+        record(
+            tx,
+            repo,
+            &owner_data("close_run", None, Some(repo.to_string())),
+        )?;
+        Ok(format!(
+            "Closed run {}. Its tasks stay readable under \"Completed runs\"; the next plan starts a new run from 1.",
+            run.number
+        ))
+    })
 }
 
 fn plan_scope(store: &mut Store, repo: &str, done: Option<&str>) -> Result<String> {

@@ -3,7 +3,7 @@ use jiff::{SignedDuration, Timestamp};
 use serde_json::{Value, json};
 
 use super::*;
-use crate::store::{EventDraft, Store, append_in_at};
+use crate::store::{Actor, EventDraft, Store, append_in_at};
 
 const DAY: i64 = 86_400;
 
@@ -453,4 +453,38 @@ fn unrelated_events_leave_the_forecast_alone() {
         );
         assert_eq!(run(s.conn(), "r", now, &utc()).unwrap(), before, "{i}");
     }
+}
+
+#[test]
+fn closing_a_run_keeps_its_calibration_but_not_its_tasks() {
+    let mut s = Store::open_in_memory().unwrap();
+    plan(
+        &mut s,
+        &[("1.1", Some(30)), ("1.2", Some(30)), ("1.3", Some(30))],
+    );
+    let now = at(10 * DAY);
+    for (i, t) in ["1.1", "1.2", "1.3"].iter().enumerate() {
+        work(&mut s, t, 9 * DAY + i64::try_from(i).unwrap() * 3600, 30, 2);
+    }
+    let before = run(s.conn(), "r", now, &utc()).unwrap();
+    assert_eq!(before.points, 3);
+    s.write(|tx| crate::plan::runs::close_in(tx, "r", "owner", &Actor::default()))
+        .unwrap();
+    // A new run with one open task: the forecast covers only it, on the old calibration.
+    script(
+        &mut s,
+        &[
+            (
+                "owner",
+                10 * DAY,
+                "node_added",
+                json!({"id": "2", "parent_id": "G", "kind": "milestone", "title": "M2",
+                       "intent": "why", "expected_files": []}),
+            ),
+            ("owner", 10 * DAY, "node_added", node("2.1", "2", Some(40))),
+        ],
+    );
+    let after = run(s.conn(), "r", now, &utc()).unwrap();
+    assert_eq!(after.points, 3, "calibration history is kept across runs");
+    assert_eq!(after.remaining_min, 40, "closed-run tasks are not forecast");
 }

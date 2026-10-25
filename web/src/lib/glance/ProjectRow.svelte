@@ -62,6 +62,12 @@
     </p>
   {/if}
 
+  {#if project.run.finished}
+    <p class="-mt-2 text-row font-medium text-ok" data-testid="run-finished">
+      {project.run.finished.text}
+    </p>
+  {/if}
+
   <div class="flex flex-col gap-2">
     <p class="text-meta text-muted tabular-nums" data-testid="progress-caption">
       Done {project.done_pct}% · {complete} of {project.milestones.length}

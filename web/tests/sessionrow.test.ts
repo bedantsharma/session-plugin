@@ -10,7 +10,7 @@ const row = (over: Partial<Row> = {}): Row => ({
   state_label: 'idle',
   light: 'amber',
   light_word: 'waiting',
-  task: { id: '1.1', title: 'Login page' },
+  task: { id: '1.1', shown: '1.1', title: 'Login page' },
   detour: null,
   units: 2,
   active_min: 12,

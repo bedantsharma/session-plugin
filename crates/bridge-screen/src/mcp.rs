@@ -24,7 +24,7 @@ use bridge_screen_core::handoff::{self, LeftoverAction};
 use bridge_screen_core::init::InitDraft;
 use bridge_screen_core::owner::{self, OwnerAction};
 use bridge_screen_core::paths::Home;
-use bridge_screen_core::plan::{EditContext, NodeKind, NodeStatus, PlanOp, get_node, load_tree};
+use bridge_screen_core::plan::{EditContext, NodeKind, NodeStatus, PlanOp, get_node};
 use bridge_screen_core::recovery::{self, Caller};
 use bridge_screen_core::session::{self, Session, SessionState};
 use bridge_screen_core::store::{Actor, Store};
@@ -1477,7 +1477,7 @@ fn plan_status(
 ) -> bridge_screen_core::error::Result<()> {
     match get_node(conn, &s.repo_id, "G")?.filter(|g| g.status != NodeStatus::Dropped) {
         Some(goal) => {
-            let tree = load_tree(conn, &s.repo_id, false)?;
+            let tree = bridge_screen_core::plan::runs::run_tree(conn, &s.repo_id)?;
             let rolled = bridge_screen_core::plan::rollups(&tree);
             let _ = writeln!(
                 out,

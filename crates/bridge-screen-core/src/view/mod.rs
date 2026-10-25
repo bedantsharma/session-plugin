@@ -24,7 +24,7 @@ use crate::error::Result;
 use crate::forecast::{self, Forecast};
 use crate::handoff::{self, BriefingStatus, LeftoverAction, LeftoverState, ReadbackState};
 use crate::owner::{DriftAnswer, OwnerAction};
-use crate::plan::{Hill, NodeKind, NodeStatus, PlanNode, get_node, load_tree};
+use crate::plan::{Hill, NodeKind, NodeStatus, PlanNode, get_node};
 use crate::session::{self, Session, SessionState};
 use crate::store::{OWNER_SESSION, repo_name};
 use crate::tangent::{self, Label, NavState};
@@ -71,7 +71,10 @@ impl Glance {
 /// A plan node by id and title.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NodeRef {
+    /// The raw id agents and the CLI use (`3.1`).
     pub id: String,
+    /// The id as the owner reads it: numbers restart in each run (`1.1`).
+    pub shown: String,
     pub title: String,
 }
 
@@ -85,6 +88,8 @@ pub struct ProjectRow {
     pub goal_status: Option<crate::plan::Rollup>,
     pub done_pct: u32,
     pub claimed_pct: u32,
+    /// Which run the numbers are for, and whether it is finished.
+    pub run: RunRow,
     pub unestimated: usize,
     pub milestones: Vec<MilestoneRow>,
     pub leftovers: LeftoverCounts,
@@ -98,6 +103,53 @@ pub struct ProjectRow {
     pub needs_you: usize,
     /// Live sessions, the ones needing the owner first.
     pub sessions: Vec<SessionRow>,
+}
+
+/// The current run of a project (spec §10.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RunRow {
+    /// 1 for the first run.
+    pub number: u32,
+    /// Runs already closed (shown under "Completed runs" on the project page).
+    pub closed: usize,
+    /// Set when the run is finished and nothing new has started: every task passed its
+    /// tests (or the run was closed and no new plan has arrived). The row reads "Run
+    /// finished" and sits below the active projects; it is never stalled or needs-you.
+    pub finished: Option<RunFinished>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RunFinished {
+    pub tasks: usize,
+    /// `Run finished — 100%, 12 tasks`.
+    pub text: String,
+}
+
+/// The run of a repo as the glance shows it.
+fn run_row(conn: &Connection, repo_id: &str) -> Result<RunRow> {
+    let runs = crate::plan::runs::load(conn, repo_id)?;
+    let state = crate::plan::runs::state(conn, repo_id)?;
+    let tasks = if state.tasks > 0 && state.unverified == 0 {
+        Some(state.tasks)
+    } else if state.tasks == 0 {
+        match runs.closed.last() {
+            Some(last) => Some(crate::plan::runs::tasks_in(conn, repo_id, last)?),
+            None => None,
+        }
+    } else {
+        None
+    };
+    Ok(RunRow {
+        number: u32::try_from(runs.closed.len() + 1).unwrap_or(u32::MAX),
+        closed: runs.closed.len(),
+        finished: tasks.map(|n| RunFinished {
+            tasks: n,
+            text: format!(
+                "Run finished — 100%, {n} task{}",
+                if n == 1 { "" } else { "s" }
+            ),
+        }),
+    })
 }
 
 /// A project's forecast with its words (spec §9.3, §10.1).
@@ -201,7 +253,10 @@ pub fn forecast_row_in(
 /// A milestone's progress and hill state (spec §5.6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MilestoneRow {
+    /// The raw id (`3`).
     pub id: String,
+    /// The number the owner reads: restarts at 1 in each run.
+    pub shown: String,
     pub title: String,
     /// From its tasks (derived, never stored): `done` once every task passed its tests.
     pub status: crate::plan::Rollup,
@@ -515,13 +570,14 @@ fn open_question(conn: &Connection, session_id: &str) -> Result<Option<(String, 
 fn node_ref(conn: &Connection, repo_id: &str, id: &str) -> Result<NodeRef> {
     Ok(NodeRef {
         id: id.to_string(),
+        shown: crate::plan::runs::load(conn, repo_id)?.shown(id),
         title: task_title(conn, repo_id, id)?.unwrap_or_default(),
     })
 }
 
 /// `on task 2.3 Login form` style text for a node.
 fn node_text(n: &NodeRef) -> String {
-    format!("{} {}", n.id, n.title).trim_end().to_string()
+    format!("{} {}", n.shown, n.title).trim_end().to_string()
 }
 
 fn cut(text: &str, max: usize) -> String {
@@ -974,6 +1030,7 @@ fn verify_items(
             .map(|secs| format!(" {} ago", ago_words(secs)))
             .unwrap_or_default();
         let node = NodeRef {
+            shown: crate::plan::runs::load(conn, repo_id)?.shown(&task),
             id: task.clone(),
             title,
         };
@@ -1295,12 +1352,14 @@ fn stuck_for(
 
 fn milestones(conn: &Connection, repo_id: &str, tree: &[PlanNode]) -> Result<Vec<MilestoneRow>> {
     let rolled = crate::plan::rollups(tree);
+    let runs = crate::plan::runs::load(conn, repo_id)?;
     let mut out = Vec::new();
     for m in tree.iter().filter(|n| n.kind == NodeKind::Milestone) {
         let under = descendants(tree, &m.id);
         let (done_pct, claimed_pct) = subtree_progress(tree, &under);
         let stuck_sessions = stuck_for(conn, repo_id, &m.id, &under)?;
         out.push(MilestoneRow {
+            shown: runs.shown(&m.id),
             id: m.id.clone(),
             title: m.title.clone(),
             status: rolled
@@ -1410,10 +1469,12 @@ pub fn glance(conn: &Connection, cfg: &Config, now: Timestamp) -> Result<Glance>
         items.extend(verify_items(conn, &repo_id, &name, now)?);
         items.extend(leftover_items(conn, &repo_id, &name, now)?);
         items.extend(scope_items(conn, &repo_id, &name, now)?);
-        let tree = load_tree(conn, &repo_id, false)?;
+        let tree = crate::plan::runs::run_tree(conn, &repo_id)?;
+        let run = run_row(conn, &repo_id)?;
         let goal = get_node(conn, &repo_id, "G")?
             .filter(|g| g.status != NodeStatus::Dropped)
             .map(|g| NodeRef {
+                shown: g.id.clone(),
                 id: g.id,
                 title: g.title,
             });
@@ -1434,8 +1495,17 @@ pub fn glance(conn: &Connection, cfg: &Config, now: Timestamp) -> Result<Glance>
             name,
             goal,
             goal_status,
-            done_pct: p.done_pct,
-            claimed_pct: p.claimed_pct,
+            done_pct: if run.finished.is_some() {
+                100
+            } else {
+                p.done_pct
+            },
+            claimed_pct: if run.finished.is_some() {
+                0
+            } else {
+                p.claimed_pct
+            },
+            run,
             unestimated: p.unestimated,
             milestones: milestones(conn, &repo_id, &tree)?,
             leftovers: LeftoverCounts { open, report_only },
@@ -1447,7 +1517,14 @@ pub fn glance(conn: &Connection, cfg: &Config, now: Timestamp) -> Result<Glance>
         });
         queue.extend(items);
     }
-    projects.sort_by(|a, b| (&a.name, &a.repo_id).cmp(&(&b.name, &b.repo_id)));
+    // Finished runs sit below the active projects.
+    projects.sort_by(|a, b| {
+        (a.run.finished.is_some(), &a.name, &a.repo_id).cmp(&(
+            b.run.finished.is_some(),
+            &b.name,
+            &b.repo_id,
+        ))
+    });
     // Only items with an owner response count (principle 3).
     queue.retain(|i| !i.actions.is_empty() || i.respond_in.is_some());
     queue.sort_by(|a, b| {

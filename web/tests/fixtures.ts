@@ -7,7 +7,7 @@ export function item(over: Partial<NeedsYou> = {}): NeedsYou {
     repo_id: 'r1',
     repo_name: 'shop',
     session_id: 's1aaaa',
-    task: { id: '1.1', title: 'Login form' },
+    task: { id: '1.1', shown: '1.1', title: 'Login form' },
     title: 's1aaaa · far off its task (40 min)',
     detail: 'detour 40m · D1 "CI cache" · on 1.1 Login form',
     actions: [
@@ -79,14 +79,16 @@ export function project(over: Partial<ProjectRow> = {}): ProjectRow {
   return {
     repo_id: 'r1',
     name: 'shop',
-    goal: { id: 'G', title: 'Online shop' },
+    goal: { id: 'G', shown: 'G', title: 'Online shop' },
     goal_status: 'in_progress',
     done_pct: 62,
     claimed_pct: 14,
+    run: { number: 1, closed: 0, finished: null },
     unestimated: 0,
     milestones: [
       {
         id: '1',
+        shown: '1',
         title: 'Accounts',
         status: 'in_progress',
         hill: 'uphill',
@@ -97,6 +99,7 @@ export function project(over: Partial<ProjectRow> = {}): ProjectRow {
       },
       {
         id: '2',
+        shown: '2',
         title: 'Cart',
         status: 'in_progress',
         hill: 'downhill',

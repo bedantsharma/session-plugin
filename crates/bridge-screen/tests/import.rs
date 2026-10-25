@@ -255,3 +255,18 @@ fn unticked_plans_ask_the_owner_and_import_nothing_until_answered() {
     let text = context(&env.hook("session-start", "s2"));
     assert!(!text.contains("Found 2 plan files"), "{text}");
 }
+
+#[test]
+fn run_close_is_refused_while_tasks_are_unverified_and_says_why() {
+    let env = Env::new();
+    std::fs::write(plans_dir(&env).join("login.md"), PLAN).unwrap();
+    context(&env.hook("session-start", "s1"));
+    let out = env.run(&["run", "close"], "");
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("can't close this run yet"), "{err}");
+    assert!(
+        !kinds(&env).contains(&"run_closed".to_string()),
+        "nothing recorded"
+    );
+}

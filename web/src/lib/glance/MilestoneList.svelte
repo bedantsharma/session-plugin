@@ -39,7 +39,11 @@
         data-milestone={m.id}
         use:changed={{ value: [m.done_pct, m.claimed_pct, m.hill, m.stuck] }}
       >
-        <span class="font-mono text-meta text-muted">{m.id}</span>
+        <span
+          class="font-mono text-meta text-muted"
+          title={m.shown !== m.id ? `id ${m.id} for agents and the command line` : undefined}
+          >{m.shown}</span
+        >
         <span class="truncate text-row">{m.title}</span>
         <div class="hidden sm:block">
           <ProgressBar

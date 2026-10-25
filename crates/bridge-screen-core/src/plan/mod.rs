@@ -6,6 +6,7 @@ pub mod project;
 pub mod query;
 pub mod render;
 pub mod rollup;
+pub mod runs;
 
 pub use model::{ExternalDep, Hill, NodeKind, NodeSource, NodeStatus, PlanNode};
 pub use ops::{

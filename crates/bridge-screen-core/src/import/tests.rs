@@ -1085,3 +1085,48 @@ fn the_question_is_on_the_needs_you_queue_and_the_owner_answers_it() {
     );
     assert!(matches!(again, Err(Error::Stale(_))), "{again:?}");
 }
+
+#[test]
+fn a_new_plan_file_closes_a_finished_run_and_says_so() {
+    let mut r = Repo::new();
+    r.write("a.md", &plan_text("Login", &[("Endpoint", &[])]));
+    r.scan();
+    // Its only task passes its tests.
+    r.store
+        .append(
+            EventDraft::new(
+                "r",
+                "owner",
+                "verified",
+                serde_json::json!({"verif_id": "v1", "task_id": "1", "level": 2,
+                    "sha": "abc", "files": [], "evidence": "ok", "by": "agent"}),
+            )
+            .task("1"),
+        )
+        .unwrap();
+    assert!(crate::plan::runs::finished(r.store.conn(), "r").unwrap());
+    r.write("b.md", &plan_text("Search", &[("Index", &[])]));
+    let out = r.scan();
+    assert!(
+        out.iter().any(|o| matches!(
+            o,
+            ImportOutcome::RunClosed {
+                number: 1,
+                tasks: 1
+            }
+        )),
+        "{out:?}"
+    );
+    let line = out
+        .iter()
+        .find_map(|o| matches!(o, ImportOutcome::RunClosed { .. }).then(|| o.summary()))
+        .flatten()
+        .unwrap();
+    assert!(line.starts_with("Run 1 is finished (1 task"), "{line}");
+    let now = crate::plan::runs::state(r.store.conn(), "r").unwrap();
+    assert_eq!(
+        (now.tasks, now.unverified),
+        (1, 1),
+        "the new run starts at 0"
+    );
+}
