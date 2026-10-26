@@ -171,33 +171,36 @@ fn json(path: &Path) -> Value {
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
-/// crates.io only accepts an SPDX licence name or a licence file. PolyForm Strict is not on the
-/// SPDX list (the v0.1.1 crates.io publish was refused for it), so the crates name the file.
+/// The crates name their licence with a plain `license` string, not a `license-file`. The release
+/// tool (dist) mis-reads an inherited `license-file` as `../../LICENSE.md` from the repo root and
+/// fails every program build (v0.1.2 and v0.1.3 never got a GitHub release because of it).
+/// crates.io is not used, so the string need not be an SPDX name.
 #[test]
-fn crates_name_their_licence_by_file() {
+fn crates_name_their_licence_by_string() {
     let root = std::fs::read_to_string(checkout().join("Cargo.toml")).unwrap();
     assert!(
         root.lines()
-            .any(|l| l.trim() == r#"license-file = "LICENSE.md""#),
-        "Cargo.toml [workspace.package] must set license-file = \"LICENSE.md\""
+            .any(|l| l.trim() == r#"license = "PolyForm-Strict-1.0.0""#),
+        "Cargo.toml [workspace.package] must set license = \"PolyForm-Strict-1.0.0\""
     );
     assert!(
         !root
             .lines()
-            .any(|l| l.trim_start().starts_with("license =")),
-        "Cargo.toml must not set a non-SPDX `license` string (crates.io refuses it)"
+            .any(|l| l.trim_start().starts_with("license-file")),
+        "Cargo.toml must not set license-file: it breaks the release build"
     );
     for krate in ["bridge-screen-core", "bridge-screen"] {
         let path = checkout().join("crates").join(krate).join("Cargo.toml");
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(
-            text.lines()
-                .any(|l| l.trim() == "license-file.workspace = true"),
-            "{krate} must inherit license-file from the workspace"
+            text.lines().any(|l| l.trim() == "license.workspace = true"),
+            "{krate} must inherit the `license` string from the workspace"
         );
         assert!(
-            !text.lines().any(|l| l.trim() == "license.workspace = true"),
-            "{krate} must not inherit a `license` string"
+            !text
+                .lines()
+                .any(|l| l.trim_start().starts_with("license-file")),
+            "{krate} must not use license-file: it breaks the release build"
         );
     }
     assert!(checkout().join("LICENSE.md").is_file());
@@ -212,7 +215,7 @@ fn plugin_package_is_consistent() {
     assert_eq!(
         core_dependency_version(),
         env!("CARGO_PKG_VERSION"),
-        "crates/bridge-screen/Cargo.toml: the bridge-screen-core dependency's version must equal the workspace version (crates.io needs both)"
+        "crates/bridge-screen/Cargo.toml: the bridge-screen-core dependency's version must equal the workspace version"
     );
 
     let market = json(&checkout().join(".claude-plugin/marketplace.json"));

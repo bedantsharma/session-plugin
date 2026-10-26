@@ -34,8 +34,7 @@ fail() {
     printf '%s\n' \
         'Install the bridge-screen binary another way, then try again:' \
         '  brew install bedantsharma/tap/bridge-screen' \
-        '  pipx install bridge-screen     (or: uv tool install bridge-screen)' \
-        '  cargo install bridge-screen' >&2
+        '  pipx install bridge-screen     (or: uv tool install bridge-screen)' >&2
     exit 1
 }
 
