@@ -145,6 +145,18 @@ pub fn plan_edit_in_sourced(
     if ops.is_empty() {
         return Err(PlanError::Empty.into());
     }
+    // A new milestone after a finished round starts a new run (spec §10.1).
+    if ops.iter().any(|op| {
+        matches!(
+            op,
+            PlanOp::AddNode {
+                kind: NodeKind::Milestone,
+                ..
+            }
+        )
+    }) {
+        super::runs::close_if_finished(tx, &ctx.repo_id, &ctx.session_id, &ctx.actor)?;
+    }
     {
         let mut events = Vec::new();
         let mut added_ids = Vec::new();

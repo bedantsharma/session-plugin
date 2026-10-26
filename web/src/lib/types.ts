@@ -2,11 +2,15 @@
 // these as they are: ordering, words and lights are decided server-side.
 
 export type Light = 'green' | 'amber' | 'red'
-export type NeedsKind = 'drift_red' | 'question' | 'permission_wait' | 'verify_overdue' | 'leftover'
+export type NeedsKind =
+  'drift_red' | 'question' | 'permission_wait' | 'verify_overdue' | 'leftover' | 'plan_scope'
 export type Tone = 'primary' | 'neutral' | 'danger'
 
 export interface NodeRef {
+  /** The raw id agents and the CLI use (`3.1`). */
   id: string
+  /** The id as the owner reads it: numbers restart in each run (`1.1`). */
+  shown: string
   title: string
 }
 
@@ -144,6 +148,8 @@ export type Rollup = 'todo' | 'in_progress' | 'done' | 'needs_attention'
 
 export interface MilestoneRow {
   id: string
+  /** The number the owner reads: restarts at 1 in each run. */
+  shown: string
   title: string
   status: Rollup
   hill: 'uphill' | 'downhill' | null
@@ -153,6 +159,13 @@ export interface MilestoneRow {
   stuck_sessions: number
 }
 
+export interface RunRow {
+  number: number
+  closed: number
+  /** Set when the run is finished and nothing new has started. */
+  finished: { tasks: number; text: string } | null
+}
+
 export interface ProjectRow {
   repo_id: string
   name: string
@@ -160,6 +173,7 @@ export interface ProjectRow {
   goal_status: Rollup | null
   done_pct: number
   claimed_pct: number
+  run: RunRow
   unestimated: number
   milestones: MilestoneRow[]
   leftovers: { open: number; report_only: number }
@@ -183,6 +197,8 @@ export interface Glance {
 
 export interface TreeNode {
   id: string
+  /** The id as the owner reads it (numbers restart in each run). */
+  shown: string
   parent_id: string | null
   kind: string
   title: string
@@ -204,10 +220,22 @@ export interface TreeNode {
   depth: number
 }
 
+export interface CompletedRun {
+  number: number
+  title: string
+  closed_at: string
+  tasks: number
+  done_pct: number
+  tree: TreeNode[]
+}
+
 export interface ProjectDrill {
   repo_id: string
   name: string
   tree: TreeNode[]
+  run_number: number
+  completed_runs: CompletedRun[]
+  can_close_run: boolean
   scope: { ts: string; total_min: number; done_min: number }[]
   replans: { ts: string; reason: string | null; op_count: number; session_id: string }[]
 }
@@ -360,15 +388,24 @@ export interface CalibrationDrill {
   notes: string[]
 }
 
+export interface HistoryEvent {
+  pos: number
+  ts: string
+  kind: string
+  session_id: string
+  task_id: string | null
+  /** The task's number as the owner reads it, and its title. */
+  task_shown?: string | null
+  task_title?: string | null
+  /** What happened, in a plain sentence; the raw payload is behind "details". */
+  summary?: string
+  data: unknown
+}
+
 export interface HistoryPage {
-  events: {
-    pos: number
-    ts: string
-    kind: string
-    session_id: string
-    task_id: string | null
-    data: unknown
-  }[]
+  events: HistoryEvent[]
+  /** The kinds of event this repo has: (kind, plain label). */
+  kinds?: { kind: string; label: string }[]
   next_before: number | null
 }
 

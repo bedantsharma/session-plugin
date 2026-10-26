@@ -10,6 +10,7 @@
     "uphill",
     "downhill",
     "verify_overdue",
+    "plan_scope",
     "verify_pending",
     "permission_wait",
     "report_only",

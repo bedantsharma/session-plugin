@@ -140,6 +140,9 @@ fn project(out: &mut String, g: &Glance, p: &ProjectRow, c: bool) {
             paint(c, Role::Clay, &format!("done {}%", p.done_pct)),
             p.claimed_pct
         );
+        if let Some(f) = &p.run.finished {
+            let _ = write!(progress, " · {}", f.text);
+        }
         if p.unestimated > 0 {
             let _ = write!(
                 progress,
@@ -196,7 +199,7 @@ fn project(out: &mut String, g: &Glance, p: &ProjectRow, c: bool) {
         .collect();
     verify.sort_by(|a, b| a.id.cmp(&b.id));
     for task in verify {
-        let what = format!("{} {}", task.id, task.title);
+        let what = format!("{} {}", task.shown, task.title);
         let _ = writeln!(
             out,
             "  {}: check {} — then `bridge-screen verify {}` (or --broken \"what's wrong\")",
@@ -212,7 +215,7 @@ fn project(out: &mut String, g: &Glance, p: &ProjectRow, c: bool) {
 
 fn session_line(s: &SessionRow, c: bool) -> String {
     let task = match &s.task {
-        Some(t) => format!("{} {}", t.id, t.title),
+        Some(t) => format!("{} {}", t.shown, t.title),
         None => "(no task)".to_string(),
     };
     let left = cut(&format!("{:<10}{task}", s.state_label), TASK_TEXT_MAX);

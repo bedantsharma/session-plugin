@@ -164,21 +164,15 @@ pub fn evidence(conn: &Connection, repo_id: &str, dir: &Path) -> Result<Evidence
             }
         })
         .collect();
-    let mut specs: Vec<String> = std::fs::read_dir(dir.join("docs/superpowers/specs"))
-        .map(|entries| {
-            entries
-                .filter_map(std::result::Result::ok)
-                .map(|e| e.path())
-                .filter(|p| p.extension().is_some_and(|x| x == "md"))
-                .filter_map(|p| {
-                    p.strip_prefix(dir)
-                        .ok()
-                        .map(|r| r.to_string_lossy().replace('\\', "/"))
-                })
-                .collect()
+    let specs: Vec<String> = import::spec_files(dir)?
+        .into_iter()
+        .map(|p| {
+            p.strip_prefix(dir)
+                .unwrap_or(&p)
+                .to_string_lossy()
+                .replace('\\', "/")
         })
-        .unwrap_or_default();
-    specs.sort();
+        .collect();
     let todo_files = git::todo_counts(dir)?;
     let test_command = match crate::verify::settings(conn, repo_id)?.test_command {
         Some(command) => Some(TestCommand {

@@ -359,6 +359,7 @@ fn kind_word(kind: NeedsKind) -> &'static str {
         NeedsKind::PermissionWait => "waiting",
         NeedsKind::VerifyOverdue => "check",
         NeedsKind::Leftover => "unsaved",
+        NeedsKind::PlanScope => "plans",
     }
 }
 
@@ -510,7 +511,7 @@ fn project_lines(app: &App, row: usize, width: usize, narrow: bool) -> Vec<Line<
             let _ = write!(hill, " {mark}");
         }
         spans.push((
-            format!("  {} {}%{hill}", m.id, m.done_pct),
+            format!("  {} {}%{hill}", m.shown, m.done_pct),
             role(c, Color::Yellow),
         ));
         if m.stuck {
@@ -546,7 +547,7 @@ fn session_line(
     }
     let what = match (&s.detour, &s.task) {
         (Some(d), _) => format!("{} {}", d.label, d.reason),
-        (None, Some(t)) => format!("{} {}", t.id, t.title),
+        (None, Some(t)) => format!("{} {}", t.shown, t.title),
         (None, None) => "(no task)".to_string(),
     };
     let cost = s

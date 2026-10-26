@@ -421,6 +421,7 @@ fn rest_tells_done_from_idle() {
         done.rest,
         Some(Rest::Done {
             task: NodeRef {
+                shown: "1.1".into(),
                 id: "1.1".into(),
                 title: "T1.1".into()
             }
@@ -611,6 +612,7 @@ fn ended_sessions_are_left_out() {
     assert_eq!(
         g.projects[0].goal,
         Some(NodeRef {
+            shown: "G".into(),
             id: "G".into(),
             title: "TG".into()
         })
@@ -950,5 +952,171 @@ fn one_repo_is_not_a_group() {
             .unwrap()
             .branch_groups,
         vec![]
+    );
+}
+
+/// Verify every task of `store()` at L2.
+fn pass_all(s: &mut Store) {
+    for (i, t) in ["1.1", "1.2", "2.1"].iter().enumerate() {
+        ev(
+            s,
+            "owner",
+            10 + i64::try_from(i).unwrap(),
+            "verified",
+            json!({"verif_id": format!("v{t}"), "task_id": t, "level": 2, "sha": "abc",
+                   "evidence": "t", "by": "agent"}),
+        );
+    }
+}
+
+#[test]
+fn a_finished_run_reads_finished_and_sits_below_active_projects() {
+    let mut s = store();
+    pass_all(&mut s);
+    // A second, active project.
+    s.register_repo(&RepoInfo {
+        id: "r2".into(),
+        name: "aaa-active".into(),
+        root: "/code/aaa".into(),
+    })
+    .unwrap();
+    script(
+        &mut s,
+        &[
+            (
+                "r2",
+                "owner",
+                0,
+                "node_added",
+                node("G", None, "goal", None),
+            ),
+            (
+                "r2",
+                "owner",
+                0,
+                "node_added",
+                node("1", Some("G"), "task", Some(10)),
+            ),
+        ],
+    );
+    let g = glance_at(&s, 100);
+    let names: Vec<&str> = g.projects.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec!["aaa-active", "shop"], "finished sorts last");
+    let shop = &g.projects[1];
+    assert_eq!(shop.done_pct, 100);
+    assert_eq!(
+        shop.run.finished.as_ref().map(|f| f.text.as_str()),
+        Some("Run finished — 100%, 3 tasks")
+    );
+    assert!(g.projects[0].run.finished.is_none());
+    assert_eq!(g.needs_you_count, 0, "never a needs-you item");
+}
+
+#[test]
+fn a_closed_run_leaves_the_numbers_and_stays_readable() {
+    let mut s = store();
+    pass_all(&mut s);
+    s.write(|tx| crate::plan::runs::close_in(tx, "r", "owner", &crate::store::Actor::default()))
+        .unwrap();
+    // Closed, nothing new yet: still "Run finished", 3 tasks.
+    let g = glance_at(&s, 100);
+    assert_eq!(
+        g.projects[0].run.finished.as_ref().map(|f| f.tasks),
+        Some(3)
+    );
+    assert_eq!(g.projects[0].run.closed, 1);
+    assert_eq!(g.projects[0].milestones, vec![]);
+    // A new plan arrives: 0%, numbers from 1, raw ids kept.
+    script(
+        &mut s,
+        &[
+            (
+                "r",
+                "owner",
+                200,
+                "node_added",
+                node("3", Some("G"), "milestone", None),
+            ),
+            (
+                "r",
+                "owner",
+                200,
+                "node_added",
+                node("3.1", Some("3"), "task", Some(20)),
+            ),
+        ],
+    );
+    let g = glance_at(&s, 300);
+    let p = &g.projects[0];
+    assert_eq!(
+        (p.done_pct, p.run.finished.is_none(), p.run.number),
+        (0, true, 2)
+    );
+    assert_eq!(p.milestones.len(), 1);
+    assert_eq!(
+        (p.milestones[0].id.as_str(), p.milestones[0].shown.as_str()),
+        ("3", "1")
+    );
+    let d = drill::project(s.conn(), "r", at(300)).unwrap();
+    assert_eq!(d.run_number, 2);
+    assert!(d.tree.iter().all(|n| n.id == "G" || n.id.starts_with('3')));
+    assert_eq!(
+        d.tree
+            .iter()
+            .find(|n| n.id == "3.1")
+            .map(|n| n.shown.as_str()),
+        Some("1.1")
+    );
+    assert_eq!(d.completed_runs.len(), 1);
+    let old = &d.completed_runs[0];
+    assert_eq!((old.tasks, old.done_pct), (3, 100));
+    assert!(old.tree.iter().any(|n| n.id == "2.1" && n.shown == "2.1"));
+    assert!(!d.can_close_run);
+    // The scope line counts the current run only.
+    assert_eq!(d.scope.last().map(|p| p.total_min), Some(20));
+}
+
+#[test]
+fn history_rows_carry_a_sentence_the_task_and_the_kinds_present() {
+    let mut s = store();
+    start(&mut s, "a1b2c3dd", 0);
+    claim(&mut s, "a1b2c3dd", 1, "1.1");
+    ev(
+        &mut s,
+        "owner",
+        20,
+        "verified",
+        json!({"verif_id": "v1", "task_id": "1.1", "level": 2, "sha": "abc",
+               "evidence": "t", "by": "agent"}),
+    );
+    let page = drill::history(
+        s.conn(),
+        "r",
+        &drill::HistoryFilter {
+            limit: 50,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let verified = page.events.iter().find(|e| e.kind == "verified").unwrap();
+    assert_eq!(verified.summary, "Task 1.1 (T1.1) passed its tests");
+    assert_eq!(verified.task_shown.as_deref(), Some("1.1"));
+    assert_eq!(verified.task_title.as_deref(), Some("T1.1"));
+    let claimed = page
+        .events
+        .iter()
+        .find(|e| e.kind == "task_claimed")
+        .unwrap();
+    assert!(
+        claimed.summary.ends_with("claimed by session a1b2c3"),
+        "{}",
+        claimed.summary
+    );
+    let kinds: Vec<&str> = page.kinds.iter().map(|k| k.kind.as_str()).collect();
+    assert!(kinds.contains(&"verified") && kinds.contains(&"task_claimed"));
+    assert!(
+        page.kinds
+            .iter()
+            .any(|k| k.kind == "verified" && k.label == "Checked and passed")
     );
 }

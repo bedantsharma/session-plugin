@@ -68,3 +68,18 @@ Reviewed and kept (already plain, or a glossary term): "far off its task (40 min
 that session", Continue / Make it a task / Stop, ✓ Works / ✗ Broken, Adopt / Resume /
 Undo, "exploring" / "executing" and their tooltips, "stuck · 3 sessions", the forecast
 and cost lines, "drift ⚠ 40m", "tuned drift .35–.65, tolerance 25%".
+
+## Friends' first runs (2026-10-26)
+
+| Where it appears | Before | Now |
+|---|---|---|
+| Needs you, plan files found (dashboard, card) | — (plan files were silently ignored or imported) | "Found 2 plan files (login, search). None say what is done. Count progress from now, or tell me which are already finished?" · detail "Until you answer, no plan file is counted. "Fresh run" counts progress from now." · buttons **Fresh run** / **Some are done** (asks "which files are already finished") |
+| Session briefing, same question | — | the question, then "Nothing is imported until the owner answers (dashboard, or `bridge-screen import --fresh` / `--done <file>…`). Don't decide it for them." |
+| `bridge-screen import` while the question is open | — | the question, then "Answer with `bridge-screen import --fresh` (count progress from now) or `bridge-screen import --done <file>…` (those files are already finished)." |
+| After the answer | — | "Fresh run: imported 2 plan files; progress counts from now." · "Noted 1 plan file as already finished; imported 1 other." · a second answer: "already resolved: there is no open question about which plans are finished" |
+| A name that matches no plan file | — | "x is not one of the plan files found (login, search); nothing was recorded" |
+| Briefing, a run closed by a new plan | — | "Run 1 is finished (5 tasks, all passed their tests) and was closed; the new plan starts a fresh run from 0%." |
+| Closing a run (button "Close this run", `bridge-screen run close`) | — | "Closed run 1. Its tasks stay readable under "Completed runs"; the next plan starts a new run from 1." · refused: "can't close this run yet: 2 of 5 tasks haven't passed their tests (1.2 Append, …); nothing was closed" |
+| Project row (dashboard, status) | — | "Run finished — 100%, 5 tasks" (done colour; row sits below active projects) |
+| Project page | — | "Run 2" next to the name · "Completed runs" (Run 1: Core · finished 2026-10-20 · 5 tasks · 100%) · ids read `1.1` with the real id `(3.1)` in small muted text |
+| History panel | raw event name and JSON on every row; a free-text "kind" box | one sentence per row, e.g. "Task 4 (Login form) claimed by session a1b2c3", "Task 4 (Login form) passed its tests", "Plan edited: 3 changes (scope grew)"; the task's number and title; a "details" button for the raw data; a menu "All kinds of event" with plain labels ("Checked and passed", "Task claimed", …); an unknown kind reads as its name in words |

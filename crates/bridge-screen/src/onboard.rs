@@ -62,6 +62,43 @@ pub fn import(dir: &Path, file: Option<&Path>, into: Option<&str>, dry_run: bool
     Ok(())
 }
 
+/// `bridge-screen import --fresh | --done <file>…`: the owner's answer to "which plan
+/// files are already finished?" (an owner action, stale-click checked).
+pub fn import_scope(dir: &Path, fresh: bool, done: &[String]) -> Result<()> {
+    let repo = repo::identify(dir)?;
+    let home = Home::resolve()?;
+    let mut store = open_store(&home)?;
+    store.register_repo(&repo)?;
+    let done = if fresh || done.is_empty() {
+        None
+    } else {
+        Some(done.join(","))
+    };
+    crate::commands::owner_cmd(
+        &home,
+        &mut store,
+        Some(dir),
+        &OwnerAction::PlanScope {
+            repo: repo.id,
+            done,
+        },
+    )
+}
+
+/// `bridge-screen run close [-C DIR]`: close the repo's finished run (an owner action).
+pub fn run_close(dir: &Path) -> Result<()> {
+    let repo = repo::identify(dir)?;
+    let home = Home::resolve()?;
+    let mut store = open_store(&home)?;
+    store.register_repo(&repo)?;
+    crate::commands::owner_cmd(
+        &home,
+        &mut store,
+        Some(dir),
+        &OwnerAction::CloseRun { repo: repo.id },
+    )
+}
+
 /// `bridge-screen init [-C DIR] [--goal TEXT]`: the evidence and the agent's steps. Reads
 /// only (git and files); writes nothing but the repo's registration.
 pub fn init(dir: &Path, goal: Option<&str>) -> Result<()> {
@@ -245,6 +282,9 @@ pub fn render(outcomes: &[ImportOutcome], dry_run: bool) -> String {
             None => {
                 let _ = writeln!(out, "{}: unchanged", import::short_name(o.path()));
             }
+        }
+        if matches!(o, ImportOutcome::NeedsScope { .. }) {
+            let _ = writeln!(out, "{}", import::scope::HOW_TO_ANSWER);
         }
         if dry_run && let ImportOutcome::Imported { changes, .. } = o {
             for c in changes {

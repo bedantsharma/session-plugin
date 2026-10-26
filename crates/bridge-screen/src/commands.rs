@@ -68,9 +68,21 @@ pub fn run(cli: Cli) -> Result<()> {
             file,
             into,
             dry_run,
+            fresh,
+            done,
             dir,
-        } => crate::onboard::import(&dir, file.as_deref(), into.as_deref(), dry_run),
+        } => {
+            if fresh || !done.is_empty() {
+                crate::onboard::import_scope(&dir, fresh, &done)
+            } else {
+                crate::onboard::import(&dir, file.as_deref(), into.as_deref(), dry_run)
+            }
+        }
         Command::Init { goal, dir } => crate::onboard::init(&dir, goal.as_deref()),
+        Command::Run {
+            action: crate::cli::RunCommand::Close,
+            dir,
+        } => crate::onboard::run_close(&dir),
         Command::Wait { action, dir } => crate::onboard::wait(&dir, action),
         Command::Pages { action, dir } => crate::onboard::pages(&dir, &action),
         Command::Rebuild => rebuild(),

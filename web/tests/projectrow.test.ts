@@ -102,4 +102,22 @@ describe('ProjectRow', () => {
       unmount()
     }
   })
+
+  it('a finished run says so in the done colour', () => {
+    render(ProjectRow, {
+      project: project({
+        done_pct: 100,
+        claimed_pct: 0,
+        run: { number: 1, closed: 0, finished: { tasks: 5, text: 'Run finished — 100%, 5 tasks' } },
+      }),
+    })
+    const line = screen.getByTestId('run-finished')
+    expect(line).toHaveTextContent('Run finished — 100%, 5 tasks')
+    expect(line.className).toContain('text-ok')
+  })
+
+  it('an active run shows no finished line', () => {
+    render(ProjectRow, { project: project() })
+    expect(screen.queryByTestId('run-finished')).toBeNull()
+  })
 })

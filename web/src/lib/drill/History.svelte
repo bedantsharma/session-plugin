@@ -2,6 +2,7 @@
   // The raw event stream with filters (spec §10.2), newest first, a page at a time,
   // grouped by day (plan §2).
   import { Input } from '$lib/components/ui/input'
+  import { kindOptions, sentence, taskText } from './historyText'
   import type { Client } from '$lib/api'
   import { hhmm } from '$lib/format'
   import type { HistoryPage } from '$lib/types'
@@ -12,6 +13,9 @@
   let session = $state('')
   let task = $state('')
   let rows = $state<HistoryPage['events']>([])
+  let kinds = $state<HistoryPage['kinds']>([])
+  /** Rows whose raw details are open. */
+  let open = $state<Record<number, boolean>>({})
   let next = $state<number | null>(null)
   let error = $state<string | null>(null)
 
@@ -27,6 +31,7 @@
     try {
       const page = await client.get<HistoryPage>(`/api/history/${encodeURIComponent(repo)}?${q}`)
       rows = before === null ? page.events : [...rows, ...page.events]
+      if (page.kinds) kinds = page.kinds
       next = page.next_before
       error = null
     } catch (e) {
@@ -58,7 +63,16 @@
 
 <h2 class="text-xl font-semibold">History</h2>
 <div class="flex flex-wrap gap-2">
-  <Input class="h-9 w-48 text-sm" placeholder="kind" aria-label="kind" bind:value={kind} />
+  <select
+    class="h-9 w-56 rounded-lg border border-edge bg-surface px-3 text-sm"
+    aria-label="kind of event"
+    bind:value={kind}
+  >
+    <option value="">All kinds of event</option>
+    {#each kindOptions(kinds) as k (k.kind)}
+      <option value={k.kind}>{k.label}</option>
+    {/each}
+  </select>
   <Input class="h-9 w-48 text-sm" placeholder="session" aria-label="session" bind:value={session} />
   <Input class="h-9 w-48 text-sm" placeholder="task" aria-label="task" bind:value={task} />
 </div>
@@ -69,17 +83,32 @@
       <h3 class="text-base font-semibold">{day}</h3>
       <ol class="flex flex-col divide-y divide-line border-y border-line">
         {#each events as e (e.pos)}
-          <li
-            class="grid h-9 grid-cols-[3.5rem_12rem_6rem_minmax(0,1fr)] items-center gap-3 text-meta"
-          >
-            <span class="text-muted tabular-nums">{hhmm(e.ts)}</span>
-            <span class="truncate">{e.kind.replaceAll('_', ' ')}</span>
-            <span class="truncate font-mono text-muted"
-              >{e.session_id.slice(0, 6)} {e.task_id ?? ''}</span
-            >
-            <span class="truncate font-mono text-muted" title={JSON.stringify(e.data)}
-              >{JSON.stringify(e.data)}</span
-            >
+          {@const task = taskText(e)}
+          <li class="flex flex-col py-1.5 text-meta" data-event={e.pos}>
+            <div class="flex min-h-7 items-center gap-3">
+              <span class="w-14 shrink-0 text-muted tabular-nums">{hhmm(e.ts)}</span>
+              <span class="min-w-0 flex-1 truncate text-row" title={sentence(e)}>{sentence(e)}</span
+              >
+              {#if task}<span class="hidden max-w-56 truncate text-muted md:inline" title={task}
+                  >{task}</span
+                >{/if}
+              <button
+                type="button"
+                class="shrink-0 rounded-md border border-edge px-2 py-0.5 text-muted hover:bg-hover hover:text-fg"
+                aria-expanded={!!open[e.pos]}
+                aria-label={`${open[e.pos] ? 'Hide' : 'Show'} details of event ${e.pos}`}
+                onclick={() => (open[e.pos] = !open[e.pos])}>details</button
+              >
+            </div>
+            {#if open[e.pos]}
+              <pre
+                class="mt-1 overflow-x-auto rounded-md bg-surface p-2 font-mono text-muted"
+                data-testid="raw">{JSON.stringify(
+                  { kind: e.kind, session: e.session_id, task: e.task_id, data: e.data },
+                  null,
+                  2,
+                )}</pre>
+            {/if}
           </li>
         {/each}
       </ol>

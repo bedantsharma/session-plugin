@@ -52,6 +52,7 @@
     permission_wait: 'waiting',
     verify_overdue: 'verify',
     leftover: 'leftovers',
+    plan_scope: 'plans',
   }
 
   async function run(item: NeedsYou, spec: ActionSpec, extra: Record<string, unknown> = {}) {

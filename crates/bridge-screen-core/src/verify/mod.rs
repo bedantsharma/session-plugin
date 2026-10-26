@@ -383,15 +383,18 @@ fn pct(part: u64, total: u64) -> u32 {
     u32::try_from(part * 100 / total).unwrap_or(100)
 }
 
+/// Done% and claimed% of the **current run** (spec §10.1); closed runs are left out.
 pub fn progress(conn: &Connection, repo_id: &str) -> Result<Progress> {
+    let first = crate::plan::runs::load(conn, repo_id)?.current_first;
     let mut stmt = conn.prepare_cached(
         "SELECT n.status, n.estimate_min FROM plan_nodes n
          WHERE n.repo_id = ?1 AND n.kind IN ('task', 'subtask') AND n.status != 'dropped'
+           AND CAST(substr(n.id, 1, instr(n.id || '.', '.') - 1) AS INTEGER) >= ?2
            AND NOT EXISTS (SELECT 1 FROM plan_nodes c
                            WHERE c.repo_id = n.repo_id AND c.parent_id = n.id
                              AND c.status != 'dropped')",
     )?;
-    let rows = stmt.query_map([repo_id], |r| {
+    let rows = stmt.query_map(rusqlite::params![repo_id, first], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?))
     })?;
     let mut p = Progress::default();

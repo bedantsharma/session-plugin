@@ -28,7 +28,7 @@
 - **Cost (per task, session, project):** tokens times the prices in your config, worked out when you look (never stored); "unknown" when a model has no price.
 - **Forecast (P50 / P90):** the finish range. P50 = a 50% chance of being done by that date ("likely by"); P90 = a 90% chance ("could take until").
 - **Calibration:** how long finished tasks actually took against their estimates (e.g. "tasks typically take 1.8× their estimate" — the middle value, so one runaway task doesn't skew it); the forecast is built from it.
-- **Imported plan:** a plan file in `docs/superpowers/plans/` that bridge-screen read into the plan by itself (it never writes to the file). A ticked step counts as claimed done, never checked. A file already planned by hand is only noted, not imported.
+- **Imported plan:** a plan file (a `*.md` named plan, roadmap, todo or tasks, in any folder) that bridge-screen read into the plan by itself (it never writes to the file). A ticked step counts as claimed done, never checked. A file already planned by hand is only noted, not imported.
 - **Set up (`bridge-screen init`):** for a repo with work but no plan: bridge-screen lists what the repo shows, the agent drafts a plan, you confirm it once, and tasks that look done are recorded as claimed and checked for "the code exists".
 - **Waiting on (a wait):** a session saying it is blocked on a task (here or in another repo) or on something outside ("Sam's API key"). Shown as an amber "waiting"; a wait on a task ends by itself when that task's tests pass. Not a needs-you item.
 - **Plan link (dependency):** a task that can't finish before another task, possibly in another repo (`api:2.4`). A wait can be turned into one ("Make it a plan link").
@@ -39,3 +39,6 @@
 - **Worktree:** a second working folder of the same repo, so parallel sessions don't trip over each other.
 - **Living docs:** these five pages in `docs/lead/`: intent, project map, current state, decision log, glossary. For any other repo bridge-screen offers the same five as *project pages*.
 - **Project pages:** the same five pages (what the project is for, how it fits together, where things stand, why choices were made, the words used) for any repo bridge-screen is used in. Kept in bridge-screen's own folder (`~/.bridge-screen/lead/`), never in the repo, and shared by every worktree. Created only after you say yes once (`bridge-screen pages set-up`); agents read and update them; the dashboard shows them read-only. See: project map, Project pages.
+- **Run:** one round of a goal's work. When every task in it passed its tests and a new plan arrives (or you close it), it is closed and the next plan starts a new run at 0% with numbers from 1. Closed runs stay readable under "Completed runs". See: decision #40.
+- **Baseline:** plan files noted as already finished or planned by hand: bridge-screen remembers them but does not count their tasks. "Some are done" baselines the files you name.
+- **Needs you:** the red list at the top of the dashboard of things only you can answer (a drift question, a check, unsaved files, or "which plan files are finished?").

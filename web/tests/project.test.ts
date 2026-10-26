@@ -20,6 +20,7 @@ const drill = (scope: ProjectDrill['scope']): ProjectDrill => ({
   tree: [
     {
       id: 'G',
+      shown: 'G',
       parent_id: null,
       kind: 'goal',
       title: 'Ship shop',
@@ -39,6 +40,9 @@ const drill = (scope: ProjectDrill['scope']): ProjectDrill => ({
       depth: 0,
     },
   ],
+  run_number: 1,
+  completed_runs: [],
+  can_close_run: false,
   scope,
   replans: [],
 })
@@ -146,5 +150,52 @@ describe('Project drill', () => {
     expect(deps).toEqual(['after api:2.4 · ready', 'after api:2.5 · waiting'])
     // A node added by hand says nothing about where it came from.
     expect(container.querySelector('[data-node="G"] [data-testid="source"]')).toBeNull()
+  })
+
+  it('numbers restart per run, raw ids stay small, and finished runs stay readable', async () => {
+    const d = drill([])
+    d.run_number = 2
+    d.can_close_run = true
+    d.tree.push({
+      ...d.tree[0],
+      id: '3.1',
+      shown: '1.1',
+      parent_id: 'G',
+      kind: 'task',
+      title: 'Invoices',
+      intent: null,
+      rollup: null,
+      depth: 1,
+    })
+    d.completed_runs = [
+      {
+        number: 1,
+        title: 'Core',
+        closed_at: '2026-10-20T10:00:00Z',
+        tasks: 2,
+        done_pct: 100,
+        tree: [{ ...d.tree[0], id: '1.1', shown: '1.1', kind: 'task', title: 'Schema', depth: 1 }],
+      },
+    ]
+    const { container } = render(Project, props(d))
+    const task = await vi.waitFor(() => {
+      const el = container.querySelector('[data-node="3.1"]')
+      if (!el) throw new Error('not yet')
+      return el
+    })
+    expect(task).toHaveTextContent('1.1')
+    expect(task.querySelector('[data-testid="raw-id"]')).toHaveTextContent('(3.1)')
+    expect(screen.getByTestId('run-number')).toHaveTextContent('Run 2')
+    expect(screen.getByRole('button', { name: 'Close this run' })).toBeInTheDocument()
+    const run = container.querySelector('[data-run="1"]')!
+    expect(run).toHaveTextContent('Run 1: Core')
+    expect(run).toHaveTextContent('2 tasks')
+    expect(run).toHaveTextContent('100%')
+  })
+
+  it('offers no close button until the run is finished', async () => {
+    render(Project, props(drill([])))
+    await screen.findByRole('button', { name: /show intent/i })
+    expect(screen.queryByRole('button', { name: 'Close this run' })).toBeNull()
   })
 })

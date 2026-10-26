@@ -35,7 +35,10 @@ pub const HISTORY_DATA_MAX: usize = 2048;
 /// One plan node in the drill-down tree.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TreeNode {
+    /// The raw id agents and the CLI use (`3.1`).
     pub id: String,
+    /// The id as the owner reads it: numbers restart in each run (`1.1`).
+    pub shown: String,
     pub parent_id: Option<String>,
     pub kind: NodeKind,
     pub title: String,
@@ -136,9 +139,29 @@ pub struct Replan {
 pub struct ProjectDrill {
     pub repo_id: String,
     pub name: String,
+    /// The current run (spec §10.1): what the progress numbers count.
     pub tree: Vec<TreeNode>,
+    /// Which run `tree` is (1 for the first).
+    pub run_number: u32,
+    /// Finished runs, oldest first; still readable.
+    pub completed_runs: Vec<CompletedRun>,
     pub scope: Vec<ScopePoint>,
     pub replans: Vec<Replan>,
+    /// The current run is finished and can be closed with "Close this run".
+    pub can_close_run: bool,
+}
+
+/// A run that was closed after every task passed its tests.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CompletedRun {
+    pub number: u32,
+    /// Its milestones' titles, joined.
+    pub title: String,
+    pub closed_at: String,
+    pub tasks: usize,
+    pub done_pct: u32,
+    /// Its goal-less plan tree, with the numbers it had while it ran.
+    pub tree: Vec<TreeNode>,
 }
 
 fn actual_minutes(conn: &Connection, repo: &str) -> Result<HashMap<String, i64>> {
@@ -162,32 +185,75 @@ pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectD
     let marks = verify::plan_marks(conn, repo)?;
     let actual = actual_minutes(conn, repo)?;
     let decisions = decision_counts(conn, repo)?;
-    let nodes = load_tree(conn, repo, false)?;
-    let rolled = crate::plan::rollups(&nodes);
-    let mut tree = Vec::with_capacity(nodes.len());
-    for n in nodes {
-        let external_deps = external_rows(conn, &n)?;
-        tree.push(TreeNode {
-            external_deps,
-            source_text: source_text(&n.source),
-            branch: n.branch.clone(),
-            rollup: rolled.get(&n.id).copied(),
-            stale: marks.get(&n.id).is_some_and(|m| m == "stale"),
-            owner_checked: marks.get(&n.id).is_some_and(|m| m == "✓owner"),
-            actual_min: actual.get(&n.id).copied().unwrap_or(0),
-            decisions: decisions.get(&n.id).copied().unwrap_or(0),
-            id: n.id,
-            parent_id: n.parent_id,
-            kind: n.kind,
-            title: n.title,
-            intent: n.intent,
-            status: n.status,
-            hill: n.hill,
-            estimate_min: n.estimate_min,
-            depends_on: n.depends_on,
-            depth: n.depth,
+    let runs = crate::plan::runs::load(conn, repo)?;
+    let all = load_tree(conn, repo, false)?;
+    let rolled = crate::plan::rollups(&all);
+    let build = |nodes: Vec<PlanNode>,
+                 rolled: &HashMap<String, crate::plan::Rollup>|
+     -> Result<Vec<TreeNode>> {
+        let mut tree = Vec::with_capacity(nodes.len());
+        for n in nodes {
+            let external_deps = external_rows(conn, &n)?;
+            tree.push(TreeNode {
+                external_deps,
+                source_text: source_text(&n.source),
+                branch: n.branch.clone(),
+                rollup: rolled.get(&n.id).copied(),
+                stale: marks.get(&n.id).is_some_and(|m| m == "stale"),
+                owner_checked: marks.get(&n.id).is_some_and(|m| m == "✓owner"),
+                actual_min: actual.get(&n.id).copied().unwrap_or(0),
+                decisions: decisions.get(&n.id).copied().unwrap_or(0),
+                shown: runs.shown(&n.id),
+                id: n.id,
+                parent_id: n.parent_id,
+                kind: n.kind,
+                title: n.title,
+                intent: n.intent,
+                status: n.status,
+                hill: n.hill,
+                estimate_min: n.estimate_min,
+                depends_on: n.depends_on,
+                depth: n.depth,
+            });
+        }
+        Ok(tree)
+    };
+    let mut completed_runs = Vec::new();
+    for run in &runs.closed {
+        let mine: Vec<PlanNode> = all
+            .iter()
+            .filter(|n| {
+                crate::plan::runs::top_number(&n.id).is_none_or(|t| t >= run.first && t < run.next)
+            })
+            .cloned()
+            .collect();
+        let leaves = super::leaves(&mine);
+        let tasks = leaves.len();
+        let titles: Vec<&str> = mine
+            .iter()
+            .filter(|n| n.kind == NodeKind::Milestone)
+            .map(|n| n.title.as_str())
+            .collect();
+        let done = leaves
+            .iter()
+            .filter(|n| crate::plan::is_done(n.status))
+            .count();
+        completed_runs.push(CompletedRun {
+            number: run.number,
+            title: if titles.is_empty() {
+                format!("Run {}", run.number)
+            } else {
+                titles.join(", ")
+            },
+            closed_at: run.closed_at.clone(),
+            tasks,
+            done_pct: u32::try_from(done * 100 / tasks.max(1)).unwrap_or(100),
+            tree: build(mine.into_iter().filter(|n| n.id != "G").collect(), &rolled)?,
         });
     }
+    let current: Vec<PlanNode> = all.into_iter().filter(|n| runs.in_current(&n.id)).collect();
+    let rolled_now = crate::plan::rollups(&current);
+    let tree = build(current, &rolled_now)?;
     let mut stmt = conn.prepare(
         "SELECT ts, json_extract(data, '$.reason'), COALESCE(json_extract(data, '$.op_count'), 0),
                 session_id
@@ -207,8 +273,11 @@ pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectD
         repo_id: repo.to_string(),
         name: repo_name(conn, repo)?.unwrap_or_else(|| repo.to_string()),
         tree,
+        run_number: u32::try_from(runs.closed.len() + 1).unwrap_or(u32::MAX),
+        completed_runs,
         scope: scope_line(conn, repo)?,
         replans,
+        can_close_run: crate::plan::runs::finished(conn, repo)?,
     })
 }
 
@@ -300,7 +369,7 @@ impl Replay {
     }
 
     /// (total live estimate, the part at L2 or above).
-    fn totals(&self) -> (u64, u64) {
+    fn totals(&self, first: u32) -> (u64, u64) {
         let done: HashSet<&str> = self
             .verifs
             .values()
@@ -315,7 +384,9 @@ impl Replay {
             .collect();
         let (mut total, mut done_min) = (0, 0);
         for (id, n) in &self.nodes {
-            let leaf = matches!(n.kind.as_str(), "task" | "subtask")
+            let in_run = crate::plan::runs::top_number(id).is_none_or(|t| t >= first);
+            let leaf = in_run
+                && matches!(n.kind.as_str(), "task" | "subtask")
                 && !n.dropped
                 && !parents.contains(id.as_str());
             if leaf {
@@ -345,12 +416,17 @@ pub fn scope_line(conn: &Connection, repo: &str) -> Result<Vec<ScopePoint>> {
             r.get::<_, String>(2)?,
         ))
     })?;
+    let runs = crate::plan::runs::load(conn, repo)?;
     let mut replay = Replay::default();
     let mut points: Vec<ScopePoint> = Vec::new();
     for row in rows {
         let (ts, kind, data) = row?;
         replay.apply(&kind, &serde_json::from_str(&data)?);
-        let (total_min, done_min) = replay.totals();
+        let (total_min, done_min) = replay.totals(runs.current_first);
+        // After a run closed, the line starts where the current run does.
+        if points.is_empty() && total_min == 0 && !runs.closed.is_empty() {
+            continue;
+        }
         if points
             .last()
             .is_none_or(|p| (p.total_min, p.done_min) != (total_min, done_min))
@@ -1008,15 +1084,29 @@ pub struct HistoryRow {
     pub kind: String,
     pub session_id: String,
     pub task_id: Option<String>,
+    /// The task's number as the owner reads it, and its title.
+    pub task_shown: Option<String>,
+    pub task_title: Option<String>,
+    /// What happened, in a plain sentence (the raw payload is behind "details").
+    pub summary: String,
     pub actor: Value,
     /// The payload; a string cut at [`HISTORY_DATA_MAX`] bytes when larger.
     pub data: Value,
+}
+
+/// One entry of the history's kind filter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct KindOption {
+    pub kind: String,
+    pub label: String,
 }
 
 /// A page of history, newest first.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct HistoryPage {
     pub events: Vec<HistoryRow>,
+    /// The kinds of event this repo has, for the filter menu: (kind, plain label).
+    pub kinds: Vec<KindOption>,
     /// Pass as `before` for the next page; `None` on the last page.
     pub next_before: Option<i64>,
 }
@@ -1051,8 +1141,22 @@ pub fn history(conn: &Connection, repo: &str, f: &HistoryFilter) -> Result<Histo
         },
     )?;
     let mut events = Vec::new();
+    let runs = crate::plan::runs::load(conn, repo)?;
     for row in rows {
         let (pos, ts, kind, session_id, task_id, actor, data) = row?;
+        let full: Value = serde_json::from_str(&data).unwrap_or(Value::Null);
+        let task_title = match &task_id {
+            Some(t) => crate::claim::task_title(conn, repo, t)?,
+            None => None,
+        };
+        let task_shown = task_id.as_deref().map(|t| runs.shown(t));
+        let label = task_shown
+            .clone()
+            .map(|shown| super::history_text::TaskLabel {
+                shown,
+                title: task_title.clone().unwrap_or_default(),
+            });
+        let summary = super::history_text::summarize(&kind, &full, &session_id, label.as_ref());
         let data = if data.len() > HISTORY_DATA_MAX {
             let mut cut = HISTORY_DATA_MAX;
             while !data.is_char_boundary(cut) {
@@ -1060,7 +1164,7 @@ pub fn history(conn: &Connection, repo: &str, f: &HistoryFilter) -> Result<Histo
             }
             Value::String(format!("{}…", &data[..cut]))
         } else {
-            serde_json::from_str(&data)?
+            full
         };
         events.push(HistoryRow {
             pos,
@@ -1068,6 +1172,9 @@ pub fn history(conn: &Connection, repo: &str, f: &HistoryFilter) -> Result<Histo
             kind,
             session_id,
             task_id,
+            task_shown,
+            task_title,
+            summary,
             actor: serde_json::from_str(&actor)?,
             data,
         });
@@ -1078,8 +1185,20 @@ pub fn history(conn: &Connection, repo: &str, f: &HistoryFilter) -> Result<Histo
     } else {
         None
     };
+    let mut kinds_stmt =
+        conn.prepare("SELECT DISTINCT kind FROM events WHERE repo_id = ?1 ORDER BY kind")?;
+    let kinds = kinds_stmt
+        .query_map([repo], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?
+        .into_iter()
+        .map(|kind| KindOption {
+            label: super::history_text::kind_label(&kind),
+            kind,
+        })
+        .collect();
     Ok(HistoryPage {
         events,
+        kinds,
         next_before,
     })
 }

@@ -7,8 +7,10 @@
 //! `bridge-screen import` runs it without the file limit, or [`import_path`] for one file.
 
 pub mod diff;
+pub mod find;
 pub mod parse;
 pub mod project;
+pub mod scope;
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -28,11 +30,9 @@ use crate::plan::{
 use crate::store::{Actor, EventDraft, Store, append_in};
 
 pub use diff::{ImportDiff, ImportTarget, ItemLink, SourceItem};
+pub use find::{PLANS_DIR, plan_files, spec_files};
 pub use parse::{ParsedPlan, ParsedStep, ParsedTask, parse};
 pub use project::{IMPORT_KINDS, ImportedItem, PlanFileSeen, PlanImported, project};
-
-/// The plan folder, relative to the checkout.
-pub const PLANS_DIR: &str = "docs/superpowers/plans";
 
 /// Largest plan file read.
 pub const MAX_FILE_BYTES: u64 = 1 << 20;
@@ -99,6 +99,17 @@ pub enum ImportOutcome {
     NeedsLink {
         path: String,
     },
+    /// A finished run was closed because this file's plan arrived; its progress starts
+    /// from 0% (spec §10.1).
+    RunClosed {
+        number: u32,
+        tasks: usize,
+    },
+    /// Plan files were found but nothing says what is finished: nothing was imported; the
+    /// owner is asked once ([`scope`]).
+    NeedsScope {
+        paths: Vec<String>,
+    },
     /// Something went wrong importing this file; nothing of it was written.
     Failed {
         path: String,
@@ -115,6 +126,8 @@ impl ImportOutcome {
             | Self::Skipped { path, .. }
             | Self::NeedsLink { path }
             | Self::Failed { path, .. } => path,
+            Self::NeedsScope { paths } => paths.first().map_or("", String::as_str),
+            Self::RunClosed { .. } => "",
         }
     }
 
@@ -169,6 +182,12 @@ impl ImportOutcome {
             )),
             Self::Skipped { path, why } => Some(format!("Skipped {}: {why}", short_name(path))),
             Self::NeedsLink { path } => Some(needs_link_line(path)),
+            Self::NeedsScope { paths } => Some(scope::question_text(paths)),
+            Self::RunClosed { number, tasks } => Some(format!(
+                "Run {number} is finished ({tasks} task{}, all passed their tests) and was closed; \
+                 the new plan starts a fresh run from 0%.",
+                if *tasks == 1 { "" } else { "s" }
+            )),
             Self::Failed { path, error } => {
                 Some(format!("Could not import {}: {error}", short_name(path)))
             }
@@ -326,9 +345,10 @@ fn file_stem(rel: &str) -> String {
     parse::one_line(short_name(rel))
 }
 
-/// A live goal or milestone whose title is `title` (case-insensitive).
+/// A live goal or milestone of the current run whose title is `title` (case-insensitive);
+/// a closed run is never reopened by a new file.
 fn container_titled(conn: &Connection, repo_id: &str, title: &str) -> Result<Option<String>> {
-    Ok(load_tree(conn, repo_id, false)?
+    Ok(crate::plan::runs::run_tree(conn, repo_id)?
         .into_iter()
         .find(|n| {
             matches!(n.kind, NodeKind::Goal | NodeKind::Milestone)
@@ -733,23 +753,6 @@ pub fn import_path(
     })
 }
 
-/// The plan files under `root`, `*.md` sorted by name. A missing folder has none.
-pub fn plan_files(root: &Path) -> Result<Vec<PathBuf>> {
-    let dir = root.join(PLANS_DIR);
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(e.into()),
-    };
-    let mut files: Vec<PathBuf> = entries
-        .filter_map(std::result::Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "md") && p.is_file())
-        .collect();
-    files.sort();
-    Ok(files)
-}
-
 /// Check the plan folder and import new or changed files (spec §12.1). Files whose size and
 /// mtime match their last import are skipped unread; the rest are read until the budget is
 /// spent (what's left waits for the next scan). A repo with a hand-made plan that never
@@ -764,6 +767,9 @@ pub fn scan(
     let files = plan_files(root)?;
     if files.is_empty() {
         return Ok(Vec::new());
+    }
+    if let Some(asked) = scope::gate(store, repo_id, root, &files, ctx, budget)? {
+        return Ok(vec![asked]);
     }
     let known = sources(store.conn(), repo_id)?;
     if known.is_empty() && has_plan(store.conn(), repo_id)? {
@@ -807,9 +813,11 @@ pub fn scan(
         return store.dry_run(|tx| {
             for (path, rel) in due {
                 tx.execute_batch("SAVEPOINT import_file")?;
+                let before = closed_count(tx, repo_id)?;
                 match import_in(tx, repo_id, root, &path, ctx, None) {
                     Ok(o) => {
                         tx.execute_batch("RELEASE import_file")?;
+                        out.extend(run_closed_note(tx, repo_id, before)?);
                         out.push(o);
                     }
                     Err(e) => {
@@ -825,8 +833,12 @@ pub fn scan(
         });
     }
     for (path, rel) in due {
+        let before = closed_count(store.conn(), repo_id)?;
         match import_path(store, repo_id, root, &path, ctx, None) {
-            Ok(o) => out.push(o),
+            Ok(o) => {
+                out.extend(run_closed_note(store.conn(), repo_id, before)?);
+                out.push(o);
+            }
             Err(e) => out.push(ImportOutcome::Failed {
                 path: rel,
                 error: e.to_string(),
@@ -834,6 +846,29 @@ pub fn scan(
         }
     }
     Ok(out)
+}
+
+fn closed_count(conn: &Connection, repo_id: &str) -> Result<usize> {
+    Ok(crate::plan::runs::load(conn, repo_id)?.closed.len())
+}
+
+/// A note when the import just closed the finished run.
+fn run_closed_note(
+    conn: &Connection,
+    repo_id: &str,
+    before: usize,
+) -> Result<Option<ImportOutcome>> {
+    let runs = crate::plan::runs::load(conn, repo_id)?;
+    if runs.closed.len() <= before {
+        return Ok(None);
+    }
+    let Some(last) = runs.closed.last() else {
+        return Ok(None);
+    };
+    Ok(Some(ImportOutcome::RunClosed {
+        number: last.number,
+        tasks: crate::plan::runs::tasks_in(conn, repo_id, last)?,
+    }))
 }
 
 /// Record every existing plan file as already planned by hand. Files over the read budget
