@@ -20,7 +20,7 @@
 - **npm:** not live. The automatic publish keeps failing on a one-time-code request, even with a new token that has the two-factor bypass switch on. The cause is not confirmed.
 - **crates.io:** not published; it ships with the next version.
 
-**In flight:** the fixes for friends' first runs (branch `fix/user-reported-bugs`, not yet merged): plans found in any folder; one question when nothing says what is finished; a finished plan closes and the next one starts a fresh run at 0%; the History panel in plain sentences. See decisions #37–#40.
+**In flight:** the fixes for friends' first runs (branch `fix/user-reported-bugs`, not yet merged): plans found in any folder; one question when nothing says what is finished; a finished plan closes and the next one starts a fresh run at 0%; the History panel in plain sentences. See decisions #38–#41.
 
 **Open problems:**
 - **npm:** the first version has to be published by hand (steps given). Your passkey can't produce the one-time code npm asks for, so an authenticator app (for example Apple's Passwords app or 1Password) has to be added to the npm account first. After the package exists, a bypass token should be able to publish later versions.

@@ -171,6 +171,38 @@ fn json(path: &Path) -> Value {
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
+/// crates.io only accepts an SPDX licence name or a licence file. PolyForm Strict is not on the
+/// SPDX list (the v0.1.1 crates.io publish was refused for it), so the crates name the file.
+#[test]
+fn crates_name_their_licence_by_file() {
+    let root = std::fs::read_to_string(checkout().join("Cargo.toml")).unwrap();
+    assert!(
+        root.lines()
+            .any(|l| l.trim() == r#"license-file = "LICENSE.md""#),
+        "Cargo.toml [workspace.package] must set license-file = \"LICENSE.md\""
+    );
+    assert!(
+        !root
+            .lines()
+            .any(|l| l.trim_start().starts_with("license =")),
+        "Cargo.toml must not set a non-SPDX `license` string (crates.io refuses it)"
+    );
+    for krate in ["bridge-screen-core", "bridge-screen"] {
+        let path = checkout().join("crates").join(krate).join("Cargo.toml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.lines()
+                .any(|l| l.trim() == "license-file.workspace = true"),
+            "{krate} must inherit license-file from the workspace"
+        );
+        assert!(
+            !text.lines().any(|l| l.trim() == "license.workspace = true"),
+            "{krate} must not inherit a `license` string"
+        );
+    }
+    assert!(checkout().join("LICENSE.md").is_file());
+}
+
 #[test]
 fn plugin_package_is_consistent() {
     let plugin = checkout().join("plugin");
