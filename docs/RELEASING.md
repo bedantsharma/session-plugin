@@ -2,37 +2,37 @@
 
 ## One-time setup (owner)
 
-1. Create the public repo `bedantsharma/homebrew-tap` (empty is fine).
+1. Create the public repo `bedantsharma/homebrew-tap` (with a README: the release job can't check out an empty repo).
 2. Create a GitHub token that can push to that repo and save it in this repo's Actions secrets as `HOMEBREW_TAP_TOKEN`.
-3. Create an npm access token (publish rights) and save it as the Actions secret `NPM_TOKEN`.
+3. Create an npm access token (publish rights) and save it as the Actions secret `NPM_TOKEN`. npm may still ask a
+   one-time code on the first publish of a new package; see "npm" below.
 4. On pypi.org, add a "pending trusted publisher" for project `bridge-screen`: owner `bedantsharma`, repo `session-plugin`, workflow `pypi.yml`, environment `pypi`. Create the `pypi` environment under this repo's Settings → Environments.
-5. On crates.io, make sure the crate names `bridge-screen-core` and `bridge-screen` are free
-   (search for them; the first publish claims them), create an API token with the
-   `publish-new` and `publish-update` scopes, and save it as the Actions secret
-   `CARGO_REGISTRY_TOKEN`.
 
-## Before the next tag (checklist)
+There is no crates.io route (decision #38): don't add a `CARGO_REGISTRY_TOKEN`.
 
-`v0.1.0` is already released (GitHub Release, brew, npm, PyPI), before the crates.io workflow existed,
-so neither crate is on crates.io yet: the next tag (`v0.1.1`) is the first crates.io publish and the
-first run of `crates.io` workflow. Do these in order; each says what "done" looks like.
+## Before a tag (checklist)
 
-1. **The five one-time setup items above are done**: tap repo and `HOMEBREW_TAP_TOKEN`, `NPM_TOKEN`,
-   the PyPI pending trusted publisher with the `pypi` environment, and `CARGO_REGISTRY_TOKEN`
-   (the crate names checked as free). Done when the Actions secrets page lists the three tokens and the
+1. **The one-time setup items above are done.** Done when the Actions secrets page lists the tokens and the
    `pypi` environment exists.
-2. **`dist plan` reviewed.** It must list `bridge-screen-<arch>-<os>.tar.xz` archives (with `.sha256`
+2. **`dist plan --tag v<version>` reviewed.** It must list `bridge-screen-<arch>-<os>.tar.xz` archives (with `.sha256`
    files) for `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu` and
    `aarch64-unknown-linux-gnu`: the plugin launcher downloads exactly those names. It also lists the
    Windows zip, the shell and PowerShell installers, the Homebrew formula and the npm package.
+   `dist plan` does not copy files; to prove the archives really build, run
+   `dist build --artifacts=local --target=<your target> --tag=v<version>` (the v0.1.2 and v0.1.3 releases
+   failed at exactly that copy step, which the plan check cannot see).
 3. **`claude plugin validate ./plugin` passes**, and `plugin/.claude-plugin/plugin.json`'s `version`
-   equals the workspace version.
-4. **Rehearse with a prerelease tag first**: bump the workspace version, the plugin manifest version and
-   the core dependency's `version` in `crates/bridge-screen/Cargo.toml` together to `0.1.1-rc.1`, tag
-   `v0.1.1-rc.1`. dist marks it a prerelease and skips the Homebrew and npm publish; the `crates.io`
-   workflow skips it too. Check the GitHub Release page, the installers and the PyPI upload. Done when
-   the archives download and `bridge-screen --version` runs from one of them.
-5. **Then the real tag**: set all three versions to `0.1.1`, commit, tag `v0.1.1`, push the tag.
+   equals the workspace version (a test checks it, and the core dependency's version too).
+4. **Rehearse with a prerelease tag when the release changes** (a new route, new release settings): bump the
+   workspace version, the plugin manifest version and the core dependency's `version` in
+   `crates/bridge-screen/Cargo.toml` together to `<version>-rc.1`, tag `v<version>-rc.1`. dist marks it a
+   prerelease and skips the Homebrew and npm publish; PyPI still uploads it. Done when the archives download
+   and `bridge-screen --version` runs from one of them.
+5. **Then the real tag**: set all three versions to `<version>`, commit through a pull request, tag the merge
+   commit, push the tag.
+
+**The tag must come after the merge, and only once the build is known to work:** `main` is what the plugin
+installs from, so a version on `main` with no matching GitHub release breaks fresh plugin installs.
 
 Windows: the program itself is released for Windows (zip, PowerShell installer, wheel, npm). The
 plugin's own launcher is not: on Windows it tells the user to install the program and put it on
@@ -41,29 +41,31 @@ Windows plugin support needs a Windows machine to test on, so it is left as a fo
 
 ## Cutting a release
 
-1. Bump `version` in the root `Cargo.toml` (`[workspace.package]`) and commit.
-2. `dist plan` to check the release.
-3. `git tag v<version> && git push origin v<version>`.
-4. The `Release` workflow builds binaries, the GitHub Release, installers, the Homebrew formula and npm packages. The `PyPI` workflow uploads wheels. The `crates.io` workflow publishes `bridge-screen-core`, then `bridge-screen` (it skips prerelease tags such as `v0.1.1-rc.1`, because a crates.io version can never be taken back).
+1. Bump `version` in the root `Cargo.toml` (`[workspace.package]`), the core dependency's version in
+   `crates/bridge-screen/Cargo.toml`, `plugin/.claude-plugin/plugin.json` and the lock file; commit.
+2. `dist plan` (and the local `dist build` above) to check the release.
+3. `git tag v<version> <merge commit> && git push origin v<version>`.
+4. The `Release` workflow builds binaries, the GitHub Release, installers, the Homebrew formula and npm packages. The `PyPI` workflow uploads wheels.
 
-## crates.io
+## Licence field
 
-- Both crates are published, in this order: `bridge-screen-core`, then `bridge-screen` (which depends on it).
-  The binary's dependency on the core names both the path and the version
-  (`{ version = "<workspace version>", path = "../bridge-screen-core" }`). Bump it together with the
-  workspace version; a test (`plugin_package_is_consistent`) fails if they differ.
-- Check by hand without publishing: `cargo package --workspace` (packages and builds both crates; it
-  resolves the core from a temporary local registry, so it works before the core is on crates.io).
-  `cargo publish -p bridge-screen --dry-run` alone fails until the core is on the index; that is expected.
-- `cargo install bridge-screen` builds without the dashboard: `bridge-screen ui` then serves a page that
-  says how to build it. Say so in the release notes. The binaries on the GitHub Release, brew, npm and
-  PyPI embed it.
+Keep the crates' licence as a plain `license = "PolyForm-Strict-1.0.0"` string. Do not switch to
+`license-file`: dist mis-reads an inherited `license-file` as `../../LICENSE.md` from the repo root and
+every program build fails. A test (`crates_name_their_licence_by_string`) guards it. The string is not an
+SPDX name, which only matters to crates.io, and bridge-screen doesn't publish there.
+
+## npm
+
+The first publish of a new package asks npm for a one-time code even with a "bypass two-factor" token. If the
+`publish-npm` job fails with `EOTP`, publish the first version by hand from the release's
+`bridge-screen-npm-package.tar.gz` (`npm publish ./bridge-screen-npm-package.tar.gz --access public`, with the
+code from an authenticator app added to the npm account). Later versions can use the token.
 
 ## What users run
 
 - `brew install bedantsharma/tap/bridge-screen`
 - `pipx install bridge-screen` or `uv tool install bridge-screen`
-- `npx bridge-screen`
+- `npx bridge-screen` (once the package exists)
 - `curl -LsSf https://github.com/bedantsharma/session-plugin/releases/latest/download/bridge-screen-installer.sh | sh`
 
 ## The embedded web app
@@ -72,7 +74,6 @@ The binary embeds the dashboard (`web/dist`) and the desktop card (`web/dist-car
 build time. Every release build runs `npm --prefix web ci && npm --prefix web run build`
 first: the `Release` workflow through dist's `github-build-setup` hook
 (`.github/build-setup.yml`, set in `dist-workspace.toml`), the `PyPI` workflow and the CI
-Rust jobs as a step of their own. Without a web build (e.g. `cargo install` from
-crates.io) the binary still builds and `bridge-screen ui` serves a page saying how to
-build the dashboard; the JSON API works either way. After changing
-`.github/build-setup.yml`, run `dist generate --mode ci`.
+Rust jobs as a step of their own. Without a web build (e.g. a plain `cargo build` of a checkout) the
+binary still builds and `bridge-screen ui` serves a page saying how to build the dashboard; the JSON API
+works either way. After changing `.github/build-setup.yml`, run `dist generate --mode ci`.
