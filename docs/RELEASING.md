@@ -47,6 +47,13 @@ Windows plugin support needs a Windows machine to test on, so it is left as a fo
 3. `git tag v<version> <merge commit> && git push origin v<version>`.
 4. The `Release` workflow builds binaries, the GitHub Release, installers, the Homebrew formula and npm packages. The `PyPI` workflow uploads wheels.
 
+## Runners
+
+GitHub retires runner images. v0.2.0's Apple Silicon build was cancelled with "The configuration
+'macos-14-arm64-us-default' is not supported", so `dist-workspace.toml` pins it under
+`[dist.github-custom-runners]`. If a build job is cancelled within seconds and has no log, check the
+job's annotations for a retired runner and update that table (then `dist generate --mode ci`).
+
 ## Licence field
 
 Keep the crates' licence as a plain `license = "PolyForm-Strict-1.0.0"` string. Do not switch to
