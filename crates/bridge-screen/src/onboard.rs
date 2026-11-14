@@ -121,6 +121,135 @@ pub fn run_close(dir: &Path, track: Option<u32>) -> Result<()> {
     )
 }
 
+/// `1 minute`, `3 hours`, `2 days`.
+fn age_words(secs: i64) -> String {
+    let (n, unit) = if secs < 3600 {
+        ((secs / 60).max(1), "minute")
+    } else if secs < 86_400 {
+        (secs / 3600, "hour")
+    } else {
+        (secs / 86_400, "day")
+    };
+    format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
+}
+
+/// The glance of this repo, for the hide commands.
+fn repo_glance(
+    store: &bridge_screen_core::store::Store,
+    home: &Home,
+    repo_id: &str,
+) -> Result<bridge_screen_core::view::Glance> {
+    let cfg = bridge_screen_core::config::Config::load(&home.config_path())?;
+    Ok(
+        bridge_screen_core::view::glance(store.conn(), &cfg, jiff::Timestamp::now())?
+            .for_repo(repo_id),
+    )
+}
+
+/// `bridge-screen hidden`: what is hidden from the front screen, newest first.
+pub fn hidden(dir: &Path) -> Result<()> {
+    let repo = repo::identify(dir)?;
+    let home = Home::resolve()?;
+    let store = open_store(&home)?;
+    store.register_repo(&repo)?;
+    let g = repo_glance(&store, &home, &repo.id)?;
+    if g.hidden.is_empty() {
+        println!("Nothing is hidden in {}.", repo.name);
+    }
+    for (i, h) in g.hidden.iter().enumerate() {
+        println!(
+            "{}. {} '{}' — hidden {} ago",
+            i + 1,
+            h.kind.as_str(),
+            h.label,
+            age_words(h.age_s)
+        );
+    }
+    Ok(())
+}
+
+/// `bridge-screen hide project | track N | card ID`.
+pub fn hide(dir: &Path, what: &[String]) -> Result<()> {
+    let repo = repo::identify(dir)?;
+    let home = Home::resolve()?;
+    let mut store = open_store(&home)?;
+    store.register_repo(&repo)?;
+    let g = repo_glance(&store, &home, &repo.id)?;
+    let (subject, label) = match what.first().map(String::as_str) {
+        Some("project") => (
+            bridge_screen_core::hide::project_subject(&repo.id),
+            repo.name.clone(),
+        ),
+        Some("track") => {
+            let no: u32 = what
+                .get(1)
+                .and_then(|n| n.parse().ok())
+                .with_context(|| "say which track: `hide track 2`")?;
+            let t = bridge_screen_core::plan::track::track(store.conn(), &repo.id, no)?
+                .with_context(|| format!("there is no track {no}"))?;
+            (
+                bridge_screen_core::hide::track_subject(&repo.id, no),
+                t.title,
+            )
+        }
+        Some("card") => {
+            let id = what
+                .get(1)
+                .with_context(|| "say which card: `hide card ID`")?;
+            let card = g
+                .needs_you
+                .iter()
+                .find(|c| c.id == *id || c.id.starts_with(id.as_str()))
+                .with_context(|| format!("no card on screen starts with {id}"))?;
+            (card.subject.clone(), card.title.clone())
+        }
+        _ => anyhow::bail!("hide what? `hide project`, `hide track N` or `hide card ID`"),
+    };
+    let stamp = bridge_screen_core::hide::stamp_of(
+        store.conn(),
+        &repo.id,
+        &bridge_screen_core::hide::Subject::parse(&subject)
+            .with_context(|| "that can't be hidden")?,
+    )?;
+    crate::commands::owner_cmd(
+        &home,
+        &mut store,
+        Some(dir),
+        &OwnerAction::Hide {
+            repo: repo.id,
+            subject,
+            label,
+            stamp,
+        },
+    )
+}
+
+/// `bridge-screen unhide N | <subject>`.
+pub fn unhide(dir: &Path, what: &str) -> Result<()> {
+    let repo = repo::identify(dir)?;
+    let home = Home::resolve()?;
+    let mut store = open_store(&home)?;
+    store.register_repo(&repo)?;
+    let g = repo_glance(&store, &home, &repo.id)?;
+    let subject = match what.parse::<usize>() {
+        Ok(n) => g
+            .hidden
+            .get(n.saturating_sub(1))
+            .map(|h| h.subject.clone())
+            .with_context(|| format!("nothing hidden is numbered {n}; see `hidden`"))?,
+        Err(_) => what.to_string(),
+    };
+    crate::commands::owner_cmd(
+        &home,
+        &mut store,
+        Some(dir),
+        &OwnerAction::Unhide {
+            repo: repo.id,
+            subject,
+        },
+    )
+}
+
 /// `bridge-screen remove <id> [--yes]`: remove abandoned work for good (an owner action).
 /// Says what goes and asks first, unless `--yes`.
 pub fn remove(dir: &Path, id: &str, yes: bool) -> Result<()> {

@@ -187,6 +187,30 @@ pub enum Command {
         #[arg(short = 'C', long = "dir", default_value = ".", global = true)]
         dir: PathBuf,
     },
+    /// Hide something from the front screen until something new happens to it:
+    /// `hide project`, `hide track N` or `hide card <id>` (ids as `status` shows them).
+    /// Hiding never changes a number; `hidden` lists what is hidden, `unhide N` brings it back.
+    Hide {
+        /// `project`, `track N` or `card ID`.
+        #[arg(required = true, num_args = 1..)]
+        what: Vec<String>,
+        /// Any directory inside the repo.
+        #[arg(short = 'C', long = "dir", default_value = ".")]
+        dir: PathBuf,
+    },
+    /// Bring back something hidden: its number in `hidden`, or its full name.
+    Unhide {
+        what: String,
+        /// Any directory inside the repo.
+        #[arg(short = 'C', long = "dir", default_value = ".")]
+        dir: PathBuf,
+    },
+    /// What is hidden from the front screen, and for how long.
+    Hidden {
+        /// Any directory inside the repo.
+        #[arg(short = 'C', long = "dir", default_value = ".")]
+        dir: PathBuf,
+    },
     /// Remove abandoned work for good: a task, a milestone or a whole track (`track` goal id,
     /// e.g. `T2-G`). It leaves the bars, the queue and the forecast; the history keeps a
     /// record. Asks first unless --yes.

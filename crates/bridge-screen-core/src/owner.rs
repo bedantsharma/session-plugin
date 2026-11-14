@@ -143,6 +143,20 @@ pub enum OwnerAction {
         #[serde(default)]
         confirm: bool,
     },
+    /// Hide a card, a track's bar or a whole project from the front screen (spec 2026-11-14
+    /// §3). Stale when something new happened to it since the screen showed it (the stamp
+    /// moved). Hiding never changes a number.
+    Hide {
+        repo: String,
+        /// `card:<id>`, `track:<repo>:<n>` or `project:<repo>`.
+        subject: String,
+        /// What it is called on screen, for the drawer.
+        label: String,
+        /// The stamp the screen saw.
+        stamp: i64,
+    },
+    /// Bring something hidden back.
+    Unhide { repo: String, subject: String },
     /// Start a new track from the CLI (the owner needs no words). `intent` defaults to the
     /// title.
     StartTrack {
@@ -171,6 +185,8 @@ impl OwnerAction {
                 | Self::ReopenTrack { .. }
                 | Self::StartTrack { .. }
                 | Self::Remove { .. }
+                | Self::Hide { .. }
+                | Self::Unhide { .. }
         )
     }
 }
@@ -343,6 +359,13 @@ pub fn act(store: &mut Store, ctx: &ActCtx, action: &OwnerAction) -> Result<Stri
             title,
             confirm,
         } => remove(store, repo, id, title, *confirm),
+        OwnerAction::Hide {
+            repo,
+            subject,
+            label,
+            stamp,
+        } => hide(store, repo, subject, label, *stamp),
+        OwnerAction::Unhide { repo, subject } => unhide(store, repo, subject),
         OwnerAction::CloseTrack { repo, track } => close_track(store, repo, *track),
         OwnerAction::ReopenTrack { repo, track } => reopen_track(store, repo, *track),
         OwnerAction::StartTrack {
@@ -394,6 +417,66 @@ fn close_run(store: &mut Store, repo: &str, track: Option<u32>) -> Result<String
             "Closed run {}. Its tasks stay readable under \"Completed runs\"; the next plan starts a new run from 1.",
             run.number
         ))
+    })
+}
+
+fn hide(store: &mut Store, repo: &str, subject: &str, label: &str, stamp: i64) -> Result<String> {
+    use crate::hide::{Hidden, Subject};
+    let parsed = Subject::parse(subject)
+        .ok_or_else(|| Error::Invalid("that can't be hidden; nothing was hidden".into()))?;
+    let own = match &parsed {
+        Subject::Card(_) => true,
+        Subject::Track { repo: r, .. } | Subject::Project(r) => r == repo,
+    };
+    if !own {
+        return Err(Error::Invalid(
+            "that belongs to another project; nothing was hidden".into(),
+        ));
+    }
+    store.write(|tx| {
+        if crate::hide::stamp_of(tx, repo, &parsed)? != stamp {
+            return Err(stale(
+                "something new just happened, so it was not hidden; have another look",
+            ));
+        }
+        let label = label.trim();
+        let data = Hidden {
+            subject: subject.to_string(),
+            label: if label.is_empty() {
+                "something".to_string()
+            } else {
+                label.chars().take(120).collect()
+            },
+            stamp,
+        };
+        append_in(
+            tx,
+            EventDraft::new(repo, OWNER_SESSION, "hidden", serde_json::to_value(&data)?),
+        )?;
+        Ok(format!(
+            "Hid '{}'. It sits under \"Hidden\" and comes back by itself when something new happens to it; the numbers did not change.",
+            data.label
+        ))
+    })
+}
+
+fn unhide(store: &mut Store, repo: &str, subject: &str) -> Result<String> {
+    store.write(|tx| {
+        let Some(row) = crate::hide::row_of(tx, repo, subject)? else {
+            return Err(stale("it isn't hidden any more; nothing changed"));
+        };
+        append_in(
+            tx,
+            EventDraft::new(
+                repo,
+                OWNER_SESSION,
+                "unhidden",
+                serde_json::to_value(crate::hide::Unhidden {
+                    subject: subject.to_string(),
+                })?,
+            ),
+        )?;
+        Ok(format!("Brought back '{}'.", row.label))
     })
 }
 

@@ -52,6 +52,28 @@ pub struct Glance {
     pub escalated: bool,
     /// The same branch with live sessions in two or more repos (spec §10.1).
     pub branch_groups: Vec<BranchGroup>,
+    /// Cards, track bars and projects the owner hid and that stay hidden: the drawer.
+    /// Hiding never changes a number; the counts above are of what is on screen.
+    pub hidden: Vec<HiddenItem>,
+}
+
+/// One thing in the "Hidden" drawer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HiddenItem {
+    /// `card:…`, `track:<repo>:<n>` or `project:<repo>`: what "Bring back" sends.
+    pub subject: String,
+    pub kind: crate::hide::HiddenKind,
+    /// What it was called when hidden.
+    pub label: String,
+    pub repo_id: String,
+    pub repo_name: String,
+    /// When it was hidden (the event's time) and how long ago, at the time of the model.
+    pub hidden_at: String,
+    pub age_s: i64,
+    /// The stamp it was hidden at.
+    pub stamp: i64,
+    /// "Bring back" as the action to send.
+    pub unhide: OwnerAction,
 }
 
 impl Glance {
@@ -60,6 +82,7 @@ impl Glance {
     pub fn for_repo(mut self, repo_id: &str) -> Self {
         self.projects.retain(|p| p.repo_id == repo_id);
         self.needs_you.retain(|i| i.repo_id == repo_id);
+        self.hidden.retain(|h| h.repo_id == repo_id);
         self.branch_groups
             .retain(|g| g.repos.iter().any(|r| r.repo_id == repo_id));
         self.live_sessions = self.projects.iter().map(|p| p.sessions.len()).sum();
@@ -104,6 +127,9 @@ pub struct ProjectRow {
     pub needs_you: usize,
     /// Live sessions, the ones needing the owner first.
     pub sessions: Vec<SessionRow>,
+    /// What "Hide" sends for this project and the stamp the screen saw.
+    pub subject: String,
+    pub stamp: i64,
 }
 
 /// The current run of a project (spec §10.1).
@@ -506,6 +532,10 @@ pub struct NeedsYou {
     pub rank: u8,
     /// Seconds since the item appeared.
     pub age_s: i64,
+    /// What "Hide" sends (`card:<id>`) and the stamp the screen saw: the card is hidden only
+    /// if nothing new happened to it meanwhile.
+    pub subject: String,
+    pub stamp: i64,
 }
 
 fn short(id: &str) -> String {
@@ -809,6 +839,8 @@ fn session_items(
         }),
         rank: kind.rank(),
         age_s: age(now, since).unwrap_or(0),
+        subject: String::new(),
+        stamp: 0,
     };
     let on_task = f
         .task
@@ -1114,6 +1146,8 @@ fn verify_items(
             respond_in: None,
             rank: NeedsKind::VerifyOverdue.rank(),
             age_s: age(now, since.as_deref()).unwrap_or(0),
+            subject: String::new(),
+            stamp: 0,
         });
     }
     Ok(out)
@@ -1206,6 +1240,8 @@ fn leftover_items(
             respond_in: None,
             rank: NeedsKind::Leftover.rank(),
             age_s: first.map_or(0, |t| now.duration_since(t).as_secs().max(0)),
+            subject: String::new(),
+            stamp: 0,
         });
     }
     Ok(out)
@@ -1460,6 +1496,8 @@ fn scope_items(
         respond_in: None,
         rank: NeedsKind::PlanScope.rank(),
         age_s: age(now, Some(&q.since)).unwrap_or(0),
+        subject: String::new(),
+        stamp: 0,
     }])
 }
 
@@ -1481,6 +1519,168 @@ fn repo_ids(conn: &Connection) -> Result<Vec<String>> {
         .collect::<rusqlite::Result<_>>()?)
 }
 
+/// What the owner hid in one repo, applied to its cards.
+struct Hiding {
+    /// The whole project is hidden.
+    project_hidden: bool,
+    /// The project's stamp (what "Hide" on it would send).
+    project_stamp: i64,
+    /// Track numbers whose bars are hidden.
+    hidden_tracks: HashSet<u32>,
+    /// The drawer's entries for this repo.
+    items: Vec<HiddenItem>,
+}
+
+/// Stamp every card of the repo, take out the ones the owner hid (their stamp unchanged
+/// since), and work out what else is hidden here. Numbers are never touched: only which
+/// cards and bars are shown.
+fn apply_hides(
+    conn: &Connection,
+    repo_id: &str,
+    repo_name: &str,
+    now: Timestamp,
+    items: &mut Vec<NeedsYou>,
+) -> Result<Hiding> {
+    use crate::hide::{self, HiddenKind};
+    for item in items.iter_mut() {
+        item.subject = hide::card_subject(&item.id);
+        item.stamp = hide::stamp_of_card(conn, repo_id, &item.id)?;
+    }
+    let project_stamp = hide::stamp_of_project(conn, repo_id)?;
+    let rows = hide::rows(conn, Some(repo_id))?;
+    let tracks = crate::plan::track::open_tracks(conn, repo_id)?;
+    let track_stamps = if rows.iter().any(|r| r.kind == HiddenKind::Track) {
+        hide::track_stamps(conn, repo_id)?
+    } else {
+        std::collections::HashMap::new()
+    };
+    let mut hiding = Hiding {
+        project_hidden: false,
+        project_stamp,
+        hidden_tracks: HashSet::new(),
+        items: Vec::new(),
+    };
+    let mut hidden_cards: HashSet<String> = HashSet::new();
+    for row in rows {
+        let in_effect = match hide::Subject::parse(&row.subject) {
+            Some(hide::Subject::Card(id)) => {
+                let live = items.iter().find(|i| i.id == id);
+                let hit = live.is_some_and(|i| hide::is_hidden(&row, i.stamp));
+                if hit {
+                    hidden_cards.insert(id);
+                }
+                hit
+            }
+            Some(hide::Subject::Track { no, .. }) => {
+                // A track that is gone (removed or finished) leaves no ghost behind.
+                let hit = tracks.iter().any(|t| t.no == no)
+                    && hide::is_hidden(&row, track_stamps.get(&no).copied().unwrap_or(0));
+                if hit {
+                    hiding.hidden_tracks.insert(no);
+                }
+                hit
+            }
+            Some(hide::Subject::Project(_)) => {
+                let hit = hide::is_hidden(&row, project_stamp);
+                hiding.project_hidden |= hit;
+                hit
+            }
+            None => false,
+        };
+        if in_effect {
+            hiding.items.push(HiddenItem {
+                subject: row.subject.clone(),
+                kind: row.kind,
+                label: row.label.clone(),
+                repo_id: repo_id.to_string(),
+                repo_name: repo_name.to_string(),
+                age_s: age(now, Some(&row.hidden_at)).unwrap_or(0),
+                hidden_at: row.hidden_at.clone(),
+                stamp: row.stamp,
+                unhide: OwnerAction::Unhide {
+                    repo: repo_id.to_string(),
+                    subject: row.subject,
+                },
+            });
+        }
+    }
+    items.retain(|i| !hidden_cards.contains(&i.id));
+    if hiding.project_hidden {
+        // The cards inside a hidden project go with it; the drawer shows the project.
+        items.clear();
+    }
+    Ok(hiding)
+}
+
+/// What `glance` knows about one repo before its project row is built.
+struct ProjectBits<'a> {
+    repo_id: &'a str,
+    name: String,
+    needs_you: usize,
+    sessions: Vec<SessionRow>,
+    stamp: i64,
+}
+
+/// One project's row: its pooled numbers (with one open track, that track's), milestones,
+/// forecast, cost and live sessions.
+fn project_row(
+    conn: &Connection,
+    cfg: &Config,
+    bits: ProjectBits,
+    now: Timestamp,
+) -> Result<ProjectRow> {
+    let repo_id = bits.repo_id;
+    let tree = crate::plan::runs::open_run_tree(conn, repo_id)?;
+    let run = run_row(conn, repo_id)?;
+    let primary = crate::plan::track::primary(conn, repo_id)?;
+    let goal = get_node(conn, repo_id, &crate::plan::track::goal_id(primary))?
+        .filter(|g| g.status != NodeStatus::Dropped)
+        .map(|g| NodeRef {
+            shown: g.id.clone(),
+            id: g.id,
+            title: g.title,
+        });
+    let p = verify::progress_all(conn, repo_id)?;
+    let (open, report_only) = crate::recovery::open_counts(conn, repo_id)?;
+    let forecast = match &goal {
+        Some(_) => Some(forecast_row(conn, repo_id, now)?),
+        None => None,
+    };
+    let goal_status = goal.as_ref().map(|g| {
+        crate::plan::rollups(&tree)
+            .get(&g.id)
+            .copied()
+            .unwrap_or(crate::plan::Rollup::Todo)
+    });
+    Ok(ProjectRow {
+        repo_id: repo_id.to_string(),
+        name: bits.name,
+        goal,
+        goal_status,
+        done_pct: if run.finished.is_some() {
+            100
+        } else {
+            p.done_pct
+        },
+        claimed_pct: if run.finished.is_some() {
+            0
+        } else {
+            p.claimed_pct
+        },
+        run,
+        unestimated: p.unestimated,
+        milestones: milestones(conn, repo_id, &tree)?,
+        leftovers: LeftoverCounts { open, report_only },
+        tuned: tuned_text(conn, repo_id, cfg)?,
+        forecast,
+        cost: cost_row(conn, &telemetry::Scope::Repo(repo_id.to_string()), cfg)?,
+        needs_you: bits.needs_you,
+        sessions: bits.sessions,
+        subject: crate::hide::project_subject(repo_id),
+        stamp: bits.stamp,
+    })
+}
+
 /// Build the glance at `now` (spec §10.1).
 pub fn glance(conn: &Connection, cfg: &Config, now: Timestamp) -> Result<Glance> {
     let live = session::list_live(conn, None)?;
@@ -1493,6 +1693,7 @@ pub fn glance(conn: &Connection, cfg: &Config, now: Timestamp) -> Result<Glance>
     }
     let mut projects = Vec::new();
     let mut queue = Vec::new();
+    let mut hidden = Vec::new();
     for repo_id in repo_ids(conn)? {
         let name = repo_name(conn, &repo_id)?.unwrap_or_else(|| repo_id.clone());
         let mut rows = Vec::new();
@@ -1507,53 +1708,25 @@ pub fn glance(conn: &Connection, cfg: &Config, now: Timestamp) -> Result<Glance>
         items.extend(verify_items(conn, &repo_id, &name, now)?);
         items.extend(leftover_items(conn, &repo_id, &name, now)?);
         items.extend(scope_items(conn, &repo_id, &name, now)?);
-        let tree = crate::plan::runs::open_run_tree(conn, &repo_id)?;
-        let run = run_row(conn, &repo_id)?;
-        let primary = crate::plan::track::primary(conn, &repo_id)?;
-        let goal = get_node(conn, &repo_id, &crate::plan::track::goal_id(primary))?
-            .filter(|g| g.status != NodeStatus::Dropped)
-            .map(|g| NodeRef {
-                shown: g.id.clone(),
-                id: g.id,
-                title: g.title,
-            });
-        let p = verify::progress_all(conn, &repo_id)?;
-        let (open, report_only) = crate::recovery::open_counts(conn, &repo_id)?;
-        let forecast = match &goal {
-            Some(_) => Some(forecast_row(conn, &repo_id, now)?),
-            None => None,
-        };
-        let goal_status = goal.as_ref().map(|g| {
-            crate::plan::rollups(&tree)
-                .get(&g.id)
-                .copied()
-                .unwrap_or(crate::plan::Rollup::Todo)
-        });
-        projects.push(ProjectRow {
-            repo_id: repo_id.clone(),
-            name,
-            goal,
-            goal_status,
-            done_pct: if run.finished.is_some() {
-                100
-            } else {
-                p.done_pct
+        let hiding = apply_hides(conn, &repo_id, &name, now, &mut items)?;
+        let project_hidden = hiding.project_hidden;
+        let project_stamp = hiding.project_stamp;
+        hidden.extend(hiding.items);
+        if project_hidden {
+            continue;
+        }
+        projects.push(project_row(
+            conn,
+            cfg,
+            ProjectBits {
+                repo_id: &repo_id,
+                name,
+                needs_you: items.len(),
+                sessions: rows,
+                stamp: project_stamp,
             },
-            claimed_pct: if run.finished.is_some() {
-                0
-            } else {
-                p.claimed_pct
-            },
-            run,
-            unestimated: p.unestimated,
-            milestones: milestones(conn, &repo_id, &tree)?,
-            leftovers: LeftoverCounts { open, report_only },
-            tuned: tuned_text(conn, &repo_id, cfg)?,
-            forecast,
-            cost: cost_row(conn, &telemetry::Scope::Repo(repo_id.clone()), cfg)?,
-            needs_you: items.len(),
-            sessions: rows,
-        });
+            now,
+        )?);
         queue.extend(items);
     }
     // Finished runs sit below the active projects.
@@ -1583,6 +1756,7 @@ pub fn glance(conn: &Connection, cfg: &Config, now: Timestamp) -> Result<Glance>
         needs_you: queue,
         needs_you_count: count,
         escalated: count > ESCALATE_ABOVE,
+        hidden,
     })
 }
 

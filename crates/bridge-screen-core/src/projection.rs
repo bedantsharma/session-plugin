@@ -6,6 +6,7 @@ use crate::decision::{DECISION_KINDS, project as project_decision};
 use crate::error::Result;
 use crate::forecast::{FORECAST_KINDS, project as project_forecast};
 use crate::handoff::{HANDOFF_KINDS, project as project_handoff};
+use crate::hide::{HIDE_KINDS, project as project_hide};
 use crate::import::{IMPORT_KINDS, project as project_import};
 use crate::plan::project::{PLAN_KINDS, project as project_plan};
 use crate::session::{SESSION_KINDS, project as project_session};
@@ -67,6 +68,8 @@ pub fn apply(tx: &Transaction, event: &Event) -> Result<()> {
         project_import(tx, event)?;
     } else if WAIT_KINDS.contains(&kind) {
         project_wait(tx, event)?;
+    } else if HIDE_KINDS.contains(&kind) {
+        project_hide(tx, event)?;
     }
     Ok(())
 }

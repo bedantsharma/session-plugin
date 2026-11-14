@@ -263,6 +263,8 @@ mod tests {
             "run_closed",
             "track_closed",
             "track_reopened",
+            "hidden",
+            "unhidden",
             "detour_opened",
             "detour_closed",
             "detour_promoted",
