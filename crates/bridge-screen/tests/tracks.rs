@@ -248,3 +248,181 @@ fn card_cannot_finish_or_start_tracks() {
         .allowed_on_card()
     );
 }
+
+// ---- every reader picks a track (spec 2026-11-14 §2, Task 7) ----
+
+fn context_text(out: &str) -> String {
+    let v: Value = serde_json::from_str(out.trim()).unwrap();
+    v["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn two_track_env() -> Env {
+    let env = Env::new();
+    assert!(env.run(&["plan", "edit"], SEED).status.success());
+    assert!(
+        env.run(
+            &[
+                "track",
+                "start",
+                "Docs refresh",
+                "--intent",
+                "Docs are current"
+            ],
+            ""
+        )
+        .status
+        .success()
+    );
+    let ops = r#"[{"op":"add_node","parent":"T2-G","kind":"milestone","title":"Pages","intent":"p"},
+                  {"op":"add_node","parent":"T2-1","kind":"task","title":"Readme rewrite","estimate_min":10}]"#;
+    assert!(env.run(&["plan", "edit"], ops).status.success());
+    env
+}
+
+fn prompt(env: &Env, session: &str, text: &str) -> String {
+    let mut p = common::fixture_json("user-prompt-submit", session, &env.repo_path());
+    p["prompt"] = json!(text);
+    env.hook_raw("user-prompt-submit", &p.to_string())
+}
+
+#[test]
+fn briefing_lists_open_tracks_and_asks() {
+    let env = two_track_env();
+    let text = context_text(&env.hook("session-start", "s1"));
+    assert!(text.contains("Tracks (2 open):"), "{text}");
+    assert!(
+        text.contains("1 Ship it — 0%") && text.contains("2 Docs refresh — 0%"),
+        "{text}"
+    );
+    assert!(
+        text.contains("ask the owner: continue a track, or start a new one (start_track)"),
+        "{text}"
+    );
+    assert!(text.lines().count() <= 40, "{text}");
+}
+
+#[test]
+fn briefing_unchanged_with_one_track() {
+    let (env, _mcp) = setup();
+    let text = context_text(&env.hook("session-start", "s2"));
+    assert!(!text.contains("Tracks ("), "{text}");
+    assert!(text.contains("Goal: Ship it"), "{text}");
+}
+
+#[test]
+fn briefing_caps_track_list() {
+    let env = Env::new();
+    assert!(env.run(&["plan", "edit"], SEED).status.success());
+    for i in 2..=7 {
+        assert!(
+            env.run(&["track", "start", &format!("Side {i}")], "")
+                .status
+                .success()
+        );
+    }
+    let text = context_text(&env.hook("session-start", "s1"));
+    assert!(
+        text.contains("Tracks (7 open):") && text.contains("(+2 more)"),
+        "{text}"
+    );
+    assert!(text.lines().count() <= 40, "{text}");
+}
+
+#[test]
+fn claim_reminder_names_tracks() {
+    let env = two_track_env();
+    env.hook("session-start", "s1");
+    let text = context_text(&prompt(&env, "s1", "Rewrite the readme"));
+    assert!(
+        text.contains("T2-1.1 Readme rewrite [Docs refresh]"),
+        "{text}"
+    );
+}
+
+#[test]
+fn claim_reminder_asks_when_nothing_matches_and_two_tracks() {
+    let env = two_track_env();
+    env.hook("session-start", "s1");
+    let text = context_text(&prompt(&env, "s1", "Plant tomatoes in the garden"));
+    assert!(text.contains("No plan task matches"), "{text}");
+    assert!(
+        text.contains("2 open tracks") && text.contains("continue a track or start a new one"),
+        "{text}"
+    );
+    // With one track the reminder reads as before.
+    let (one, _mcp) = setup();
+    one.hook("session-start", "s2");
+    let text = context_text(&prompt(&one, "s2", "Plant tomatoes in the garden"));
+    assert!(!text.contains("open tracks"), "{text}");
+}
+
+#[test]
+fn init_plan_refused_with_open_track() {
+    let (env, mut mcp) = setup();
+    let (err, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "init_plan",
+        &json!({"goal": {"title": "x", "intent": "y"}, "milestones": [], "tasks": [],
+                "owner_said": "yes"}),
+    );
+    assert!(
+        err && text.contains("track 1 'Ship it'") && text.contains("start_track"),
+        "{text}"
+    );
+}
+
+#[test]
+fn plan_show_track_flag() {
+    let env = two_track_env();
+    let all = stdout(&env.run(&["plan", "show"], ""));
+    assert!(
+        all.contains("Ship it") && all.contains("Docs refresh"),
+        "{all}"
+    );
+    let only = stdout(&env.run(&["plan", "show", "--track", "2"], ""));
+    assert!(
+        only.contains("Docs refresh") && !only.contains("Ship it"),
+        "{only}"
+    );
+}
+
+#[test]
+fn usage_by_track_and_forecast_per_track_run() {
+    let env = two_track_env();
+    let out = env.run(&["usage", "--by", "track"], "");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let out = env.run(&["usage", "--track", "2"], "");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("track 2"), "{}", stdout(&out));
+    // Several open tracks: each gets its own forecast.
+    let f = stdout(&env.run(&["forecast"], ""));
+    assert!(
+        f.contains("track 1 Ship it") && f.contains("track 2 Docs refresh"),
+        "{f}"
+    );
+    let f2 = stdout(&env.run(&["forecast", "--track", "2"], ""));
+    assert!(
+        f2.contains("track 2 Docs refresh") && !f2.contains("track 1"),
+        "{f2}"
+    );
+    assert!(!env.run(&["forecast", "--track", "9"], "").status.success());
+}
+
+#[test]
+fn status_tool_prints_each_track() {
+    let env = two_track_env();
+    env.hook("session-start", "s1");
+    let mut mcp = Mcp::start(&env, "/nonexistent");
+    let (err, text) = call_as(&mut mcp, &env, "s1", "status", &json!({}));
+    assert!(!err, "{text}");
+    assert!(
+        text.contains("Track 1 — Goal: Ship it") && text.contains("Track 2 — Goal: Docs refresh"),
+        "{text}"
+    );
+    assert!(text.contains("T2-1.1 Readme rewrite"), "{text}");
+}

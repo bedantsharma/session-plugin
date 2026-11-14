@@ -82,9 +82,25 @@ fn previous(conn: &Connection, me: &Session) -> Result<Option<Session>> {
     }
 }
 
+/// Most open tracks the briefing lists.
+const TRACKS_SHOWN: usize = 5;
+
+/// One open track as the briefing lists it.
+struct TrackBrief {
+    no: u32,
+    title: String,
+    done_pct: u32,
+    /// Position of the newest event on one of its tasks: most recently active first.
+    last_active: i64,
+}
+
 /// Everything the briefing is built from.
 struct Facts {
     goal: Option<PlanNode>,
+    /// The open tracks, most recently active first (the briefing lists them from two up).
+    tracks: Vec<TrackBrief>,
+    /// The track of the session's own task, when it has one.
+    own_track: Option<u32>,
     milestone: Option<PlanNode>,
     task: Option<String>,
     checkpoint: Option<Checkpoint>,
@@ -194,21 +210,62 @@ fn missed_checkpoints(
         }))
 }
 
-fn gather(conn: &Connection, me: &Session) -> Result<Facts> {
+/// The open tracks with their done% and when something last happened on them, most
+/// recently active first (one query for the events, the tree is already loaded).
+fn track_briefs(conn: &Connection, repo: &str, tree: &[PlanNode]) -> Result<Vec<TrackBrief>> {
+    let open = crate::plan::track::open_tracks(conn, repo)?;
+    let mut newest: std::collections::HashMap<u32, i64> = std::collections::HashMap::new();
+    if open.len() > 1 {
+        let mut stmt = conn.prepare_cached(
+            "SELECT task_id, MAX(pos) FROM events
+             WHERE repo_id = ?1 AND task_id IS NOT NULL
+               AND kind IN ('task_claimed', 'claimed_done', 'verified', 'node_added')
+             GROUP BY task_id",
+        )?;
+        let rows = stmt.query_map([repo], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (task, pos) = row?;
+            let e = newest
+                .entry(crate::plan::track::track_of(&task))
+                .or_insert(0);
+            *e = (*e).max(pos);
+        }
+    }
+    let mut out: Vec<TrackBrief> = open
+        .into_iter()
+        .map(|t| {
+            let mine: Vec<&PlanNode> = tree
+                .iter()
+                .filter(|n| crate::plan::track::track_of(&n.id) == t.no)
+                .collect();
+            let leaves: Vec<&PlanNode> = crate::plan::runs::leaf_nodes_of(&mine);
+            TrackBrief {
+                no: t.no,
+                title: t.title,
+                done_pct: verify::Progress::of_leaves(&leaves).done_pct,
+                last_active: newest.get(&t.no).copied().unwrap_or(0),
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| b.last_active.cmp(&a.last_active).then(a.no.cmp(&b.no)));
+    Ok(out)
+}
+
+/// What the session should hear first about the plan: tasks claimed or at L1 by an earlier
+/// session, anything whose verification went stale, and failed tasks.
+#[allow(clippy::type_complexity)] // three parallel lists the briefing shows
+fn open_work(
+    conn: &Connection,
+    me: &Session,
+    tree: &[PlanNode],
+) -> Result<(Vec<String>, Vec<(String, i64)>, Vec<String>)> {
     let repo = me.repo_id.as_str();
-    let prev = previous(conn, me)?;
-    let task = me
-        .active_task
-        .clone()
-        .or_else(|| prev.as_ref().and_then(|p| p.last_task.clone()));
-    let mut sessions: Vec<&Session> = vec![me];
-    sessions.extend(prev.as_ref());
-    let tree = crate::plan::runs::open_run_tree(conn, repo)?;
-    let goal = tree.iter().find(|n| n.kind == NodeKind::Goal).cloned();
     let mut unverified = Vec::new();
     let mut unverified_tasks = Vec::new();
     let mut failed = Vec::new();
-    for n in &tree {
+    for n in tree {
         if !matches!(n.kind, NodeKind::Task | NodeKind::Subtask) {
             continue;
         }
@@ -231,6 +288,33 @@ fn gather(conn: &Connection, me: &Session) -> Result<Facts> {
         });
         unverified_tasks.push((n.id.clone(), verify::current_level(conn, repo, &n.id)?));
     }
+    Ok((unverified, unverified_tasks, failed))
+}
+
+fn gather(conn: &Connection, me: &Session) -> Result<Facts> {
+    let repo = me.repo_id.as_str();
+    let prev = previous(conn, me)?;
+    let task = me
+        .active_task
+        .clone()
+        .or_else(|| prev.as_ref().and_then(|p| p.last_task.clone()));
+    let mut sessions: Vec<&Session> = vec![me];
+    sessions.extend(prev.as_ref());
+    let tree = crate::plan::runs::open_run_tree(conn, repo)?;
+    let own_track = task.as_deref().map(crate::plan::track::track_of);
+    let tracks = track_briefs(conn, repo, &tree)?;
+    // The goal of the session's own track, else of the most recently active one.
+    let goal_track = own_track
+        .filter(|t| tracks.iter().any(|b| b.no == *t))
+        .or_else(|| tracks.first().map(|b| b.no));
+    let goal = tree
+        .iter()
+        .find(|n| {
+            n.kind == NodeKind::Goal
+                && goal_track.is_none_or(|t| crate::plan::track::track_of(&n.id) == t)
+        })
+        .cloned();
+    let (unverified, unverified_tasks, failed) = open_work(conn, me, &tree)?;
     let missed = missed_checkpoints(conn, me, prev.as_ref())?;
     let mut detours = Vec::new();
     let mut suspended = Vec::new();
@@ -278,6 +362,8 @@ fn gather(conn: &Connection, me: &Session) -> Result<Facts> {
         .collect();
     Ok(Facts {
         goal,
+        tracks,
+        own_track,
         milestone,
         task,
         checkpoint,
@@ -337,6 +423,42 @@ fn goal_line(f: &Facts) -> String {
         .to_string(),
         None => NO_PLAN.to_string(),
     }
+}
+
+/// The "Tracks" lines, from two open tracks up: each track with its progress, the session's
+/// own marked, then the rule for work that fits none. Nothing with one track, so the
+/// briefing reads as it always did.
+fn track_lines(f: &Facts) -> Vec<String> {
+    if f.tracks.len() < 2 {
+        return Vec::new();
+    }
+    let listed: Vec<String> = f
+        .tracks
+        .iter()
+        .take(TRACKS_SHOWN)
+        .map(|t| {
+            format!(
+                "{} {} — {}%{}",
+                t.no,
+                t.title,
+                t.done_pct,
+                if f.own_track == Some(t.no) {
+                    " (yours)"
+                } else {
+                    ""
+                }
+            )
+        })
+        .collect();
+    let mut line = format!("Tracks ({} open): {}", f.tracks.len(), listed.join("; "));
+    if f.tracks.len() > TRACKS_SHOWN {
+        let _ = write!(line, " (+{} more)", f.tracks.len() - TRACKS_SHOWN);
+    }
+    vec![
+        line,
+        "If your work doesn't clearly belong to one, ask the owner: continue a track, or start a new one (start_track)."
+            .to_string(),
+    ]
 }
 
 /// `items` (already formatted), the first `shown` of them, then `(+N more)`.
@@ -429,6 +551,7 @@ pub fn briefing(conn: &Connection, me: &Session) -> Result<Briefing> {
         format!("bridge-screen briefing — {}", status.as_str()),
         goal_line(&f),
     ];
+    lines.extend(track_lines(&f));
     if status == BriefingStatus::Stable && f.nothing_pending() {
         if f.goal.is_none() {
             return Ok(Briefing {

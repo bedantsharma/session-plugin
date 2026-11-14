@@ -439,6 +439,7 @@ fn plan_scope(store: &mut Store, repo: &str, done: Option<&str>) -> Result<Strin
         session_id: OWNER_SESSION.to_string(),
         actor: Actor::default(),
         dry_run: false,
+        track: None,
     };
     let names = crate::import::scope::split_names(done.unwrap_or_default());
     let line = crate::import::scope::answer(store, repo, &root, &import_ctx, &names)?;

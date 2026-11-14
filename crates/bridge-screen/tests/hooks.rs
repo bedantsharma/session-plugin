@@ -1571,3 +1571,70 @@ fn stop_refreshes_branch() {
     );
     assert_eq!(n, 2);
 }
+
+/// Five open tracks on the large database: SessionStart with 20 unchanged plan files (the
+/// files wait for a track, so each scan only stats them) within the SessionStart budget,
+/// and UserPromptSubmit (the claim reminder across the tracks) within 50 ms.
+#[test]
+#[ignore = "perf check: run on demand with --release"]
+fn hook_latency_five_open_tracks() {
+    use std::time::Instant;
+
+    let env = Env::new();
+    big_database(&env);
+    let seed = r#"[{"op":"add_node","kind":"goal","title":"Ship the shop","intent":"People can buy things."},
+        {"op":"add_node","parent":"G","kind":"milestone","title":"Core","intent":"Core works"},
+        {"op":"add_node","parent":"1","kind":"task","title":"Checkout flow","estimate_min":30},
+        {"op":"add_node","parent":"1","kind":"task","title":"Order history","estimate_min":30}]"#;
+    assert!(env.run(&["plan", "edit"], seed).status.success());
+    for k in 2..=5 {
+        assert!(
+            env.run(&["track", "start", &format!("Side project {k}")], "")
+                .status
+                .success()
+        );
+        let ops = format!(
+            r#"[{{"op":"add_node","parent":"T{k}-G","kind":"milestone","title":"Part","intent":"p"}},
+               {{"op":"add_node","parent":"T{k}-1","kind":"task","title":"Item {k} one","estimate_min":20}},
+               {{"op":"add_node","parent":"T{k}-1","kind":"task","title":"Item {k} two","estimate_min":20}}]"#
+        );
+        assert!(env.run(&["plan", "edit"], &ops).status.success());
+    }
+    let dir = env.repo.path().join("docs/superpowers/plans");
+    std::fs::create_dir_all(&dir).unwrap();
+    for i in 0..20 {
+        std::fs::write(
+            dir.join(format!("p{i:02}.md")),
+            plan_file(8, 20, &format!("{i}")),
+        )
+        .unwrap();
+    }
+    env.hook("session-start", "first-start");
+    assert!(env.run(&["import", "--fresh"], "").status.success());
+    let starts = (0..40)
+        .map(|i| {
+            let payload =
+                common::fixture("session-start", &format!("trk-{i:03}"), &env.repo_path());
+            let start = Instant::now();
+            env.hook_raw("session-start", &payload);
+            start.elapsed()
+        })
+        .collect();
+    report_within(
+        "hook session-start (5 open tracks, 20 plan files)",
+        starts,
+        150,
+    );
+    let session = "perf-session-11";
+    env.hook("session-start", session);
+    let payload = common::fixture("user-prompt-submit", session, &env.repo_path());
+    let times = (0..200)
+        .map(|_| {
+            let start = Instant::now();
+            env.hook_raw("user-prompt-submit", &payload);
+            start.elapsed()
+        })
+        .collect();
+    assert_eq!(env.log(), "");
+    report("hook user-prompt-submit (5 open tracks)", times);
+}

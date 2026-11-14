@@ -20,6 +20,7 @@ pub fn run(
     session: Option<&str>,
     task: Option<&str>,
     by: UsageBy,
+    track: Option<u32>,
     catch_up: bool,
 ) -> Result<()> {
     let repo = repo::identify(dir)?;
@@ -55,12 +56,14 @@ pub fn run(
     let filter = Filter {
         session: session.clone(),
         task: task.map(str::to_string),
+        track,
     };
     let split_by = match by {
         UsageBy::Model => SplitBy::Model,
         UsageBy::Task => SplitBy::Task,
         UsageBy::Session => SplitBy::Session,
         UsageBy::Agent => SplitBy::Agent,
+        UsageBy::Track => SplitBy::Track,
     };
     let rows = telemetry::split(conn, &repo.id, &filter, split_by)?;
     let mut all = Tokens::default();
@@ -75,6 +78,9 @@ pub fn run(
     }
     let scope = match (&filter.task, &session) {
         (Some(t), _) => task_label(conn, &repo.id, t)?,
+        (None, None) if track.is_some() => {
+            format!("track {} of {}", track.unwrap_or(1), repo.name)
+        }
         (None, Some(s)) => format!("session {}", short(s)),
         (None, None) => repo.name.clone(),
     };
@@ -135,7 +141,14 @@ fn task_label(conn: &Connection, repo: &str, id: &str) -> Result<String> {
 fn row_label(conn: &Connection, repo: &str, by: UsageBy, key: Option<&str>) -> Result<String> {
     Ok(match (by, key) {
         (UsageBy::Task, Some(id)) => task_label(conn, repo, id)?,
-        (UsageBy::Task, None) => "No task".to_string(),
+        (UsageBy::Task | UsageBy::Track, None) => "No task".to_string(),
+        (UsageBy::Track, Some(n)) => {
+            let no: u32 = n.parse().unwrap_or(1);
+            match bridge_screen_core::plan::track::track(conn, repo, no)? {
+                Some(t) => format!("Track {no} {}", t.title),
+                None => format!("Track {no}"),
+            }
+        }
         (UsageBy::Model, Some(m)) => telemetry::model_text(m),
         (UsageBy::Agent, Some(t)) => t.to_string(),
         (UsageBy::Agent, None) => "Main agent".to_string(),
@@ -172,8 +185,9 @@ fn session_by_prefix(conn: &Connection, repo: &str, prefix: &str) -> Result<Stri
     }
 }
 
-/// `bridge-screen forecast`: the range in plain words and what it rests on.
-pub fn forecast(dir: &Path) -> Result<()> {
+/// `bridge-screen forecast [--track N]`: the range in plain words and what it rests on, for
+/// every open track (or the one named).
+pub fn forecast(dir: &Path, track: Option<u32>) -> Result<()> {
     use bridge_screen_core::forecast as fc;
     let repo = repo::identify(dir)?;
     let home = Home::resolve()?;
@@ -181,8 +195,31 @@ pub fn forecast(dir: &Path) -> Result<()> {
     store.register_repo(&repo)?;
     let now = jiff::Timestamp::now();
     let tz = jiff::tz::TimeZone::system();
-    let f = fc::run(store.conn(), &repo.id, now, &tz)?;
-    print!("{}", forecast_text(&repo.name, &f, now, &tz));
+    let open = bridge_screen_core::plan::track::open_tracks(store.conn(), &repo.id)?;
+    let named: Vec<_> = open
+        .iter()
+        .filter(|t| track.is_none_or(|n| t.no == n))
+        .collect();
+    if track.is_some() && named.is_empty() {
+        bail!("there is no open track {}", track.unwrap_or(1));
+    }
+    if open.len() <= 1 && track.is_none() {
+        let f = fc::run(store.conn(), &repo.id, now, &tz)?;
+        print!("{}", forecast_text(&repo.name, &f, now, &tz));
+        return Ok(());
+    }
+    for t in named {
+        let f = fc::run_track(store.conn(), &repo.id, t.no, now, &tz)?;
+        print!(
+            "{}",
+            forecast_text(
+                &format!("{} — track {} {}", repo.name, t.no, t.title),
+                &f,
+                now,
+                &tz
+            )
+        );
+    }
     Ok(())
 }
 

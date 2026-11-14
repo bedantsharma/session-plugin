@@ -124,6 +124,9 @@ pub enum Command {
         /// How to split the totals.
         #[arg(long, value_enum, default_value_t = UsageBy::Task)]
         by: UsageBy,
+        /// Only this track's tasks (see `track list`).
+        #[arg(long)]
+        track: Option<u32>,
         /// Read every transcript of this repo's sessions to the end first and record
         /// what's new (hooks read at most 512 KiB at a time).
         #[arg(long)]
@@ -134,6 +137,9 @@ pub enum Command {
         /// Any directory inside the repo.
         #[arg(short = 'C', long = "dir", default_value = ".")]
         dir: PathBuf,
+        /// Only this track (each open track gets its own forecast when there are several).
+        #[arg(long)]
+        track: Option<u32>,
     },
     /// Import the repo's plan files (any *.md named plan, roadmap, todo or tasks, in any folder;
     /// docs/superpowers/plans is the usual place) into the plan.
@@ -144,6 +150,10 @@ pub enum Command {
         /// Link FILE to this existing goal or milestone (its tasks are matched by title).
         #[arg(long, requires = "file", value_name = "NODE")]
         into: Option<String>,
+        /// Place FILE in this track (needed when the folder has several open tracks and the
+        /// file's title matches none of their milestones).
+        #[arg(long, requires = "file", conflicts_with = "into", value_name = "N")]
+        track: Option<u32>,
         /// Show what would change; write nothing.
         #[arg(long)]
         dry_run: bool,
@@ -263,6 +273,9 @@ pub enum PlanCommand {
         /// Include dropped nodes.
         #[arg(long)]
         all: bool,
+        /// Only this track (every open track is shown by default).
+        #[arg(long)]
+        track: Option<u32>,
     },
     /// Apply a JSON array of plan operations (from --file or stdin).
     Edit {
@@ -309,6 +322,8 @@ pub enum UsageBy {
     Task,
     Session,
     Agent,
+    /// One line per track.
+    Track,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]

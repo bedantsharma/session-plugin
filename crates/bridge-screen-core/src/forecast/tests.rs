@@ -300,7 +300,7 @@ fn history_keeps_only_forecasts_that_moved() {
     assert!(record(&mut s, "r", "owner", now, &utc()).unwrap());
     // Nothing changed: not recorded again.
     assert!(!record(&mut s, "r", "owner", now, &utc()).unwrap());
-    let h = history(s.conn(), "r").unwrap();
+    let h = history(s.conn(), "r", 1).unwrap();
     assert_eq!(h.len(), 1);
     assert_eq!(h[0].forecast.points, 3);
     let base = h[0].forecast.clone();
@@ -322,8 +322,11 @@ fn history_keeps_only_forecasts_that_moved() {
         &[("owner", 100, "node_added", node("1.9", "1", Some(600)))],
     );
     assert!(record(&mut s, "r", "owner", now, &utc()).unwrap());
-    assert_eq!(history(s.conn(), "r").unwrap().len(), 2);
-    assert_eq!(latest(s.conn(), "r").unwrap().unwrap().remaining_min, 660);
+    assert_eq!(history(s.conn(), "r", 1).unwrap().len(), 2);
+    assert_eq!(
+        latest(s.conn(), "r", 1).unwrap().unwrap().remaining_min,
+        660
+    );
 }
 
 #[test]
@@ -487,4 +490,145 @@ fn closing_a_run_keeps_its_calibration_but_not_its_tasks() {
     let after = run(s.conn(), "r", now, &utc()).unwrap();
     assert_eq!(after.points, 3, "calibration history is kept across runs");
     assert_eq!(after.remaining_min, 40, "closed-run tasks are not forecast");
+}
+
+// ---- tracks (spec 2026-11-14 §2) ----
+
+/// Track 1 (`G`, milestone 1, tasks 1.1–1.3 done at L2 and 1.4 still open) and track 2
+/// (`T2-G`, `T2-1`, tasks `T2-1.1` open, `T2-1.2` open) as of `now`.
+fn two_tracks(worked_on_track_two: bool) -> Store {
+    let mut s = Store::open_in_memory().unwrap();
+    plan(
+        &mut s,
+        &[
+            ("1.1", Some(30)),
+            ("1.2", Some(30)),
+            ("1.3", Some(30)),
+            ("1.4", Some(60)),
+        ],
+    );
+    script(
+        &mut s,
+        &[
+            (
+                "owner",
+                0,
+                "node_added",
+                json!({"id": "T2-G", "parent_id": null, "kind": "goal", "title": "Docs",
+                       "intent": "why", "expected_files": []}),
+            ),
+            (
+                "owner",
+                0,
+                "node_added",
+                json!({"id": "T2-1", "parent_id": "T2-G", "kind": "milestone", "title": "Pages",
+                       "intent": "why", "expected_files": []}),
+            ),
+            ("owner", 0, "node_added", node("T2-1.1", "T2-1", Some(60))),
+        ],
+    );
+    work(&mut s, "1.1", DAY, 30, 2);
+    work(&mut s, "1.2", DAY, 30, 2);
+    work(&mut s, "1.3", DAY, 30, 2);
+    if worked_on_track_two {
+        // Track 2 had a long day on a different day than track 1's work.
+        work(&mut s, "T2-1.1", 2 * DAY, 120, 0);
+    }
+    s
+}
+
+#[test]
+fn forecast_per_track_uses_own_pace() {
+    let s = two_tracks(true);
+    let now = at(3 * DAY);
+    let one = run_track(s.conn(), "r", 1, now, &utc()).unwrap();
+    let two = run_track(s.conn(), "r", 2, now, &utc()).unwrap();
+    // Each counts only its own remaining work.
+    assert_eq!((one.remaining_min, two.remaining_min), (60, 60));
+    // Track 1 worked one 1.5-hour day; track 2 one 2-hour day: each at its own pace.
+    assert!((one.hours_per_day.unwrap() - 1.5).abs() < 1e-9, "{one:?}");
+    assert!((two.hours_per_day.unwrap() - 2.0).abs() < 1e-9, "{two:?}");
+    // Calibration stays repo-wide: both are based on the same three finished tasks.
+    assert_eq!((one.points, two.points), (3, 3));
+    // The pooled forecast counts both and the repo's pace.
+    let all = run(s.conn(), "r", now, &utc()).unwrap();
+    assert_eq!(all.remaining_min, 120);
+}
+
+#[test]
+fn forecast_refuses_track_without_recent_activity() {
+    let s = two_tracks(false);
+    let now = at(3 * DAY);
+    let one = run_track(s.conn(), "r", 1, now, &utc()).unwrap();
+    let two = run_track(s.conn(), "r", 2, now, &utc()).unwrap();
+    assert!(one.dates().is_some(), "{one:?}");
+    // Nobody worked on track 2: no date, and it says why.
+    assert!(two.dates().is_none());
+    assert_eq!(
+        two.reason.as_deref(),
+        Some("No recent activity to turn hours into dates")
+    );
+}
+
+#[test]
+fn forecast_history_has_track() {
+    let mut s = two_tracks(true);
+    let now = at(3 * DAY);
+    assert!(record(&mut s, "r", "owner", now, &utc()).unwrap());
+    assert_eq!(history(s.conn(), "r", 1).unwrap().len(), 1);
+    assert_eq!(history(s.conn(), "r", 2).unwrap().len(), 1);
+    assert_eq!(latest(s.conn(), "r", 2).unwrap().unwrap().remaining_min, 60);
+    // Track 1's event is written the old way; track 2's names its track.
+    let kinds: Vec<Value> = crate::store::read_all(s.conn(), Some("r"))
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "forecast_ran")
+        .map(|e| e.data)
+        .collect();
+    assert_eq!(kinds.len(), 2);
+    assert!(kinds[0].get("track").is_none());
+    assert_eq!(kinds[1]["track"], 2);
+    // Replaying rebuilds the same history.
+    let before = (
+        history(s.conn(), "r", 1).unwrap(),
+        history(s.conn(), "r", 2).unwrap(),
+    );
+    s.rebuild().unwrap();
+    assert_eq!(
+        before,
+        (
+            history(s.conn(), "r", 1).unwrap(),
+            history(s.conn(), "r", 2).unwrap()
+        )
+    );
+}
+
+#[test]
+fn reviewed_tasks_teach_calibration() {
+    let mut s = Store::open_in_memory().unwrap();
+    plan(&mut s, &[("1.1", Some(30)), ("1.2", Some(30))]);
+    script(
+        &mut s,
+        &[(
+            "owner",
+            1,
+            "node_edited",
+            json!({"id": "1.1", "check": "review", "reason": "research"}),
+        )],
+    );
+    work(&mut s, "1.1", DAY, 60, 0);
+    script(
+        &mut s,
+        &[(
+            "s1.1",
+            DAY + 3601,
+            "claimed_done",
+            json!({"task_id": "1.1", "evidence":
+                "Read the three vendor reports and compared pricing, limits and support terms in a table."}),
+        )],
+    );
+    let cal = calibration(s.conn(), "r", at(2 * DAY)).unwrap();
+    assert_eq!(cal.pooled.len(), 1);
+    assert_eq!(cal.pooled[0].task_id, "1.1");
+    assert!((cal.pooled[0].ratio - 2.0).abs() < 1e-9);
 }

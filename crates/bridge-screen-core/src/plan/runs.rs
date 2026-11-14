@@ -226,6 +226,15 @@ pub fn leaf_nodes(tree: &[PlanNode]) -> Vec<&PlanNode> {
         .collect()
 }
 
+/// [`leaf_nodes`] over a list of references.
+pub fn leaf_nodes_of<'a>(tree: &[&'a PlanNode]) -> Vec<&'a PlanNode> {
+    tree.iter()
+        .copied()
+        .filter(|n| matches!(n.kind, NodeKind::Task | NodeKind::Subtask))
+        .filter(|n| !tree.iter().any(|c| c.parent_id.as_deref() == Some(&n.id)))
+        .collect()
+}
+
 /// How many tasks a closed run had.
 pub fn tasks_in(conn: &Connection, repo_id: &str, track: u32, run: &ClosedRun) -> Result<usize> {
     let tree: Vec<PlanNode> = load_tree(conn, repo_id, false)?

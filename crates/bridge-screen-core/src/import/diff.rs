@@ -29,8 +29,13 @@ pub struct SourceItem {
 /// Where a file's tasks go; decided by `import_file`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImportTarget {
-    /// The repo has no goal: the file becomes the goal, its tasks go directly under it.
-    NewGoal { title: String, intent: String },
+    /// The repo has no open track: the file becomes the goal of a new one (`id`: `G` for the
+    /// first, `T2-G`, …), its tasks go directly under it.
+    NewGoal {
+        id: String,
+        title: String,
+        intent: String,
+    },
     /// A new milestone under the goal; `id` is the one it will get.
     NewMilestone {
         goal_id: String,
@@ -51,8 +56,7 @@ pub enum ImportTarget {
 impl ImportTarget {
     fn container(&self) -> &str {
         match self {
-            Self::NewGoal { .. } => "G",
-            Self::NewMilestone { id, .. } => id,
+            Self::NewGoal { id, .. } | Self::NewMilestone { id, .. } => id,
             Self::Existing { node_id, .. } => node_id,
         }
     }
@@ -213,7 +217,7 @@ impl Builder<'_> {
     /// one's intent; returns the number its next child gets.
     fn open(&mut self, target: &ImportTarget, parsed: &ParsedPlan) -> u32 {
         match target {
-            ImportTarget::NewGoal { title, intent } => {
+            ImportTarget::NewGoal { id, title, intent } => {
                 self.push(
                     PlanOp::AddNode {
                         parent: None,
@@ -226,7 +230,7 @@ impl Builder<'_> {
                     },
                     None,
                 );
-                self.d.added.push("G".into());
+                self.d.added.push(id.clone());
                 1
             }
             ImportTarget::NewMilestone {
@@ -372,8 +376,8 @@ pub fn diff(
         if let Some(item) = matched {
             b.existing_task(t, item);
         } else {
-            let id = if container == "G" {
-                next.to_string()
+            let id = if crate::plan::track::is_goal_id(&container) {
+                crate::plan::track::raw(crate::plan::track::track_of(&container), &next.to_string())
             } else {
                 format!("{container}.{next}")
             };

@@ -283,6 +283,7 @@ fn ctx() -> ImportCtx {
         session_id: "owner".into(),
         actor: Actor::default(),
         dry_run: false,
+        track: None,
     }
 }
 
@@ -1383,4 +1384,181 @@ fn this_repos_plans_have_no_step_subtasks() {
         checked += 1;
     }
     assert!(checked > 0);
+}
+
+// ---- tracks (spec 2026-11-14 §2) ----
+
+fn start_second_track(r: &mut Repo) {
+    r.store
+        .write(|tx| {
+            let ctx = crate::plan::EditContext {
+                repo_id: "r".into(),
+                session_id: "owner".into(),
+                actor: Actor::default(),
+                reason: None,
+                replan: false,
+            };
+            crate::plan::start_track_in(tx, &ctx, "Docs refresh", "Docs are current")?;
+            Ok(())
+        })
+        .unwrap();
+}
+
+fn track_ctx(track: u32) -> ImportCtx {
+    ImportCtx {
+        track: Some(track),
+        ..ctx()
+    }
+}
+
+#[test]
+fn import_single_track_goes_there() {
+    let mut r = Repo::new();
+    r.write("a.md", &plan_text("Login", &[("Endpoint", &[])]));
+    r.scan();
+    // Track 1 is finished; track 2 is the only open one.
+    r.store
+        .append(EventDraft::new(
+            "r",
+            "owner",
+            "track_closed",
+            serde_json::json!({"track": 1}),
+        ))
+        .unwrap();
+    start_second_track(&mut r);
+    r.write("b.md", &plan_text("Search", &[("Index", &[])]));
+    let out = r.scan();
+    assert!(
+        matches!(&out[..], [ImportOutcome::Imported { node_id, .. }] if node_id == "T2-1"),
+        "{out:?}"
+    );
+    let m = get_node(r.store.conn(), "r", "T2-1").unwrap().unwrap();
+    assert_eq!((m.kind, m.title.as_str()), (NodeKind::Milestone, "Search"));
+    assert_eq!(
+        get_node(r.store.conn(), "r", "T2-1.1")
+            .unwrap()
+            .unwrap()
+            .title,
+        "Index"
+    );
+}
+
+#[test]
+fn import_two_tracks_parks_file() {
+    let mut r = Repo::new();
+    r.write("a.md", &plan_text("Login", &[("Endpoint", &[])]));
+    r.scan();
+    start_second_track(&mut r);
+    let before = r.tree().len();
+    r.write("b.md", &plan_text("Search", &[("Index", &[])]));
+    let out = r.scan();
+    assert!(
+        matches!(&out[..], [ImportOutcome::NeedsTrack { tracks, .. }]
+            if tracks.contains("track 1 'Login'") && tracks.contains("track 2 'Docs refresh'")),
+        "{out:?}"
+    );
+    assert!(
+        out[0]
+            .summary()
+            .unwrap()
+            .contains("import --track <number>")
+    );
+    assert_eq!(r.tree().len(), before, "nothing was created");
+    // Said once: the next scan is quiet.
+    assert_eq!(r.scan(), vec![]);
+    // The owner places it.
+    let p = r.root.join(super::PLANS_DIR).join("b.md");
+    let out = import_path(&mut r.store, "r", &r.root, &p, &track_ctx(2), None).unwrap();
+    assert!(
+        matches!(out, ImportOutcome::Imported { ref node_id, .. } if node_id == "T2-1"),
+        "{out:?}"
+    );
+    assert_eq!(
+        get_node(r.store.conn(), "r", "T2-1.1")
+            .unwrap()
+            .unwrap()
+            .title,
+        "Index"
+    );
+    // And it is linked now: a re-import is quiet.
+    assert!(matches!(
+        r.import(&p, None),
+        ImportOutcome::Unchanged { .. }
+    ));
+}
+
+#[test]
+fn import_track_flag_places_file() {
+    let mut r = Repo::new();
+    r.write("a.md", &plan_text("Login", &[("Endpoint", &[])]));
+    r.scan();
+    start_second_track(&mut r);
+    let p = r.write("b.md", &plan_text("Search", &[("Index", &[])]));
+    let out = import_path(&mut r.store, "r", &r.root, &p, &track_ctx(1), None).unwrap();
+    assert!(
+        matches!(out, ImportOutcome::Imported { ref node_id, .. } if node_id == "2"),
+        "{out:?}"
+    );
+    // A track that isn't open is refused in words.
+    let q = r.write("c.md", &plan_text("Other", &[("Thing", &[])]));
+    let err = import_path(&mut r.store, "r", &r.root, &q, &track_ctx(7), None)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("track 7 isn't open"), "{err}");
+}
+
+#[test]
+fn import_title_match_picks_track() {
+    let mut r = Repo::new();
+    r.write("a.md", &plan_text("Login", &[("Endpoint", &[])]));
+    r.scan();
+    start_second_track(&mut r);
+    // Track 2 already has a milestone with the file's title.
+    crate::plan::plan_edit(
+        &mut r.store,
+        &crate::plan::EditContext {
+            repo_id: "r".into(),
+            session_id: "owner".into(),
+            actor: Actor::default(),
+            reason: None,
+            replan: false,
+        },
+        &[
+            PlanOp::AddNode {
+                parent: Some("T2-G".into()),
+                kind: NodeKind::Milestone,
+                title: "Search".into(),
+                intent: Some("find things".into()),
+                estimate_min: None,
+                expected_files: vec![],
+                check: None,
+            },
+            PlanOp::AddNode {
+                parent: Some("T2-1".into()),
+                kind: NodeKind::Task,
+                title: "Index".into(),
+                intent: None,
+                estimate_min: None,
+                expected_files: vec![],
+                check: None,
+            },
+        ],
+    )
+    .unwrap();
+    r.write(
+        "b.md",
+        &plan_text("Search", &[("Index", &[]), ("Query", &[])]),
+    );
+    let out = r.scan();
+    assert!(
+        matches!(&out[..], [ImportOutcome::Imported { node_id, added: 1, .. }] if node_id == "T2-1"),
+        "{out:?}"
+    );
+    assert_eq!(
+        get_node(r.store.conn(), "r", "T2-1.2")
+            .unwrap()
+            .unwrap()
+            .title,
+        "Query"
+    );
 }

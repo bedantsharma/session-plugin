@@ -409,6 +409,8 @@ pub enum SplitBy {
     Session,
     /// By agent type (`None`: the main agent).
     Agent,
+    /// By track (the key is the track number; `None`: work on no task).
+    Track,
 }
 
 /// Narrows [`split`] to one session and/or one task (with its detours).
@@ -416,6 +418,18 @@ pub enum SplitBy {
 pub struct Filter {
     pub session: Option<String>,
     pub task: Option<String>,
+    /// Only work on this track's tasks (with their detours).
+    pub track: Option<u32>,
+}
+
+/// The SQL condition for "this task id belongs to track `no`" (ids are `1.2` for track 1 and
+/// `T<no>-1.2` otherwise).
+fn track_condition(column: &str, no: u32) -> String {
+    if no <= 1 {
+        format!("{column} NOT LIKE 'T%-%'")
+    } else {
+        format!("{column} LIKE 'T{no}-%'")
+    }
 }
 
 /// A repo's tokens grouped `by` (`None`: no task, the main agent, …), keys in order.
@@ -427,10 +441,18 @@ pub fn split(
 ) -> Result<Vec<(Option<String>, Tokens)>> {
     let key = match by {
         SplitBy::Model => "model",
-        SplitBy::Task => "task_id",
+        SplitBy::Task | SplitBy::Track => "task_id",
         SplitBy::Session => "session_id",
         SplitBy::Agent => "agent_type",
     };
+    let in_track = filter.track.map_or_else(String::new, |no| {
+        format!(
+            "AND ((task_id IS NOT NULL AND {}) OR detour_id IN
+                  (SELECT detour_id FROM detours WHERE repo_id = ?1 AND {}))",
+            track_condition("task_id", no),
+            track_condition("blocks_task", no)
+        )
+    });
     let mut stmt = conn.prepare(&format!(
         "SELECT {key}, model, count(*), SUM(input), SUM(output), SUM(cache_read),
                 SUM(cache_write_5m), SUM(cache_write_1h)
@@ -438,6 +460,7 @@ pub fn split(
          WHERE repo_id = ?1 AND (?2 IS NULL OR session_id = ?2)
            AND (?3 IS NULL OR task_id = ?3 OR detour_id IN
                 (SELECT detour_id FROM detours WHERE repo_id = ?1 AND blocks_task = ?3))
+           {in_track}
          GROUP BY {key}, model"
     ))?;
     let rows = stmt.query_map(params![repo, filter.session, filter.task], |r| {
@@ -460,6 +483,11 @@ pub fn split(
     let mut groups: BTreeMap<Option<String>, Tokens> = BTreeMap::new();
     for row in rows {
         let (k, model, replies, counts) = row?;
+        let k = if by == SplitBy::Track {
+            k.map(|id| crate::plan::track::track_of(&id).to_string())
+        } else {
+            k
+        };
         let t = groups.entry(k).or_default();
         t.replies += replies;
         t.sum.add(&counts);

@@ -229,6 +229,7 @@ fn import_plans(store: &mut Store, input: &HookInput, repo_id: &str) -> Vec<Stri
             model: input.model.clone(),
         },
         dry_run: false,
+        track: None,
     };
     match import::scan(
         store,
@@ -249,7 +250,8 @@ fn import_plans(store: &mut Store, input: &HookInput, repo_id: &str) -> Vec<Stri
                 }
                 import::ImportOutcome::Imported { .. }
                 | import::ImportOutcome::RunClosed { .. }
-                | import::ImportOutcome::NeedsLink { .. } => o.summary(),
+                | import::ImportOutcome::NeedsLink { .. }
+                | import::ImportOutcome::NeedsTrack { .. } => o.summary(),
                 import::ImportOutcome::NeedsScope { paths } => Some(format!(
                     "{} Nothing is imported until the owner answers (dashboard, or `bridge-screen \
                      import --fresh` / `--done <file>…`). Don't decide it for them.",

@@ -130,6 +130,33 @@ fn completed_at(conn: &Connection, repo: &str) -> Result<HashMap<String, Timesta
                 .or_insert(t);
         }
     }
+    // A task done without tests (review) never reached L2: its real work time still teaches
+    // the forecast, counted from when its result was saved (the newest claim, or the
+    // check that found its files, whichever came last).
+    let mut stmt = conn.prepare_cached(
+        "SELECT n.id, MAX(c.ts),
+                (SELECT MAX(v.ts) FROM verifications v
+                 WHERE v.repo_id = n.repo_id AND v.task_id = n.id AND v.state != 'failed')
+         FROM plan_nodes n JOIN claims_done c ON c.repo_id = n.repo_id AND c.task_id = n.id
+         WHERE n.repo_id = ?1 AND n.status = 'reviewed' GROUP BY n.id",
+    )?;
+    for row in stmt.query_map([repo], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, Option<String>>(2)?,
+        ))
+    })? {
+        let (task, claimed, checked) = row?;
+        let at = [Some(claimed), checked]
+            .into_iter()
+            .flatten()
+            .filter_map(|t| parse_ts(&t))
+            .max();
+        if let Some(t) = at {
+            out.entry(task).or_insert(t);
+        }
+    }
     Ok(out)
 }
 
@@ -248,6 +275,14 @@ fn percentile(sorted: &[f64], q: f64) -> f64 {
     sorted[rank - 1]
 }
 
+/// What a forecast covers: every open track together, or one track at the pace that track
+/// actually had.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    All,
+    Track(u32),
+}
+
 /// Recent agent-active hours per active day: active time of units that stopped in the
 /// last [`ACTIVITY_DAYS`] calendar days (in `tz`), over the days that had any. `None`
 /// without activity.
@@ -257,18 +292,38 @@ pub fn hours_per_day(
     now: Timestamp,
     tz: &TimeZone,
 ) -> Result<Option<f64>> {
+    hours_per_day_in(conn, repo, now, tz, Scope::All)
+}
+
+/// [`hours_per_day`] for one scope: a track counts only the units that worked on its tasks.
+pub fn hours_per_day_in(
+    conn: &Connection,
+    repo: &str,
+    now: Timestamp,
+    tz: &TimeZone,
+    scope: Scope,
+) -> Result<Option<f64>> {
     let today = now.to_zoned(tz.clone()).date();
     let first = today - jiff::Span::new().days(ACTIVITY_DAYS - 1);
     let mut stmt = conn.prepare_cached(
-        "SELECT u.stopped_at, u.active_secs FROM units u
+        "SELECT u.stopped_at, u.active_secs, u.task_id FROM units u
          JOIN sessions s ON s.session_id = u.session_id
          WHERE s.repo_id = ?1 AND u.stopped_at IS NOT NULL AND u.active_secs > 0",
     )?;
     let mut per_day: BTreeMap<Date, i64> = BTreeMap::new();
     for row in stmt.query_map([repo], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, Option<String>>(2)?,
+        ))
     })? {
-        let (stopped, secs) = row?;
+        let (stopped, secs, task) = row?;
+        if let Scope::Track(t) = scope
+            && task.as_deref().map(crate::plan::track::track_of) != Some(t)
+        {
+            continue;
+        }
         let Some(t) = parse_ts(&stopped) else {
             continue;
         };
@@ -326,9 +381,22 @@ fn seed_for(repo: &str, legs: &[(f64, f64, &[f64])]) -> u64 {
     rng::seed(&[repo.as_bytes(), &bytes])
 }
 
-/// The forecast for `repo` at `now` (dates in `tz`), from [`RUNS`] runs.
+/// The forecast for every open track of `repo` together at `now` (dates in `tz`), from
+/// [`RUNS`] runs.
 pub fn run(conn: &Connection, repo: &str, now: Timestamp, tz: &TimeZone) -> Result<Forecast> {
     run_with(conn, repo, now, tz, RUNS)
+}
+
+/// The forecast for one track: what is left of that track, at the pace that track had
+/// (calibration stays repo-wide).
+pub fn run_track(
+    conn: &Connection,
+    repo: &str,
+    track: u32,
+    now: Timestamp,
+    tz: &TimeZone,
+) -> Result<Forecast> {
+    run_scope(conn, repo, Scope::Track(track), now, tz, RUNS)
 }
 
 /// [`run`] with a given number of runs.
@@ -339,9 +407,25 @@ pub fn run_with(
     tz: &TimeZone,
     runs: usize,
 ) -> Result<Forecast> {
-    // Calibration learns from every run; what is left to forecast is the current one.
+    run_scope(conn, repo, Scope::All, now, tz, runs)
+}
+
+#[allow(clippy::too_many_lines)] // one pass: calibrate, draw, turn hours into dates
+fn run_scope(
+    conn: &Connection,
+    repo: &str,
+    scope: Scope,
+    now: Timestamp,
+    tz: &TimeZone,
+    runs: usize,
+) -> Result<Forecast> {
+    // Calibration learns from every run of every track; what is left to forecast is the
+    // current run of the scope.
     let cal = calibration(conn, repo, now)?;
-    let tree = crate::plan::runs::open_run_tree(conn, repo)?;
+    let tree = match scope {
+        Scope::All => crate::plan::runs::open_run_tree(conn, repo)?,
+        Scope::Track(t) => crate::plan::runs::run_tree(conn, repo, t)?,
+    };
     let active = active_secs(conn, repo)?;
     let open: Vec<&PlanNode> = leaves(&tree)
         .into_iter()
@@ -359,7 +443,7 @@ pub fn run_with(
         remaining_min: remaining.iter().map(|(_, e)| u64::from(*e)).sum(),
         unestimated: open.len() - remaining.len(),
         points: cal.pooled.len(),
-        hours_per_day: hours_per_day(conn, repo, now, tz)?,
+        hours_per_day: hours_per_day_in(conn, repo, now, tz, scope)?,
         reason: None,
         median_ratio: None,
     };
@@ -415,15 +499,16 @@ pub fn run_with(
     Ok(f)
 }
 
-/// The repo's latest recorded forecast.
-pub fn latest(conn: &Connection, repo: &str) -> Result<Option<Forecast>> {
+/// The latest recorded forecast of a track.
+pub fn latest(conn: &Connection, repo: &str, track: u32) -> Result<Option<Forecast>> {
     Ok(conn
         .prepare_cached(
             "SELECT p50_hours, p90_hours, p50_date, p90_date, remaining_min, unestimated, points,
                     hours_per_day, reason
-             FROM forecast_history WHERE repo_id = ?1 ORDER BY rowid DESC LIMIT 1",
+             FROM forecast_history WHERE repo_id = ?1 AND track = ?2
+             ORDER BY rowid DESC LIMIT 1",
         )?
-        .query_row([repo], read_row)
+        .query_row(params![repo, track], read_row)
         .optional()?
         .map(|(_, f)| f))
 }
@@ -456,14 +541,14 @@ fn read_row(r: &rusqlite::Row) -> rusqlite::Result<(String, Forecast)> {
     ))
 }
 
-/// The repo's forecast history, oldest first.
-pub fn history(conn: &Connection, repo: &str) -> Result<Vec<HistoryPoint>> {
+/// A track's forecast history, oldest first.
+pub fn history(conn: &Connection, repo: &str, track: u32) -> Result<Vec<HistoryPoint>> {
     let mut stmt = conn.prepare(
         "SELECT p50_hours, p90_hours, p50_date, p90_date, remaining_min, unestimated, points,
                 hours_per_day, reason, ts
-         FROM forecast_history WHERE repo_id = ?1 ORDER BY rowid",
+         FROM forecast_history WHERE repo_id = ?1 AND track = ?2 ORDER BY rowid",
     )?;
-    let rows = stmt.query_map([repo], |r| {
+    let rows = stmt.query_map(params![repo, track], |r| {
         let (_, forecast) = read_row(r)?;
         Ok(HistoryPoint {
             ts: r.get(9)?,
@@ -487,9 +572,10 @@ pub fn moved(old: &Forecast, new: &Forecast) -> bool {
         || rel(old.p90_hours, new.p90_hours)
 }
 
-/// Run the forecast and append a `forecast_ran` (as `session`) when it moved since the
-/// last one. Called after a verification at L2 or above, by the process that recorded it
-/// (MCP `verify`, the owner's verdict) — never from a hook. Returns whether it appended.
+/// Run the forecast of each open track and append a `forecast_ran` (as `session`, naming its
+/// track) for each that moved since that track's last one. Called after a verification at
+/// L2 or above, by the process that recorded it (MCP `verify`, the owner's verdict) — never
+/// from a hook. Returns whether it appended.
 pub fn record(
     store: &mut Store,
     repo: &str,
@@ -497,19 +583,29 @@ pub fn record(
     now: Timestamp,
     tz: &TimeZone,
 ) -> Result<bool> {
-    let new = run(store.conn(), repo, now, tz)?;
-    if latest(store.conn(), repo)?.is_some_and(|old| !moved(&old, &new)) {
-        return Ok(false);
+    let mut tracks: Vec<u32> = crate::plan::track::open_tracks(store.conn(), repo)?
+        .iter()
+        .map(|t| t.no)
+        .collect();
+    if tracks.is_empty() {
+        tracks.push(1);
     }
-    let mut data = new;
-    data.median_ratio = None;
-    store.append(EventDraft::new(
-        repo,
-        session,
-        "forecast_ran",
-        serde_json::to_value(&data)?,
-    ))?;
-    Ok(true)
+    let mut appended = false;
+    for track in tracks {
+        let new = run_track(store.conn(), repo, track, now, tz)?;
+        if latest(store.conn(), repo, track)?.is_some_and(|old| !moved(&old, &new)) {
+            continue;
+        }
+        let mut data = new;
+        data.median_ratio = None;
+        let mut value = serde_json::to_value(&data)?;
+        if track != 1 {
+            value["track"] = serde_json::json!(track);
+        }
+        store.append(EventDraft::new(repo, session, "forecast_ran", value))?;
+        appended = true;
+    }
+    Ok(appended)
 }
 
 /// [`record`] at the current time in the owner's time zone. A forecast that can't be

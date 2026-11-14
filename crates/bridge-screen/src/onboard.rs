@@ -18,7 +18,13 @@ use crate::cli::{PagesCommand, WaitCommand};
 use crate::commands::open_store;
 
 /// `bridge-screen import [-C DIR] [FILE] [--into NODE] [--dry-run]`.
-pub fn import(dir: &Path, file: Option<&Path>, into: Option<&str>, dry_run: bool) -> Result<()> {
+pub fn import(
+    dir: &Path,
+    file: Option<&Path>,
+    into: Option<&str>,
+    track: Option<u32>,
+    dry_run: bool,
+) -> Result<()> {
     let repo = repo::identify(dir)?;
     let home = Home::resolve()?;
     let mut store = open_store(&home)?;
@@ -27,6 +33,7 @@ pub fn import(dir: &Path, file: Option<&Path>, into: Option<&str>, dry_run: bool
         session_id: OWNER_SESSION.to_string(),
         actor: Actor::default(),
         dry_run,
+        track,
     };
     let outcomes = match file {
         Some(file) => {
@@ -55,7 +62,18 @@ pub fn import(dir: &Path, file: Option<&Path>, into: Option<&str>, dry_run: bool
         for s in import::sources(store.conn(), &repo.id)? {
             let said = outcomes.iter().any(|o| o.path() == s.path);
             if s.needs_link && !said {
-                println!("{}", import::needs_link_line(&s.path));
+                let open = bridge_screen_core::plan::track::open_tracks(store.conn(), &repo.id)?;
+                if s.baseline || open.len() < 2 {
+                    println!("{}", import::needs_link_line(&s.path));
+                } else {
+                    println!(
+                        "{}",
+                        import::needs_track_line(
+                            &s.path,
+                            &bridge_screen_core::plan::track::open_list_text(&open)
+                        )
+                    );
+                }
             }
         }
     }

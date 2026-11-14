@@ -45,6 +45,9 @@ pub struct ImportCtx {
     pub actor: Actor,
     /// Work out the changes and roll them back.
     pub dry_run: bool,
+    /// Place new files in this track (`import --track N`); otherwise the importer chooses
+    /// (never guessing between several open tracks).
+    pub track: Option<u32>,
 }
 
 /// How much one scan may read.
@@ -101,6 +104,13 @@ pub enum ImportOutcome {
     NeedsLink {
         path: String,
     },
+    /// The folder has several open tracks and nothing says which one this file belongs
+    /// to: nothing was created (never a guess). It waits for
+    /// `bridge-screen import --track N <file>` (or `--into <id>`).
+    NeedsTrack {
+        path: String,
+        tracks: String,
+    },
     /// A finished run was closed because this file's plan arrived; its progress starts
     /// from 0% (spec §10.1).
     RunClosed {
@@ -127,6 +137,7 @@ impl ImportOutcome {
             | Self::Baseline { path }
             | Self::Skipped { path, .. }
             | Self::NeedsLink { path }
+            | Self::NeedsTrack { path, .. }
             | Self::Failed { path, .. } => path,
             Self::NeedsScope { paths } => paths.first().map_or("", String::as_str),
             Self::RunClosed { .. } => "",
@@ -188,6 +199,7 @@ impl ImportOutcome {
             )),
             Self::Skipped { path, why } => Some(format!("Skipped {}: {why}", short_name(path))),
             Self::NeedsLink { path } => Some(needs_link_line(path)),
+            Self::NeedsTrack { path, tracks } => Some(needs_track_line(path, tracks)),
             Self::NeedsScope { paths } => Some(scope::question_text(paths)),
             Self::RunClosed { number, tasks } => Some(format!(
                 "Run {number} is finished ({tasks} task{}, all passed their tests) and was closed; \
@@ -207,6 +219,15 @@ pub fn needs_link_line(path: &str) -> String {
     format!(
         "{} changed but isn't linked to a milestone, so nothing was imported; run \
          `bridge-screen import --into <milestone> {path}` to link it.",
+        short_name(path)
+    )
+}
+
+/// What to tell the owner about a plan file that could belong to any of several tracks.
+pub fn needs_track_line(path: &str, tracks: &str) -> String {
+    format!(
+        "{} could belong to more than one track ({tracks}), so nothing was imported; run \
+         `bridge-screen import --track <number> {path}` to place it.",
         short_name(path)
     )
 }
@@ -345,17 +366,6 @@ fn seen_draft(repo_id: &str, ctx: &ImportCtx, d: &PlanFileSeen) -> Result<EventD
     .actor(ctx.actor.clone()))
 }
 
-/// The goal, if the repo has a live one.
-fn live_goal(conn: &Connection, repo_id: &str) -> Result<Option<crate::plan::PlanNode>> {
-    let Some(track) = crate::plan::track::open_tracks(conn, repo_id)?
-        .into_iter()
-        .next()
-    else {
-        return Ok(None);
-    };
-    Ok(get_node(conn, repo_id, &track.goal_id)?.filter(|g| g.status != NodeStatus::Dropped))
-}
-
 /// Does the repo have any live plan node?
 fn has_plan(conn: &Connection, repo_id: &str) -> Result<bool> {
     let n: i64 = conn
@@ -416,7 +426,18 @@ fn items_by_title(
     Ok(out)
 }
 
-/// Where the file's tasks go, and what its last import produced.
+/// Where a file goes.
+enum Placement {
+    /// Here, with what its last import produced.
+    Target(ImportTarget, Vec<SourceItem>),
+    /// Several open tracks and nothing says which: parked, nothing created.
+    Parked { tracks: String },
+}
+
+/// Where the file's tasks go, and what its last import produced. In order: the container the
+/// file was imported into before; the track named by `--track`; a goal or milestone with the
+/// file's title in an open track's current run; the only open track; a new track when none
+/// is open. Several open tracks and no hint park the file — never a guess.
 fn target_for(
     tx: &Transaction,
     repo_id: &str,
@@ -424,7 +445,8 @@ fn target_for(
     parsed: &ParsedPlan,
     linked: Option<&str>,
     into: Option<&str>,
-) -> Result<(ImportTarget, Vec<SourceItem>)> {
+    track: Option<u32>,
+) -> Result<Placement> {
     let title = parsed.title.clone().unwrap_or_else(|| file_stem(rel));
     let intent = parsed
         .goal
@@ -449,28 +471,54 @@ fn target_for(
     };
     if let Some(into) = into {
         let items = items_by_title(tx, repo_id, into, parsed)?;
-        return Ok((existing(into, false)?, items));
+        return Ok(Placement::Target(existing(into, false)?, items));
     }
     if let Some(id) = linked
         && get_node(tx, repo_id, id)?.is_some_and(|n| n.status != NodeStatus::Dropped)
     {
-        return Ok((existing(id, true)?, source_items(tx, repo_id, rel)?));
+        return Ok(Placement::Target(
+            existing(id, true)?,
+            source_items(tx, repo_id, rel)?,
+        ));
     }
-    let Some(goal) = live_goal(tx, repo_id)? else {
-        return Ok((ImportTarget::NewGoal { title, intent }, Vec::new()));
-    };
+    let open = crate::plan::track::open_tracks(tx, repo_id)?;
+    if open.is_empty() {
+        let id = crate::plan::track::goal_id(crate::plan::track::next_track_no(tx, repo_id)?);
+        return Ok(Placement::Target(
+            ImportTarget::NewGoal { id, title, intent },
+            Vec::new(),
+        ));
+    }
     // A file seen before as already planned by hand, now changed: when a goal or
     // milestone has the file's title, the file belongs to it (matched by title, like
     // `--into`) instead of becoming a duplicate milestone.
-    if let Some(id) = container_titled(tx, repo_id, &title)? {
+    if track.is_none()
+        && let Some(id) = container_titled(tx, repo_id, &title)?
+    {
         let items = items_by_title(tx, repo_id, &id, parsed)?;
-        return Ok((existing(&id, false)?, items));
+        return Ok(Placement::Target(existing(&id, false)?, items));
     }
-    let id = next_child(tx, repo_id, &goal.id)?.to_string();
-    Ok((
+    let chosen = match (track, open.as_slice()) {
+        (Some(n), _) => open.iter().find(|t| t.no == n).ok_or_else(|| {
+            Error::Invalid(format!(
+                "track {n} isn't open; open tracks: {}",
+                crate::plan::track::open_list_text(&open)
+            ))
+        })?,
+        (None, [only]) => only,
+        (None, _) => {
+            return Ok(Placement::Parked {
+                tracks: crate::plan::track::open_list_text(&open),
+            });
+        }
+    };
+    let goal = get_node(tx, repo_id, &chosen.goal_id)?
+        .ok_or_else(|| Error::NotFound(format!("no plan node {}", chosen.goal_id)))?;
+    let n = next_child(tx, repo_id, &goal.id)?.to_string();
+    Ok(Placement::Target(
         ImportTarget::NewMilestone {
+            id: crate::plan::track::raw(chosen.no, &n),
             goal_id: goal.id,
-            id,
             title,
             intent,
         },
@@ -524,9 +572,12 @@ fn import_in(
         needs_link: false,
     };
     if into.is_none()
+        && ctx.track.is_none()
         && let Some(p) = &prev
     {
-        if p.hash == hash && !has_step_items(tx, repo_id, &rel)? {
+        // A parked file (waiting for a track) is looked at again when asked by hand.
+        let parked = p.needs_link && !p.baseline;
+        if p.hash == hash && !parked && !has_step_items(tx, repo_id, &rel)? {
             // Same content (perhaps a new mtime): nothing is written.
             return Ok(ImportOutcome::Unchanged { path: rel });
         }
@@ -597,11 +648,24 @@ fn apply_import(
     into: Option<&str>,
 ) -> Result<ImportOutcome> {
     let rel = file.rel.clone();
-    let (target, items) = target_for(tx, repo_id, &rel, parsed, linked, into)?;
+    let (target, items) = match target_for(tx, repo_id, &rel, parsed, linked, into, ctx.track)? {
+        Placement::Target(target, items) => (target, items),
+        Placement::Parked { tracks } => {
+            let d = PlanFileSeen {
+                path: rel.clone(),
+                hash: file.hash.clone(),
+                size: file.size,
+                mtime: file.mtime,
+                baseline: false,
+                needs_link: true,
+            };
+            append_in(tx, seen_draft(repo_id, ctx, &d)?)?;
+            return Ok(ImportOutcome::NeedsTrack { path: rel, tracks });
+        }
+    };
     let d = diff::diff(&items, parsed, &target, &rel);
     let node_id = match &target {
-        ImportTarget::NewGoal { .. } => "G".to_string(),
-        ImportTarget::NewMilestone { id, .. } => id.clone(),
+        ImportTarget::NewGoal { id, .. } | ImportTarget::NewMilestone { id, .. } => id.clone(),
         ImportTarget::Existing { node_id, .. } => node_id.clone(),
     };
     let mut changes: Vec<String> = d.ops.iter().map(describe).collect();

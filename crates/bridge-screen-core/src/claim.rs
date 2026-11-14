@@ -23,6 +23,8 @@ pub struct Candidate {
     /// Share of the prompt's keywords found in the task (0..=1).
     pub score: f32,
     pub status: NodeStatus,
+    /// The track the task belongs to (1 for a plan without tracks).
+    pub track: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -116,7 +118,15 @@ pub fn candidates(
     if query.is_empty() {
         return Ok(Vec::new());
     }
-    let tree = load_tree(conn, repo_id, false)?;
+    // Work in a finished track is not a match.
+    let open: Vec<u32> = crate::plan::track::open_tracks(conn, repo_id)?
+        .iter()
+        .map(|t| t.no)
+        .collect();
+    let tree: Vec<_> = load_tree(conn, repo_id, false)?
+        .into_iter()
+        .filter(|n| open.contains(&crate::plan::track::track_of(&n.id)))
+        .collect();
     // Titles of the nodes on the path from the goal's children down to the current node.
     let mut path: Vec<&str> = Vec::new();
     let mut out = Vec::new();
@@ -148,6 +158,7 @@ pub fn candidates(
                     title: node.title.clone(),
                     score,
                     status: node.status,
+                    track: crate::plan::track::track_of(&node.id),
                 });
             }
         }

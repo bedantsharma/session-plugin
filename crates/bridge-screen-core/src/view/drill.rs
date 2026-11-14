@@ -934,6 +934,7 @@ fn task_usage(conn: &Connection, repo: &str, id: &str, cfg: &Config) -> Result<O
     let filter = telemetry::Filter {
         session: None,
         task: Some(id.to_string()),
+        track: None,
     };
     let mut by_agent = Vec::new();
     for (agent, t) in telemetry::split(conn, repo, &filter, telemetry::SplitBy::Agent)? {
@@ -1421,7 +1422,7 @@ pub fn calibration(
         pooled: cal.pooled,
         pooled_text,
         forecast: super::forecast_row(conn, repo, now)?,
-        history: forecast::history(conn, repo)?,
+        history: forecast::history(conn, repo, crate::plan::track::primary(conn, repo)?)?,
         prices,
         unpriced_models,
         notes,

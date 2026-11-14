@@ -230,6 +230,21 @@ pub fn forecast_row(conn: &Connection, repo_id: &str, now: Timestamp) -> Result<
     forecast_row_in(conn, repo_id, now, &jiff::tz::TimeZone::system())
 }
 
+/// The forecast row of one track.
+pub fn forecast_row_track(
+    conn: &Connection,
+    repo_id: &str,
+    track: u32,
+    now: Timestamp,
+) -> Result<ForecastRow> {
+    let tz = jiff::tz::TimeZone::system();
+    Ok(forecast_row_of(
+        forecast::run_track(conn, repo_id, track, now, &tz)?,
+        now,
+        &tz,
+    ))
+}
+
 /// [`forecast_row`] in a given time zone.
 pub fn forecast_row_in(
     conn: &Connection,
@@ -237,9 +252,16 @@ pub fn forecast_row_in(
     now: Timestamp,
     tz: &jiff::tz::TimeZone,
 ) -> Result<ForecastRow> {
-    let f = forecast::run(conn, repo_id, now, tz)?;
+    Ok(forecast_row_of(
+        forecast::run(conn, repo_id, now, tz)?,
+        now,
+        tz,
+    ))
+}
+
+fn forecast_row_of(f: Forecast, now: Timestamp, tz: &jiff::tz::TimeZone) -> ForecastRow {
     let tasks = if f.points == 1 { "task" } else { "tasks" };
-    Ok(ForecastRow {
+    ForecastRow {
         text: forecast::range_text(&f, now, tz),
         compact: forecast::compact_range(&f, now, tz),
         short: forecast::short_text(&f, now, tz),
@@ -249,7 +271,7 @@ pub fn forecast_row_in(
         ),
         basis: forecast::basis_text(&f),
         forecast: f,
-    })
+    }
 }
 
 /// A milestone's progress and hill state (spec §5.6).

@@ -1056,6 +1056,7 @@ fn rebuild_reproduces_import_init_wait_and_branch_views() {
         session_id: "owner".into(),
         actor: Actor::default(),
         dry_run: false,
+        track: None,
     };
     // Repo a: imported, then a big change (a replan).
     std::fs::write(plans.join("a.md"), plan(&["One", "Two", "Three"])).unwrap();

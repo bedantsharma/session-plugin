@@ -1513,60 +1513,78 @@ fn agent_status(
     Ok(out)
 }
 
-/// The goal with its rolled-up status, the milestones, the forecast and what's next.
+/// The goal with its rolled-up status, the milestones, the forecast and what's next —
+/// for each open track (named when there are several).
 fn plan_status(
     conn: &rusqlite::Connection,
     s: &Session,
     out: &mut String,
 ) -> bridge_screen_core::error::Result<()> {
-    let track = bridge_screen_core::plan::track::primary(conn, &s.repo_id)?;
-    let goal_id = bridge_screen_core::plan::track::goal_id(track);
-    match get_node(conn, &s.repo_id, &goal_id)?.filter(|g| g.status != NodeStatus::Dropped) {
-        Some(goal) => {
-            let tree = bridge_screen_core::plan::runs::run_tree(conn, &s.repo_id, track)?;
-            let rolled = bridge_screen_core::plan::rollups(&tree);
-            let _ = writeln!(
-                out,
-                "Goal: {} ({})",
-                goal.title,
-                crate::words::status(bridge_screen_core::plan::shown_status(&goal, &rolled))
-            );
-            let milestones: Vec<String> = tree
-                .iter()
-                .filter(|n| n.kind == NodeKind::Milestone)
-                .map(|n| {
-                    format!(
-                        "{} {}",
-                        n.id,
-                        crate::words::status(bridge_screen_core::plan::shown_status(n, &rolled))
-                    )
-                })
-                .collect();
-            if !milestones.is_empty() {
-                let _ = writeln!(out, "Milestones: {}", milestones.join(" · "));
-            }
-            let f = view::forecast_row(conn, &s.repo_id, jiff::Timestamp::now())?;
-            if f.compact.is_some() {
-                let _ = writeln!(out, "Forecast: {} ({})", f.text, f.basis);
-            } else {
-                let _ = writeln!(out, "Forecast: {}", f.text);
-            }
-            let next: Vec<String> = tree
-                .into_iter()
-                .filter(|n| {
-                    matches!(n.kind, NodeKind::Task | NodeKind::Subtask)
-                        && n.status == NodeStatus::Todo
-                })
-                .take(3)
-                .map(|n| format!("{} {}", n.id, n.title))
-                .collect();
-            if next.is_empty() {
-                out.push_str("Next: nothing left to do in the plan.");
-            } else {
-                let _ = write!(out, "Next: {}", next.join(" · "));
-            }
+    let open = bridge_screen_core::plan::track::open_tracks(conn, &s.repo_id)?;
+    if open.is_empty() {
+        out.push_str(bridge_screen_core::handoff::briefing::NO_PLAN);
+        return Ok(());
+    }
+    let several = open.len() > 1;
+    for (i, t) in open.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
         }
-        None => out.push_str(bridge_screen_core::handoff::briefing::NO_PLAN),
+        let Some(goal) =
+            get_node(conn, &s.repo_id, &t.goal_id)?.filter(|g| g.status != NodeStatus::Dropped)
+        else {
+            continue;
+        };
+        let tree = bridge_screen_core::plan::runs::run_tree(conn, &s.repo_id, t.no)?;
+        let rolled = bridge_screen_core::plan::rollups(&tree);
+        let head = if several {
+            format!("Track {} — Goal", t.no)
+        } else {
+            "Goal".to_string()
+        };
+        let _ = writeln!(
+            out,
+            "{head}: {} ({})",
+            goal.title,
+            crate::words::status(bridge_screen_core::plan::shown_status(&goal, &rolled))
+        );
+        let milestones: Vec<String> = tree
+            .iter()
+            .filter(|n| n.kind == NodeKind::Milestone)
+            .map(|n| {
+                format!(
+                    "{} {}",
+                    n.id,
+                    crate::words::status(bridge_screen_core::plan::shown_status(n, &rolled))
+                )
+            })
+            .collect();
+        if !milestones.is_empty() {
+            let _ = writeln!(out, "Milestones: {}", milestones.join(" · "));
+        }
+        let f = if several {
+            view::forecast_row_track(conn, &s.repo_id, t.no, jiff::Timestamp::now())?
+        } else {
+            view::forecast_row(conn, &s.repo_id, jiff::Timestamp::now())?
+        };
+        if f.compact.is_some() {
+            let _ = writeln!(out, "Forecast: {} ({})", f.text, f.basis);
+        } else {
+            let _ = writeln!(out, "Forecast: {}", f.text);
+        }
+        let next: Vec<String> = tree
+            .into_iter()
+            .filter(|n| {
+                matches!(n.kind, NodeKind::Task | NodeKind::Subtask) && n.status == NodeStatus::Todo
+            })
+            .take(3)
+            .map(|n| format!("{} {}", n.id, n.title))
+            .collect();
+        if next.is_empty() {
+            out.push_str("Next: nothing left to do in the plan.");
+        } else {
+            let _ = write!(out, "Next: {}", next.join(" · "));
+        }
     }
     Ok(())
 }
