@@ -44,6 +44,10 @@ pub struct TreeNode {
     pub title: String,
     pub intent: Option<String>,
     pub status: NodeStatus,
+    /// How it is checked: tests, or review (done once its result is saved).
+    pub check: crate::plan::CheckKind,
+    /// ✓ Works / ✗ Broken for a task that was said done and isn't signed off yet.
+    pub actions: Vec<super::ActionSpec>,
     /// A parent's status from its tasks (spec §10: derived, never stored); `None` for a
     /// leaf, which shows its own `status`.
     pub rollup: Option<crate::plan::Rollup>,
@@ -178,6 +182,24 @@ fn decision_counts(conn: &Connection, repo: &str) -> Result<HashMap<String, usiz
     Ok(counts)
 }
 
+fn replans(conn: &Connection, repo: &str) -> Result<Vec<Replan>> {
+    let mut stmt = conn.prepare(
+        "SELECT ts, json_extract(data, '$.reason'), COALESCE(json_extract(data, '$.op_count'), 0),
+                session_id
+         FROM events WHERE repo_id = ?1 AND kind = 'replan' ORDER BY pos",
+    )?;
+    Ok(stmt
+        .query_map([repo], |r| {
+            Ok(Replan {
+                ts: r.get(0)?,
+                reason: r.get(1)?,
+                op_count: r.get(2)?,
+                session_id: r.get(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
 pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectDrill> {
     let _ = now;
     let marks = verify::plan_marks(conn, repo)?;
@@ -192,6 +214,13 @@ pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectD
         let mut tree = Vec::with_capacity(nodes.len());
         for n in nodes {
             let external_deps = external_rows(conn, &n)?;
+            let actions = if matches!(n.kind, NodeKind::Task | NodeKind::Subtask)
+                && super::owner_can_check(n.status)
+            {
+                super::verify_actions(repo, &n.id)
+            } else {
+                Vec::new()
+            };
             tree.push(TreeNode {
                 external_deps,
                 source_text: source_text(&n.source),
@@ -208,6 +237,8 @@ pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectD
                 title: n.title,
                 intent: n.intent,
                 status: n.status,
+                check: n.check,
+                actions,
                 hill: n.hill,
                 estimate_min: n.estimate_min,
                 depends_on: n.depends_on,
@@ -252,21 +283,7 @@ pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectD
     let current: Vec<PlanNode> = all.into_iter().filter(|n| runs.in_current(&n.id)).collect();
     let rolled_now = crate::plan::rollups(&current);
     let tree = build(current, &rolled_now)?;
-    let mut stmt = conn.prepare(
-        "SELECT ts, json_extract(data, '$.reason'), COALESCE(json_extract(data, '$.op_count'), 0),
-                session_id
-         FROM events WHERE repo_id = ?1 AND kind = 'replan' ORDER BY pos",
-    )?;
-    let replans = stmt
-        .query_map([repo], |r| {
-            Ok(Replan {
-                ts: r.get(0)?,
-                reason: r.get(1)?,
-                op_count: r.get(2)?,
-                session_id: r.get(3)?,
-            })
-        })?
-        .collect::<rusqlite::Result<_>>()?;
+    let replans = replans(conn, repo)?;
     Ok(ProjectDrill {
         repo_id: repo.to_string(),
         name: repo_name(conn, repo)?.unwrap_or_else(|| repo.to_string()),
@@ -813,6 +830,10 @@ pub struct TaskDrill {
     pub id: String,
     pub title: String,
     pub status: Option<NodeStatus>,
+    /// How it is checked: tests, or review.
+    pub check: crate::plan::CheckKind,
+    /// ✓ Works / ✗ Broken, for a task that was said done and isn't signed off yet.
+    pub actions: Vec<super::ActionSpec>,
     pub estimate_min: Option<u32>,
     pub actual_min: i64,
     /// Each live decision with its supersede chain, oldest first.
@@ -1047,6 +1068,12 @@ pub fn task(conn: &Connection, repo: &str, id: &str, cfg: &Config) -> Result<Tas
         id: id.to_string(),
         title: node.as_ref().map(|n| n.title.clone()).unwrap_or_default(),
         status: node.as_ref().map(|n| n.status),
+        check: node.as_ref().map(|n| n.check).unwrap_or_default(),
+        actions: node
+            .as_ref()
+            .filter(|n| super::owner_can_check(n.status))
+            .map(|_| super::verify_actions(repo, id))
+            .unwrap_or_default(),
         estimate_min: node.as_ref().and_then(|n| n.estimate_min),
         actual_min: active_secs / 60,
         decisions,

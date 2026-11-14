@@ -1098,3 +1098,102 @@ fn ok_call(env: &Env, mcp: &mut Mcp, tool: &str, args: &Value) -> String {
     assert!(!err, "{text}");
     text
 }
+
+// ---- review tasks: done without tests (spec 2026-11-14 §1) ----
+
+fn make_review(env: &Env, mcp: &mut Mcp, id: &str) {
+    let (err, text) = call_as(
+        mcp,
+        env,
+        "s1",
+        "plan_edit",
+        &json!({"ops": [{"op": "edit_node", "id": id, "check": "review"}],
+                "reason": "research: no test can check it"}),
+    );
+    assert!(!err, "{text}");
+}
+
+#[test]
+fn plan_edit_check_roundtrip_and_review_claim_done() {
+    let (env, mut mcp) = setup();
+    // Without a reason the switch is refused.
+    let (err, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "plan_edit",
+        &json!({"ops": [{"op": "edit_node", "id": "1.1", "check": "review"}]}),
+    );
+    assert!(err && text.contains("needs a reason"), "{text}");
+    make_review(&env, &mut mcp, "1.1");
+    write(&env, "docs/notes.md", "# Notes\n");
+    edited(&env, "s1", "docs/notes.md");
+    commit(&env, "notes");
+    let (err, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "claim_done",
+        &json!({"evidence": "notes written", "files": ["docs/notes.md"]}),
+    );
+    assert!(!err, "{text}");
+    assert!(
+        text.contains("its result is saved, so it counts as done"),
+        "{text}"
+    );
+    assert_eq!(status(&env, "1.1"), NodeStatus::Reviewed);
+}
+
+#[test]
+fn review_claim_done_says_what_is_missing() {
+    let (env, mut mcp) = setup();
+    make_review(&env, &mut mcp, "1.1");
+    let (err, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "claim_done",
+        &json!({"evidence": "looked fine"}),
+    );
+    assert!(!err, "{text}");
+    assert!(
+        text.contains("counts as done once its result is saved"),
+        "{text}"
+    );
+    assert_eq!(status(&env, "1.1"), NodeStatus::Claimed);
+}
+
+#[test]
+fn verify_refused_on_review_task() {
+    let (env, mut mcp) = setup();
+    make_review(&env, &mut mcp, "1.1");
+    let (err, _) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "claim_done",
+        &json!({"evidence": "looked fine"}),
+    );
+    assert!(!err);
+    let (err, text) = verify_call(&env, &mut mcp, &l2());
+    assert!(err, "{text}");
+    assert!(text.contains("checked by review, not tests"), "{text}");
+}
+
+#[test]
+fn claim_task_new_task_accepts_check_through_mcp() {
+    let (env, mut mcp) = setup();
+    let (err, text) = call_as(
+        &mut mcp,
+        &env,
+        "s1",
+        "claim_task",
+        &json!({"new_task": {"parent": "1", "title": "Survey vendors", "check": "review"},
+                "mode": "auto", "confidence": 0.9}),
+    );
+    assert!(!err, "{text}");
+    let s = store(&env);
+    let repo = sess(&env, "s1").repo_id;
+    let n = get_node(s.conn(), &repo, "1.3").unwrap().unwrap();
+    assert_eq!(n.check, bridge_screen_core::plan::CheckKind::Review);
+}

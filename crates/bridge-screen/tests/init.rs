@@ -211,3 +211,20 @@ fn claim_without_estimate_asks_once() {
     let (_, text) = call_as(&mut mcp, &env, "s1", "claim_task", &claim("1.1"));
     assert!(!text.contains("estimate"), "{text}");
 }
+
+#[test]
+fn init_plan_accepts_check() {
+    let env = Env::new();
+    half_built(&env);
+    env.hook("session-start", "s1");
+    let mut mcp = Mcp::start(&env, "/nonexistent");
+    let mut d = draft();
+    d["tasks"] = serde_json::json!([{"title": "Survey the options", "check": "review"}]);
+    let (err, text) = call_as(&mut mcp, &env, "s1", "init_plan", &d);
+    assert!(!err, "{text}");
+    let store = Store::open(&env.db_path()).unwrap();
+    let n = get_node(store.conn(), &repo_id(&env), "2")
+        .unwrap()
+        .unwrap();
+    assert_eq!(n.check, bridge_screen_core::plan::CheckKind::Review);
+}

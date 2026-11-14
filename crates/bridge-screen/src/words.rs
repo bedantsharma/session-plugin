@@ -78,6 +78,7 @@ pub fn status(code: &str) -> &'static str {
         "l2" => level_words(2),
         "l3" => level_words(3),
         "l4" => level_words(4),
+        "reviewed" => "done — no tests",
         "failed" => "failed a check",
         "dropped" => "dropped",
         "in_progress" => "in progress",
@@ -298,6 +299,7 @@ mod tests {
             "kind": "permission_prompt", "result": "pass", "action": "make_task",
             "answer": "make_task", "mode": "some_done", "source": "compact",
             "key": "drift_lower", "old": 0.4, "new": 0.5, "op_count": 2,
+            "check": "review", "reason": "research, no test fits",
         });
         for kind in kinds {
             let sentence = summarize(
@@ -318,11 +320,33 @@ mod tests {
     }
 
     #[test]
+    fn history_sentence_for_check_switch() {
+        use bridge_screen_core::view::history_text::{TaskLabel, summarize};
+        let task = TaskLabel {
+            shown: "2.1".into(),
+            title: "Vendor survey".into(),
+        };
+        let d = serde_json::json!({"id": "2.1", "check": "review", "reason": "it is research"});
+        let text = summarize("node_edited", &d, "s1", Some(&task));
+        assert_eq!(
+            text,
+            "Task 2.1 (Vendor survey) changed to: no tests possible — it is research"
+        );
+        assert_eq!(jargon_in(&text), Vec::<String>::new());
+    }
+
+    #[test]
     fn statuses_read_as_words() {
         assert_eq!(status("l2"), "tests pass");
         assert_eq!(status("done"), "done");
         assert_eq!(status("needs_attention"), "needs attention");
         assert_eq!(status("in_progress"), "in progress");
+    }
+
+    #[test]
+    fn reviewed_words_are_plain() {
+        assert_eq!(status("reviewed"), "done — no tests");
+        assert_eq!(jargon_in(status("reviewed")), Vec::<String>::new());
     }
 
     #[test]

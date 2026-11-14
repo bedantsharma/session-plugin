@@ -199,7 +199,14 @@ pub fn summarize(kind: &str, d: &Value, session: &str, task: Option<&TaskLabel>)
                 None => format!("Added {what} to the plan"),
             }
         }
-        "node_edited" => format!("Edited {} in the plan", t.to_lowercase_first()),
+        "node_edited" => match str_of(d, "check") {
+            Some("review") => match str_of(d, "reason") {
+                Some(r) => format!("{t} changed to: no tests possible — {}", clip(r, 80)),
+                None => format!("{t} changed to: no tests possible"),
+            },
+            Some(_) => format!("{t} changed back to: checked by tests"),
+            None => format!("Edited {} in the plan", t.to_lowercase_first()),
+        },
         "node_moved" => format!("Moved {} in the plan", t.to_lowercase_first()),
         "node_removed" => format!("Removed {} from the plan", t.to_lowercase_first()),
         "dep_added" => format!("{t} now waits for another task"),

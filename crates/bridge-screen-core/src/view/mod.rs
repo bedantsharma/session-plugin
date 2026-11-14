@@ -961,6 +961,46 @@ fn button(label: &str, action: OwnerAction, tone: Tone) -> ActionSpec {
     }
 }
 
+/// "✓ Works" and "✗ Broken" (a note is required) for one task: the owner's own check, the
+/// same actions the overdue-verification card carries.
+pub(crate) fn verify_actions(repo: &str, task: &str) -> Vec<ActionSpec> {
+    let mut broken = button(
+        "✗ Broken",
+        OwnerAction::Broken {
+            repo: repo.to_string(),
+            task: task.to_string(),
+            note: String::new(),
+        },
+        Tone::Danger,
+    );
+    broken.inputs = vec![input("note", "what's wrong", true)];
+    vec![
+        button(
+            "✓ Works",
+            OwnerAction::Verify {
+                repo: repo.to_string(),
+                task: task.to_string(),
+                level: 4,
+            },
+            Tone::Primary,
+        ),
+        broken,
+    ]
+}
+
+/// Does the owner's ✓/✗ make sense for a task in this state? Said done, not yet signed
+/// off by them: claimed, code written, tests pass, tried end to end, or done without tests.
+pub(crate) fn owner_can_check(status: NodeStatus) -> bool {
+    matches!(
+        status,
+        NodeStatus::Claimed
+            | NodeStatus::L1
+            | NodeStatus::L2
+            | NodeStatus::L3
+            | NodeStatus::Reviewed
+    )
+}
+
 fn input(name: &str, label: &str, required: bool) -> ActionInput {
     ActionInput {
         name: name.to_string(),
@@ -1030,16 +1070,6 @@ fn verify_items(
             id: task.clone(),
             title,
         };
-        let mut broken = button(
-            "✗ Broken",
-            OwnerAction::Broken {
-                repo: repo_id.to_string(),
-                task: task.clone(),
-                note: String::new(),
-            },
-            Tone::Danger,
-        );
-        broken.inputs = vec![input("note", "what's wrong", true)];
         out.push(NeedsYou {
             id: format!("verify_overdue:{repo_id}:{task}"),
             kind: NeedsKind::VerifyOverdue,
@@ -1057,18 +1087,7 @@ fn verify_items(
             ),
             task: Some(node),
             files: Vec::new(),
-            actions: vec![
-                button(
-                    "✓ Works",
-                    OwnerAction::Verify {
-                        repo: repo_id.to_string(),
-                        task: task.clone(),
-                        level: 4,
-                    },
-                    Tone::Primary,
-                ),
-                broken,
-            ],
+            actions: verify_actions(repo_id, &task),
             respond_in: None,
             rank: NeedsKind::VerifyOverdue.rank(),
             age_s: age(now, since.as_deref()).unwrap_or(0),

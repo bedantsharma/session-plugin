@@ -745,3 +745,75 @@ fn where_a_task_came_from_reads_in_words() {
         Some("from sp7-telemetry plan, task 3, step 2")
     );
 }
+
+// ---- the owner can check any task that was said done (spec 2026-11-14 §1) ----
+
+fn kinds_of(actions: &[super::ActionSpec]) -> Vec<&str> {
+    actions.iter().map(|a| a.label.as_str()).collect()
+}
+
+#[test]
+fn task_drill_offers_verify_actions_for_claimed() {
+    let mut s = store();
+    let cfg = crate::config::Config::default();
+    // Not said done yet: nothing to check.
+    let t = task(s.conn(), "r", "1.1", &cfg).unwrap();
+    assert_eq!(t.actions.len(), 0);
+    ev(
+        &mut s,
+        "s1",
+        10,
+        "claimed_done",
+        json!({"task_id": "1.1", "evidence": "done"}),
+    );
+    let t = task(s.conn(), "r", "1.1", &cfg).unwrap();
+    assert_eq!(kinds_of(&t.actions), vec!["✓ Works", "✗ Broken"]);
+    assert!(
+        t.actions[1]
+            .inputs
+            .iter()
+            .any(|i| i.name == "note" && i.required)
+    );
+    // The same actions sit on the task's row in the project page.
+    let p = project(s.conn(), "r", at(20)).unwrap();
+    let row = p.tree.iter().find(|n| n.id == "1.1").unwrap();
+    assert_eq!(kinds_of(&row.actions), vec!["✓ Works", "✗ Broken"]);
+    let todo = p.tree.iter().find(|n| n.id == "1.2").unwrap();
+    assert_eq!(todo.actions.len(), 0);
+    // L2 and L3 are offered too.
+    ev(&mut s, "s1", 11, "verified", verified("v1", "1.1", 2, "a"));
+    assert_eq!(task(s.conn(), "r", "1.1", &cfg).unwrap().actions.len(), 2);
+}
+
+#[test]
+fn no_verify_actions_for_todo_or_owner_l4() {
+    let mut s = store();
+    let cfg = crate::config::Config::default();
+    ev(
+        &mut s,
+        "s1",
+        10,
+        "claimed_done",
+        json!({"task_id": "1.1", "evidence": "done"}),
+    );
+    let mut v = verified("v9", "1.1", 4, "a");
+    v["by"] = json!("owner");
+    ev(&mut s, "owner", 11, "verified", v);
+    assert_eq!(task(s.conn(), "r", "1.1", &cfg).unwrap().actions.len(), 0);
+    // A failed task is not offered either.
+    ev(
+        &mut s,
+        "s1",
+        12,
+        "claimed_done",
+        json!({"task_id": "1.2", "evidence": "done"}),
+    );
+    ev(
+        &mut s,
+        "owner",
+        13,
+        "verification_failed",
+        json!({"task_id": "1.2", "level": 4, "evidence": "no", "by": "owner"}),
+    );
+    assert_eq!(task(s.conn(), "r", "1.2", &cfg).unwrap().actions.len(), 0);
+}
