@@ -164,7 +164,10 @@ fn init_plan_refuses_an_existing_plan() {
     assert!(!call_as(&mut mcp, &env, "s1", "init_plan", &draft()).0);
     let (err, text) = call_as(&mut mcp, &env, "s1", "init_plan", &draft());
     assert!(err);
-    assert_eq!(text, "this repo already has a plan; use plan_edit");
+    assert_eq!(
+        text,
+        "this repo already has track 1 'Widgets'; use plan_edit, or ask the owner and use start_track for a separate piece of work"
+    );
 }
 
 #[test]

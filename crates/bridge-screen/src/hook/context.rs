@@ -14,9 +14,14 @@ const REMINDER_EVERY: i64 = 3;
 
 /// The plan's goal title, if the repo has a plan.
 fn goal_title(conn: &Connection, repo_id: &str) -> Result<Option<String>> {
-    Ok(get_node(conn, repo_id, "G")?
-        .filter(|g| g.status != NodeStatus::Dropped)
-        .map(|g| g.title))
+    let track = bridge_screen_core::plan::track::primary(conn, repo_id)?;
+    Ok(get_node(
+        conn,
+        repo_id,
+        &bridge_screen_core::plan::track::goal_id(track),
+    )?
+    .filter(|g| g.status != NodeStatus::Dropped)
+    .map(|g| g.title))
 }
 
 /// UserPromptSubmit: while the session has no task, every third prompt lists the tasks the

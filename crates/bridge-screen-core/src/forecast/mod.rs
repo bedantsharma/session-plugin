@@ -341,7 +341,7 @@ pub fn run_with(
 ) -> Result<Forecast> {
     // Calibration learns from every run; what is left to forecast is the current one.
     let cal = calibration(conn, repo, now)?;
-    let tree = crate::plan::runs::run_tree(conn, repo)?;
+    let tree = crate::plan::runs::open_run_tree(conn, repo)?;
     let active = active_secs(conn, repo)?;
     let open: Vec<&PlanNode> = leaves(&tree)
         .into_iter()

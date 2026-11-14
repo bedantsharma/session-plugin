@@ -1501,9 +1501,11 @@ fn plan_status(
     s: &Session,
     out: &mut String,
 ) -> bridge_screen_core::error::Result<()> {
-    match get_node(conn, &s.repo_id, "G")?.filter(|g| g.status != NodeStatus::Dropped) {
+    let track = bridge_screen_core::plan::track::primary(conn, &s.repo_id)?;
+    let goal_id = bridge_screen_core::plan::track::goal_id(track);
+    match get_node(conn, &s.repo_id, &goal_id)?.filter(|g| g.status != NodeStatus::Dropped) {
         Some(goal) => {
-            let tree = bridge_screen_core::plan::runs::run_tree(conn, &s.repo_id)?;
+            let tree = bridge_screen_core::plan::runs::run_tree(conn, &s.repo_id, track)?;
             let rolled = bridge_screen_core::plan::rollups(&tree);
             let _ = writeln!(
                 out,

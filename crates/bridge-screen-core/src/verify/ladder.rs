@@ -13,7 +13,7 @@ use rusqlite::Connection;
 use super::rerun::{self, RerunOutcome};
 use super::{
     By, L1Outcome, Rerun, VerificationFailed, check_l1, current_level, depended_files, l1_draft,
-    missing_text, progress, settings, uncommitted, verified_draft,
+    missing_text, progress_all, settings, uncommitted, verified_draft,
 };
 use crate::error::{Error, Result};
 use crate::git;
@@ -84,7 +84,7 @@ fn short(sha: &str) -> String {
 fn project_line(conn: &Connection, repo_id: &str) -> Result<String> {
     Ok(format!(
         " Project {}% done.",
-        progress(conn, repo_id)?.done_pct
+        progress_all(conn, repo_id)?.done_pct
     ))
 }
 

@@ -380,7 +380,7 @@ fn progress_counts_l2_up_as_done_and_claimed_apart() {
     let mut s = store();
     // Leaves: 1.1 (30), 1.2 (10), 1.3 (none), 1.4.1 (20), 1.4.2 (40). 1.4 is a parent.
     assert_eq!(
-        progress(s.conn(), "r").unwrap(),
+        progress(s.conn(), "r", 1).unwrap(),
         Progress {
             done_pct: 0,
             claimed_pct: 0,
@@ -426,7 +426,7 @@ fn progress_counts_l2_up_as_done_and_claimed_apart() {
             ),
         ],
     );
-    let p = progress(s.conn(), "r").unwrap();
+    let p = progress(s.conn(), "r", 1).unwrap();
     assert_eq!(
         (p.done_min, p.claimed_min, p.total_min, p.unestimated),
         (20, 40, 100, 1)
@@ -437,9 +437,9 @@ fn progress_counts_l2_up_as_done_and_claimed_apart() {
         &mut s,
         &[("r", "owner", 11, "node_removed", json!({"id": "1.4.2"}))],
     );
-    let p = progress(s.conn(), "r").unwrap();
+    let p = progress(s.conn(), "r", 1).unwrap();
     assert_eq!((p.done_min, p.total_min, p.done_pct), (20, 60, 33));
-    assert_eq!(progress(s.conn(), "nope").unwrap(), Progress::default());
+    assert_eq!(progress(s.conn(), "nope", 1).unwrap(), Progress::default());
 }
 
 #[test]
@@ -906,7 +906,7 @@ fn review_task_done_when_file_committed() {
         )],
     );
     assert_eq!(status(&s, "r", "1.1"), NodeStatus::Reviewed);
-    let p = progress(s.conn(), "r").unwrap();
+    let p = progress(s.conn(), "r", 1).unwrap();
     assert_eq!((p.done_min, p.done_pct, p.reviewed_tasks), (30, 30, 1));
 }
 
@@ -917,7 +917,7 @@ fn files_named_but_uncommitted_stays_claimed_until_commit() {
     claim(&mut s, 5, "1.1", LONG, &["docs/notes.md"]);
     // A long summary does not stand in for named files.
     assert_eq!(status(&s, "r", "1.1"), NodeStatus::Claimed);
-    assert_eq!(progress(s.conn(), "r").unwrap().done_min, 0);
+    assert_eq!(progress(s.conn(), "r", 1).unwrap().done_min, 0);
 }
 
 #[test]
@@ -965,7 +965,7 @@ fn owner_broken_takes_review_task_back() {
         )],
     );
     assert_eq!(status(&s, "r", "1.1"), NodeStatus::Failed);
-    assert_eq!(progress(s.conn(), "r").unwrap().done_pct, 0);
+    assert_eq!(progress(s.conn(), "r", 1).unwrap().done_pct, 0);
     claim(&mut s, 7, "1.1", LONG, &[]);
     assert_eq!(status(&s, "r", "1.1"), NodeStatus::Reviewed);
 }
@@ -1111,7 +1111,7 @@ fn progress_counts_reviewed_tasks_apart() {
     claim(&mut s, 5, "1.1", LONG, &[]);
     claim(&mut s, 6, "1.2", LONG, &[]);
     claim(&mut s, 7, "1.4.1", "done", &[]);
-    let p = progress(s.conn(), "r").unwrap();
+    let p = progress(s.conn(), "r", 1).unwrap();
     assert_eq!(
         (p.done_min, p.claimed_min, p.reviewed_tasks, p.total_min),
         (40, 20, 2, 100)

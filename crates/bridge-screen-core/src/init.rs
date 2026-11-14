@@ -14,9 +14,7 @@ use crate::checkpoint::{ClaimEvidence, ClaimSource, claimed_done_draft};
 use crate::error::{Error, Result};
 use crate::git::{self, LogSummary};
 use crate::import;
-use crate::plan::{
-    EditContext, NodeKind, NodeSource, NodeStatus, PlanOp, get_node, plan_edit_in_sourced,
-};
+use crate::plan::{EditContext, NodeKind, NodeSource, PlanOp, plan_edit_in_sourced};
 use crate::store::append_in;
 
 const README_CHARS: usize = 400;
@@ -194,7 +192,7 @@ pub fn evidence(conn: &Connection, repo_id: &str, dir: &Path) -> Result<Evidence
         todos: todo_files.iter().map(|(_, n)| n).sum(),
         todo_files: todo_files.into_iter().take(TODO_FILES_SHOWN).collect(),
         test_command,
-        has_plan: get_node(conn, repo_id, "G")?.is_some_and(|g| g.status != NodeStatus::Dropped),
+        has_plan: crate::plan::track::has_live_goal(conn, repo_id)?,
     })
 }
 
@@ -388,7 +386,8 @@ pub struct InitBy<'a> {
 
 /// The plan ops of a draft, and for each the draft task it adds (to find the done ones by
 /// their new id).
-fn draft_ops(draft: &InitDraft) -> (Vec<PlanOp>, Vec<Option<&DraftTask>>) {
+fn draft_ops(draft: &InitDraft, track: u32) -> (Vec<PlanOp>, Vec<Option<&DraftTask>>) {
+    let goal = crate::plan::track::goal_id(track);
     let mut ops = vec![PlanOp::AddNode {
         parent: None,
         kind: NodeKind::Goal,
@@ -410,9 +409,9 @@ fn draft_ops(draft: &InitDraft) -> (Vec<PlanOp>, Vec<Option<&DraftTask>>) {
         check: t.check,
     };
     for (i, m) in draft.milestones.iter().enumerate() {
-        let id = (i + 1).to_string();
+        let id = crate::plan::track::raw(track, &(i + 1).to_string());
         ops.push(PlanOp::AddNode {
-            parent: Some("G".into()),
+            parent: Some(goal.clone()),
             kind: NodeKind::Milestone,
             title: m.title.clone(),
             intent: Some(m.intent.clone()),
@@ -427,7 +426,7 @@ fn draft_ops(draft: &InitDraft) -> (Vec<PlanOp>, Vec<Option<&DraftTask>>) {
         }
     }
     for t in &draft.tasks {
-        ops.push(add_task("G".into(), t));
+        ops.push(add_task(goal.clone(), t));
         task_of.push(Some(t));
     }
     (ops, task_of)
@@ -437,10 +436,13 @@ fn draft_ops(draft: &InitDraft) -> (Vec<PlanOp>, Vec<Option<&DraftTask>>) {
 /// claimed with their evidence. Refused when the repo already has a goal or the owner's
 /// words are missing.
 pub fn apply(tx: &Transaction, by: &InitBy, draft: &InitDraft) -> Result<InitApplied> {
-    if get_node(tx, by.repo_id, "G")?.is_some_and(|g| g.status != NodeStatus::Dropped) {
-        return Err(Error::Invalid(
-            "this repo already has a plan; use plan_edit".into(),
-        ));
+    let open = crate::plan::track::open_tracks(tx, by.repo_id)?;
+    if !open.is_empty() {
+        return Err(Error::Invalid(format!(
+            "this repo already has {}; use plan_edit, or ask the owner and use start_track for \
+             a separate piece of work",
+            crate::plan::track::open_list_text(&open)
+        )));
     }
     let said = draft.owner_said.trim();
     if said.is_empty() {
@@ -453,7 +455,7 @@ pub fn apply(tx: &Transaction, by: &InitBy, draft: &InitDraft) -> Result<InitApp
             "owner_said must be at most {MAX_OWNER_SAID} characters"
         )));
     }
-    let (ops, task_of) = draft_ops(draft);
+    let (ops, task_of) = draft_ops(draft, crate::plan::track::next_track_no(tx, by.repo_id)?);
     let ctx = EditContext {
         repo_id: by.repo_id.to_string(),
         session_id: by.session_id.to_string(),

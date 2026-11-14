@@ -1105,7 +1105,7 @@ fn a_new_plan_file_closes_a_finished_run_and_says_so() {
             .task("1"),
         )
         .unwrap();
-    assert!(crate::plan::runs::finished(r.store.conn(), "r").unwrap());
+    assert!(crate::plan::runs::finished(r.store.conn(), "r", 1).unwrap());
     r.write("b.md", &plan_text("Search", &[("Index", &[])]));
     let out = r.scan();
     assert!(
@@ -1124,7 +1124,7 @@ fn a_new_plan_file_closes_a_finished_run_and_says_so() {
         .flatten()
         .unwrap();
     assert!(line.starts_with("Run 1 is finished (1 task"), "{line}");
-    let now = crate::plan::runs::state(r.store.conn(), "r").unwrap();
+    let now = crate::plan::runs::state(r.store.conn(), "r", 1).unwrap();
     assert_eq!(
         (now.tasks, now.unverified),
         (1, 1),

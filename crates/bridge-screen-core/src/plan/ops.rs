@@ -94,8 +94,19 @@ pub enum PlanError {
         parent: String,
         child: String,
     },
-    #[error("op {index}: the plan already has a goal ({id})")]
-    GoalExists { index: usize, id: String },
+    #[error(
+        "op {index}: this folder already has {tracks} (goal {id}); to start another track, \
+         ask the owner and use start_track"
+    )]
+    GoalExists {
+        index: usize,
+        id: String,
+        tracks: String,
+    },
+    #[error(
+        "op {index}: track '{title}' is finished, so nothing can be added to it; ask the owner to reopen it"
+    )]
+    TrackClosed { index: usize, title: String },
     #[error("op {index}: a {kind} needs an intent (its purpose and end state)")]
     MissingIntent { index: usize, kind: String },
     #[error("op {index}: title must be 1 to 200 characters on a single line")]
@@ -152,17 +163,25 @@ pub fn plan_edit_in_sourced(
     if ops.is_empty() {
         return Err(PlanError::Empty.into());
     }
-    // A new milestone after a finished round starts a new run (spec §10.1).
-    if ops.iter().any(|op| {
-        matches!(
-            op,
+    // A new milestone after a finished round starts a new run of its track (spec §10.1).
+    let mut closing: Vec<u32> = ops
+        .iter()
+        .filter_map(|op| match op {
             PlanOp::AddNode {
                 kind: NodeKind::Milestone,
+                parent: Some(p),
                 ..
-            }
-        )
-    }) {
-        super::runs::close_if_finished(tx, &ctx.repo_id, &ctx.session_id, &ctx.actor)?;
+            } => Some(super::track::track_of(p)),
+            _ => None,
+        })
+        .collect();
+    closing.sort_unstable();
+    closing.dedup();
+    for track in closing {
+        // A finished track takes no new work (the add is refused below, with the reason).
+        if !super::track::is_closed(tx, &ctx.repo_id, track)? {
+            super::runs::close_if_finished(tx, &ctx.repo_id, track, &ctx.session_id, &ctx.actor)?;
+        }
     }
     {
         let mut events = Vec::new();
@@ -201,6 +220,52 @@ pub fn plan_edit_in_sourced(
         }
         Ok(EditOutcome { events, added_ids })
     }
+}
+
+/// Start a new track: its goal, with the next track number (`G` for the first, then `T2-G`,
+/// …). Not a [`PlanOp`], so an agent cannot start a track through `plan_edit`; callers
+/// (the owner's CLI, `start_track` with the owner's words, setup, import) check who may.
+pub fn start_track_in(
+    tx: &Transaction,
+    ctx: &EditContext,
+    title: &str,
+    intent: &str,
+) -> Result<String> {
+    let title = check_title(0, title)?;
+    let intent = intent.trim();
+    if intent.is_empty() {
+        return Err(PlanError::MissingIntent {
+            index: 0,
+            kind: "goal".into(),
+        }
+        .into());
+    }
+    let id = super::track::goal_id(super::track::next_track_no(tx, &ctx.repo_id)?);
+    let data = NodeAdded {
+        id: id.clone(),
+        parent_id: None,
+        kind: NodeKind::Goal,
+        title,
+        intent: Some(intent.to_string()),
+        estimate_min: None,
+        expected_files: Vec::new(),
+        source: None,
+        check: None,
+        meta: EditMeta {
+            reason: ctx.reason.clone(),
+            replan_id: None,
+        },
+    };
+    append_in(
+        tx,
+        draft(
+            ctx,
+            "node_added",
+            serde_json::to_value(data)?,
+            Some(id.clone()),
+        ),
+    )?;
+    Ok(id)
 }
 
 fn draft(ctx: &EditContext, kind: &str, data: Value, task: Option<String>) -> EventDraft {
@@ -383,20 +448,39 @@ impl Check<'_> {
         .into()
     }
 
+    /// Refuse adding work under a finished track.
+    fn open_track(self, under: &str) -> Result<()> {
+        let no = super::track::track_of(under);
+        if super::track::is_closed(self.conn, self.repo, no)? {
+            let title = super::track::track(self.conn, self.repo, no)?
+                .map(|t| t.title)
+                .unwrap_or_default();
+            return Err(PlanError::TrackClosed {
+                index: self.index,
+                title,
+            }
+            .into());
+        }
+        Ok(())
+    }
+
     /// The id a new node of `kind` under `parent` gets, plus its parent id.
     fn assign_id(self, kind: NodeKind, parent: Option<&str>) -> Result<(String, Option<String>)> {
         match (kind, parent) {
             (NodeKind::Goal, None) => {
-                if let Some(g) = get_node(self.conn, self.repo, "G")?
-                    && g.status != NodeStatus::Dropped
-                {
+                // The first goal ever is `G`; a second one is a new track, which only the
+                // owner starts (`start_track`), so an open track refuses it.
+                let open = super::track::open_tracks(self.conn, self.repo)?;
+                if let Some(first) = open.first() {
                     return Err(PlanError::GoalExists {
                         index: self.index,
-                        id: g.id,
+                        id: first.goal_id.clone(),
+                        tracks: super::track::open_list_text(&open),
                     }
                     .into());
                 }
-                Ok(("G".to_string(), None))
+                let no = super::track::next_track_no(self.conn, self.repo)?;
+                Ok((super::track::goal_id(no), None))
             }
             (_, None) => Err(self.bad_parent("nothing", kind)),
             (_, Some(pid)) => {
@@ -404,9 +488,10 @@ impl Check<'_> {
                 if !p.kind.allows_child(kind) {
                     return Err(self.bad_parent(p.kind.as_str(), kind));
                 }
+                self.open_track(&p.id)?;
                 let n = next_child(self.conn, self.repo, &p.id)?;
                 let id = if p.kind == NodeKind::Goal {
-                    n.to_string()
+                    super::track::raw(super::track::track_of(&p.id), &n.to_string())
                 } else {
                     format!("{}.{n}", p.id)
                 };
@@ -487,6 +572,7 @@ impl Check<'_> {
             return Err(invalid(self.index, "the goal cannot be moved"));
         }
         let parent = self.live(new_parent)?;
+        self.open_track(&parent.id)?;
         if is_in_subtree(self.conn, self.repo, id, new_parent)? {
             return Err(invalid(
                 self.index,
@@ -787,7 +873,8 @@ mod tests {
             plan_error(plan_edit(&mut s, &ctx(), &[goal()])),
             PlanError::GoalExists {
                 index: 0,
-                id: "G".into()
+                id: "G".into(),
+                tracks: "track 1 'Ship'".into()
             }
         );
         assert_eq!(

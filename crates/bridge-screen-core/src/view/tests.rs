@@ -1016,7 +1016,7 @@ fn a_finished_run_reads_finished_and_sits_below_active_projects() {
 fn a_closed_run_leaves_the_numbers_and_stays_readable() {
     let mut s = store();
     pass_all(&mut s);
-    s.write(|tx| crate::plan::runs::close_in(tx, "r", "owner", &crate::store::Actor::default()))
+    s.write(|tx| crate::plan::runs::close_in(tx, "r", 1, "owner", &crate::store::Actor::default()))
         .unwrap();
     // Closed, nothing new yet: still "Run finished", 3 tasks.
     let g = glance_at(&s, 100);

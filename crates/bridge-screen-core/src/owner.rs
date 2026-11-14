@@ -309,7 +309,8 @@ pub fn act(store: &mut Store, ctx: &ActCtx, action: &OwnerAction) -> Result<Stri
 
 fn close_run(store: &mut Store, repo: &str) -> Result<String> {
     store.write(|tx| {
-        let run = crate::plan::runs::close_in(tx, repo, OWNER_SESSION, &Actor::default())?;
+        let track = crate::plan::track::primary(tx, repo)?;
+        let run = crate::plan::runs::close_in(tx, repo, track, OWNER_SESSION, &Actor::default())?;
         record(
             tx,
             repo,

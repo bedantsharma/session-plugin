@@ -200,12 +200,15 @@ fn replans(conn: &Connection, repo: &str) -> Result<Vec<Replan>> {
         .collect::<rusqlite::Result<_>>()?)
 }
 
+#[allow(clippy::too_many_lines)] // one pass over the plan per run; split in the per-track page
 pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectDrill> {
     let _ = now;
     let marks = verify::plan_marks(conn, repo)?;
     let actual = actual_minutes(conn, repo)?;
     let decisions = decision_counts(conn, repo)?;
-    let runs = crate::plan::runs::load(conn, repo)?;
+    let primary = crate::plan::track::primary(conn, repo)?;
+    let runs = crate::plan::runs::load(conn, repo, primary)?;
+    let every_run = crate::plan::runs::load_all(conn, repo)?;
     let all = load_tree(conn, repo, false)?;
     let rolled = crate::plan::rollups(&all);
     let build = |nodes: Vec<PlanNode>,
@@ -230,7 +233,7 @@ pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectD
                 owner_checked: marks.get(&n.id).is_some_and(|m| m == "✓owner"),
                 actual_min: actual.get(&n.id).copied().unwrap_or(0),
                 decisions: decisions.get(&n.id).copied().unwrap_or(0),
-                shown: runs.shown(&n.id),
+                shown: every_run.shown(&n.id),
                 id: n.id,
                 parent_id: n.parent_id,
                 kind: n.kind,
@@ -252,7 +255,10 @@ pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectD
         let mine: Vec<PlanNode> = all
             .iter()
             .filter(|n| {
-                crate::plan::runs::top_number(&n.id).is_none_or(|t| t >= run.first && t < run.next)
+                runs.closed_run_of(&n.id)
+                    .is_some_and(|r| r.number == run.number)
+                    || (crate::plan::track::is_goal_id(&n.id)
+                        && crate::plan::track::track_of(&n.id) == primary)
             })
             .cloned()
             .collect();
@@ -277,7 +283,12 @@ pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectD
             closed_at: run.closed_at.clone(),
             tasks,
             done_pct: u32::try_from(done * 100 / tasks.max(1)).unwrap_or(100),
-            tree: build(mine.into_iter().filter(|n| n.id != "G").collect(), &rolled)?,
+            tree: build(
+                mine.into_iter()
+                    .filter(|n| !crate::plan::track::is_goal_id(&n.id))
+                    .collect(),
+                &rolled,
+            )?,
         });
     }
     let current: Vec<PlanNode> = all.into_iter().filter(|n| runs.in_current(&n.id)).collect();
@@ -292,7 +303,7 @@ pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectD
         completed_runs,
         scope: scope_line(conn, repo)?,
         replans,
-        can_close_run: crate::plan::runs::finished(conn, repo)?,
+        can_close_run: crate::plan::runs::finished(conn, repo, primary)?,
     })
 }
 
@@ -384,7 +395,7 @@ impl Replay {
     }
 
     /// (total live estimate, the part at L2 or above).
-    fn totals(&self, first: u32) -> (u64, u64) {
+    fn totals(&self, runs: &crate::plan::runs::AllRuns) -> (u64, u64) {
         let done: HashSet<&str> = self
             .verifs
             .values()
@@ -399,7 +410,7 @@ impl Replay {
             .collect();
         let (mut total, mut done_min) = (0, 0);
         for (id, n) in &self.nodes {
-            let in_run = crate::plan::runs::top_number(id).is_none_or(|t| t >= first);
+            let in_run = runs.in_current(id);
             let leaf = in_run
                 && matches!(n.kind.as_str(), "task" | "subtask")
                 && !n.dropped
@@ -431,15 +442,15 @@ pub fn scope_line(conn: &Connection, repo: &str) -> Result<Vec<ScopePoint>> {
             r.get::<_, String>(2)?,
         ))
     })?;
-    let runs = crate::plan::runs::load(conn, repo)?;
+    let runs = crate::plan::runs::load_all(conn, repo)?;
     let mut replay = Replay::default();
     let mut points: Vec<ScopePoint> = Vec::new();
     for row in rows {
         let (ts, kind, data) = row?;
         replay.apply(&kind, &serde_json::from_str(&data)?);
-        let (total_min, done_min) = replay.totals(runs.current_first);
+        let (total_min, done_min) = replay.totals(&runs);
         // After a run closed, the line starts where the current run does.
-        if points.is_empty() && total_min == 0 && !runs.closed.is_empty() {
+        if points.is_empty() && total_min == 0 && runs.any_closed() {
             continue;
         }
         if points
@@ -1164,7 +1175,7 @@ pub fn history(conn: &Connection, repo: &str, f: &HistoryFilter) -> Result<Histo
         },
     )?;
     let mut events = Vec::new();
-    let runs = crate::plan::runs::load(conn, repo)?;
+    let runs = crate::plan::runs::load_all(conn, repo)?;
     for row in rows {
         let (pos, ts, kind, session_id, task_id, actor, data) = row?;
         let full: Value = serde_json::from_str(&data).unwrap_or(Value::Null);

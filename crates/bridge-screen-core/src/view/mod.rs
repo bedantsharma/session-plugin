@@ -128,13 +128,14 @@ pub struct RunFinished {
 
 /// The run of a repo as the glance shows it.
 fn run_row(conn: &Connection, repo_id: &str) -> Result<RunRow> {
-    let runs = crate::plan::runs::load(conn, repo_id)?;
-    let state = crate::plan::runs::state(conn, repo_id)?;
+    let primary = crate::plan::track::primary(conn, repo_id)?;
+    let runs = crate::plan::runs::load(conn, repo_id, primary)?;
+    let state = crate::plan::runs::state(conn, repo_id, primary)?;
     let tasks = if state.tasks > 0 && state.unverified == 0 {
         Some(state.tasks)
     } else if state.tasks == 0 {
         match runs.closed.last() {
-            Some(last) => Some(crate::plan::runs::tasks_in(conn, repo_id, last)?),
+            Some(last) => Some(crate::plan::runs::tasks_in(conn, repo_id, primary, last)?),
             None => None,
         }
     } else {
@@ -571,7 +572,7 @@ fn open_question(conn: &Connection, session_id: &str) -> Result<Option<(String, 
 fn node_ref(conn: &Connection, repo_id: &str, id: &str) -> Result<NodeRef> {
     Ok(NodeRef {
         id: id.to_string(),
-        shown: crate::plan::runs::load(conn, repo_id)?.shown(id),
+        shown: crate::plan::runs::load_all(conn, repo_id)?.shown(id),
         title: task_title(conn, repo_id, id)?.unwrap_or_default(),
     })
 }
@@ -1066,7 +1067,7 @@ fn verify_items(
             .map(|secs| format!(" {} ago", ago_words(secs)))
             .unwrap_or_default();
         let node = NodeRef {
-            shown: crate::plan::runs::load(conn, repo_id)?.shown(&task),
+            shown: crate::plan::runs::load_all(conn, repo_id)?.shown(&task),
             id: task.clone(),
             title,
         };
@@ -1367,7 +1368,7 @@ fn stuck_for(
 
 fn milestones(conn: &Connection, repo_id: &str, tree: &[PlanNode]) -> Result<Vec<MilestoneRow>> {
     let rolled = crate::plan::rollups(tree);
-    let runs = crate::plan::runs::load(conn, repo_id)?;
+    let runs = crate::plan::runs::load_all(conn, repo_id)?;
     let mut out = Vec::new();
     for m in tree.iter().filter(|n| n.kind == NodeKind::Milestone) {
         let under = descendants(tree, &m.id);
@@ -1484,16 +1485,17 @@ pub fn glance(conn: &Connection, cfg: &Config, now: Timestamp) -> Result<Glance>
         items.extend(verify_items(conn, &repo_id, &name, now)?);
         items.extend(leftover_items(conn, &repo_id, &name, now)?);
         items.extend(scope_items(conn, &repo_id, &name, now)?);
-        let tree = crate::plan::runs::run_tree(conn, &repo_id)?;
+        let tree = crate::plan::runs::open_run_tree(conn, &repo_id)?;
         let run = run_row(conn, &repo_id)?;
-        let goal = get_node(conn, &repo_id, "G")?
+        let primary = crate::plan::track::primary(conn, &repo_id)?;
+        let goal = get_node(conn, &repo_id, &crate::plan::track::goal_id(primary))?
             .filter(|g| g.status != NodeStatus::Dropped)
             .map(|g| NodeRef {
                 shown: g.id.clone(),
                 id: g.id,
                 title: g.title,
             });
-        let p = verify::progress(conn, &repo_id)?;
+        let p = verify::progress_all(conn, &repo_id)?;
         let (open, report_only) = crate::recovery::open_counts(conn, &repo_id)?;
         let forecast = match &goal {
             Some(_) => Some(forecast_row(conn, &repo_id, now)?),

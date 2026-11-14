@@ -203,7 +203,7 @@ fn gather(conn: &Connection, me: &Session) -> Result<Facts> {
         .or_else(|| prev.as_ref().and_then(|p| p.last_task.clone()));
     let mut sessions: Vec<&Session> = vec![me];
     sessions.extend(prev.as_ref());
-    let tree = crate::plan::runs::run_tree(conn, repo)?;
+    let tree = crate::plan::runs::open_run_tree(conn, repo)?;
     let goal = tree.iter().find(|n| n.kind == NodeKind::Goal).cloned();
     let mut unverified = Vec::new();
     let mut unverified_tasks = Vec::new();

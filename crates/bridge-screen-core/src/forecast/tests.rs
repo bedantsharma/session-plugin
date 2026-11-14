@@ -468,7 +468,7 @@ fn closing_a_run_keeps_its_calibration_but_not_its_tasks() {
     }
     let before = run(s.conn(), "r", now, &utc()).unwrap();
     assert_eq!(before.points, 3);
-    s.write(|tx| crate::plan::runs::close_in(tx, "r", "owner", &Actor::default()))
+    s.write(|tx| crate::plan::runs::close_in(tx, "r", 1, "owner", &Actor::default()))
         .unwrap();
     // A new run with one open task: the forecast covers only it, on the old calibration.
     script(

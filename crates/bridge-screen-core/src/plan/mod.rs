@@ -7,11 +7,12 @@ pub mod query;
 pub mod render;
 pub mod rollup;
 pub mod runs;
+pub mod track;
 
 pub use model::{CheckKind, ExternalDep, Hill, NodeKind, NodeSource, NodeStatus, PlanNode};
 pub use ops::{
     EditContext, EditOutcome, PlanError, PlanOp, plan_edit, plan_edit_in, plan_edit_in_sourced,
-    resolve_repo,
+    resolve_repo, start_track_in,
 };
 pub use query::{get_node, is_in_subtree, load_tree, next_child, would_cycle, would_cycle_across};
 pub use render::{render_annotated, render_text};

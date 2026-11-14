@@ -347,7 +347,13 @@ fn seen_draft(repo_id: &str, ctx: &ImportCtx, d: &PlanFileSeen) -> Result<EventD
 
 /// The goal, if the repo has a live one.
 fn live_goal(conn: &Connection, repo_id: &str) -> Result<Option<crate::plan::PlanNode>> {
-    Ok(get_node(conn, repo_id, "G")?.filter(|g| g.status != NodeStatus::Dropped))
+    let Some(track) = crate::plan::track::open_tracks(conn, repo_id)?
+        .into_iter()
+        .next()
+    else {
+        return Ok(None);
+    };
+    Ok(get_node(conn, repo_id, &track.goal_id)?.filter(|g| g.status != NodeStatus::Dropped))
 }
 
 /// Does the repo have any live plan node?
@@ -367,7 +373,7 @@ fn file_stem(rel: &str) -> String {
 /// A live goal or milestone of the current run whose title is `title` (case-insensitive);
 /// a closed run is never reopened by a new file.
 fn container_titled(conn: &Connection, repo_id: &str, title: &str) -> Result<Option<String>> {
-    Ok(crate::plan::runs::run_tree(conn, repo_id)?
+    Ok(crate::plan::runs::open_run_tree(conn, repo_id)?
         .into_iter()
         .find(|n| {
             matches!(n.kind, NodeKind::Goal | NodeKind::Milestone)
@@ -867,7 +873,9 @@ pub fn scan(
 }
 
 fn closed_count(conn: &Connection, repo_id: &str) -> Result<usize> {
-    Ok(crate::plan::runs::load(conn, repo_id)?.closed.len())
+    Ok(crate::plan::runs::load_all(conn, repo_id)?
+        .closed_in_order()
+        .len())
 }
 
 /// A note when the import just closed the finished run.
@@ -876,16 +884,16 @@ fn run_closed_note(
     repo_id: &str,
     before: usize,
 ) -> Result<Option<ImportOutcome>> {
-    let runs = crate::plan::runs::load(conn, repo_id)?;
-    if runs.closed.len() <= before {
+    let runs = crate::plan::runs::load_all(conn, repo_id)?;
+    if runs.closed_in_order().len() <= before {
         return Ok(None);
     }
-    let Some(last) = runs.closed.last() else {
+    let Some((track, last)) = runs.closed_in_order().last() else {
         return Ok(None);
     };
     Ok(Some(ImportOutcome::RunClosed {
         number: last.number,
-        tasks: crate::plan::runs::tasks_in(conn, repo_id, last)?,
+        tasks: crate::plan::runs::tasks_in(conn, repo_id, *track, last)?,
     }))
 }
 
