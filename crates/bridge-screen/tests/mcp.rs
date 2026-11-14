@@ -65,6 +65,7 @@ fn lists_three_tools_with_schemas() {
             "resume",
             "show_progress",
             "start_detour",
+            "start_track",
             "status",
             "verify",
             "waiting_on"

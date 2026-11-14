@@ -216,6 +216,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one line per kind of event
     fn history_sentences_and_labels_hold_no_jargon() {
         use bridge_screen_core::view::history_text::{TaskLabel, kind_label, summarize};
         let task = TaskLabel {
@@ -260,6 +261,8 @@ mod tests {
             "plan_scope_asked",
             "plan_scope_answered",
             "run_closed",
+            "track_closed",
+            "track_reopened",
             "detour_opened",
             "detour_closed",
             "detour_promoted",

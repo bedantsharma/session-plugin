@@ -177,6 +177,15 @@ pub enum Command {
         #[arg(short = 'C', long = "dir", default_value = ".", global = true)]
         dir: PathBuf,
     },
+    /// Tracks: one folder can hold several unrelated pieces of work, each with its own goal,
+    /// bar and numbering. `track list | start "<goal>" [--intent T] | close N | reopen N`.
+    Track {
+        #[command(subcommand)]
+        action: TrackCommand,
+        /// Any directory inside the repo.
+        #[arg(short = 'C', long = "dir", default_value = ".", global = true)]
+        dir: PathBuf,
+    },
     /// Sessions' waits (spec §9.1): `wait list`, `wait clear <id>`, `wait promote <id>`.
     Wait {
         #[command(subcommand)]
@@ -315,7 +324,29 @@ pub enum LabelArg {
 #[derive(Debug, Subcommand)]
 pub enum RunCommand {
     /// Close the finished run (owner only).
-    Close,
+    Close {
+        /// The track, when the folder has several open ones.
+        #[arg(long)]
+        track: Option<u32>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TrackCommand {
+    /// The folder's tracks: number, name, state and progress.
+    List,
+    /// Start a new track (you need no words; agents must ask you).
+    Start {
+        /// The track's goal, in your words.
+        goal: String,
+        /// Why it matters and what done looks like (defaults to the goal text).
+        #[arg(long)]
+        intent: Option<String>,
+    },
+    /// Finish a track: refused while a task is neither done nor removed.
+    Close { number: u32 },
+    /// Take a finished track back into the open list.
+    Reopen { number: u32 },
 }
 
 #[derive(Debug, Subcommand)]

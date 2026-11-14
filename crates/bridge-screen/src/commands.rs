@@ -80,9 +80,10 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         Command::Init { goal, dir } => crate::onboard::init(&dir, goal.as_deref()),
         Command::Run {
-            action: crate::cli::RunCommand::Close,
+            action: crate::cli::RunCommand::Close { track },
             dir,
-        } => crate::onboard::run_close(&dir),
+        } => crate::onboard::run_close(&dir, track),
+        Command::Track { action, dir } => crate::onboard::track(&dir, action),
         Command::Wait { action, dir } => crate::onboard::wait(&dir, action),
         Command::Pages { action, dir } => crate::onboard::pages(&dir, &action),
         Command::Rebuild => rebuild(),

@@ -85,8 +85,9 @@ pub fn import_scope(dir: &Path, fresh: bool, done: &[String]) -> Result<()> {
     )
 }
 
-/// `bridge-screen run close [-C DIR]`: close the repo's finished run (an owner action).
-pub fn run_close(dir: &Path) -> Result<()> {
+/// `bridge-screen run close [--track N] [-C DIR]`: close a track's finished run (an owner
+/// action).
+pub fn run_close(dir: &Path, track: Option<u32>) -> Result<()> {
     let repo = repo::identify(dir)?;
     let home = Home::resolve()?;
     let mut store = open_store(&home)?;
@@ -95,8 +96,65 @@ pub fn run_close(dir: &Path) -> Result<()> {
         &home,
         &mut store,
         Some(dir),
-        &OwnerAction::CloseRun { repo: repo.id },
+        &OwnerAction::CloseRun {
+            repo: repo.id,
+            track,
+        },
     )
+}
+
+/// `bridge-screen track list|start|close|reopen`: the folder's tracks. Starting, finishing
+/// and reopening are owner actions (`owner::act`).
+pub fn track(dir: &Path, action: crate::cli::TrackCommand) -> Result<()> {
+    use crate::cli::TrackCommand;
+    let repo = repo::identify(dir)?;
+    let home = Home::resolve()?;
+    let mut store = open_store(&home)?;
+    store.register_repo(&repo)?;
+    let act = |store: &mut bridge_screen_core::store::Store, a: OwnerAction| {
+        crate::commands::owner_cmd(&home, store, Some(dir), &a)
+    };
+    match action {
+        TrackCommand::List => {
+            let all = bridge_screen_core::plan::track::tracks(store.conn(), &repo.id)?;
+            if all.is_empty() {
+                println!("No tracks in {} yet.", repo.name);
+            }
+            for t in all {
+                let p = bridge_screen_core::verify::progress(store.conn(), &repo.id, t.no)?;
+                println!(
+                    "{}  {}{}  {}% done",
+                    t.no,
+                    t.title,
+                    if t.is_open() { "" } else { " (finished)" },
+                    p.done_pct
+                );
+            }
+            Ok(())
+        }
+        TrackCommand::Start { goal, intent } => act(
+            &mut store,
+            OwnerAction::StartTrack {
+                repo: repo.id.clone(),
+                title: goal,
+                intent,
+            },
+        ),
+        TrackCommand::Close { number } => act(
+            &mut store,
+            OwnerAction::CloseTrack {
+                repo: repo.id.clone(),
+                track: number,
+            },
+        ),
+        TrackCommand::Reopen { number } => act(
+            &mut store,
+            OwnerAction::ReopenTrack {
+                repo: repo.id.clone(),
+                track: number,
+            },
+        ),
+    }
 }
 
 /// `bridge-screen init [-C DIR] [--goal TEXT]`: the evidence and the agent's steps. Reads

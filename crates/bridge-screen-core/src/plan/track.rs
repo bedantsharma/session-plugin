@@ -241,6 +241,37 @@ pub fn unfinished_leaves(
     Ok((open, leaves.len()))
 }
 
+/// Longest `owner_said` kept.
+const MAX_OWNER_SAID: usize = 200;
+
+/// Start a track for an agent: free when no track is open; otherwise it needs the owner's
+/// words (they answered "continue track X or start a new one?"). Returns the new goal id.
+pub fn start_track(
+    tx: &Transaction,
+    ctx: &super::EditContext,
+    title: &str,
+    intent: &str,
+    owner_said: Option<&str>,
+) -> Result<String> {
+    let open = open_tracks(tx, &ctx.repo_id)?;
+    if !open.is_empty() {
+        let said = owner_said.map(str::trim).unwrap_or_default();
+        if said.is_empty() {
+            return Err(Error::Invalid(format!(
+                "this folder already has {}. Ask the owner: continue one of them, or start a \
+                 new track? Pass what they said in owner_said; nothing was started.",
+                open_list_text(&open)
+            )));
+        }
+        if said.chars().count() > MAX_OWNER_SAID {
+            return Err(Error::Invalid(format!(
+                "owner_said must be at most {MAX_OWNER_SAID} characters"
+            )));
+        }
+    }
+    super::start_track_in(tx, ctx, title, intent)
+}
+
 /// Finish a track on the owner's say-so. Refused, in words and with nothing written, while a
 /// task is neither done nor removed.
 pub fn close_track_in(

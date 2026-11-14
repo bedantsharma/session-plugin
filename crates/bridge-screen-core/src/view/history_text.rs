@@ -112,6 +112,9 @@ fn owner_action_words(d: &Value) -> String {
             _ => "You said which plan files are already finished".to_string(),
         },
         "close_run" => "You closed the finished run".to_string(),
+        "start_track" => "You started a new track".to_string(),
+        "close_track" => "You finished a track".to_string(),
+        "reopen_track" => "You reopened a finished track".to_string(),
         "" => "You did something".to_string(),
         other => format!("You did this: {}", words(other)),
     }
@@ -253,6 +256,8 @@ pub fn summarize(kind: &str, d: &Value, session: &str, task: Option<&TaskLabel>)
             Some("fresh") => "You chose to count progress from now".to_string(),
             _ => "You said which plan files are already finished".to_string(),
         },
+        "track_closed" => "A track was finished".to_string(),
+        "track_reopened" => "A finished track was reopened".to_string(),
         "run_closed" => {
             let n = d
                 .get("closed_ids")
@@ -381,6 +386,8 @@ pub fn kind_label(kind: &str) -> String {
         "plan_scope_asked" => "Asked which plans are finished",
         "plan_scope_answered" => "Answered which plans are finished",
         "run_closed" => "Run closed",
+        "track_closed" => "Track finished",
+        "track_reopened" => "Track reopened",
         "detour_opened" => "Side trip started",
         "detour_closed" => "Side trip ended",
         "detour_promoted" => "Side trip became a task",

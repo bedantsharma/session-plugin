@@ -119,9 +119,25 @@ pub enum OwnerAction {
     ClearWait { wait_id: String },
     /// Turn a session's wait on a task into a plan link of its active task.
     PromoteWait { wait_id: String },
-    /// Close the repo's finished run (spec §10.1): refused unless every task of the run
-    /// passed its tests.
-    CloseRun { repo: String },
+    /// Close a track's finished run (spec §10.1): refused unless every task of the run
+    /// passed its tests. `track` may be left out when the repo has exactly one open track.
+    CloseRun {
+        repo: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        track: Option<u32>,
+    },
+    /// Finish a track (spec 2026-11-14 §2): refused while a task is neither done nor removed.
+    CloseTrack { repo: String, track: u32 },
+    /// Take a finished track back into the open list.
+    ReopenTrack { repo: String, track: u32 },
+    /// Start a new track from the CLI (the owner needs no words). `intent` defaults to the
+    /// title.
+    StartTrack {
+        repo: String,
+        title: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        intent: Option<String>,
+    },
     /// Answer "which plan files are already finished?" (spec §12.1): left out or empty is
     /// a fresh run; otherwise the named files (commas or new lines) are already finished.
     PlanScope {
@@ -129,6 +145,18 @@ pub enum OwnerAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         done: Option<String>,
     },
+}
+
+impl OwnerAction {
+    /// May the progress card's one-time code answer this? Never the actions that change
+    /// what the plan holds or what is on the front screen (spec 2026-11-14): finishing a
+    /// track, starting one, hiding, removing.
+    pub fn allowed_on_card(&self) -> bool {
+        !matches!(
+            self,
+            Self::CloseTrack { .. } | Self::ReopenTrack { .. } | Self::StartTrack { .. }
+        )
+    }
 }
 
 /// Where an owner action runs.
@@ -292,7 +320,14 @@ pub fn act(store: &mut Store, ctx: &ActCtx, action: &OwnerAction) -> Result<Stri
                 w.target_text
             ))
         }),
-        OwnerAction::CloseRun { repo } => close_run(store, repo),
+        OwnerAction::CloseRun { repo, track } => close_run(store, repo, *track),
+        OwnerAction::CloseTrack { repo, track } => close_track(store, repo, *track),
+        OwnerAction::ReopenTrack { repo, track } => reopen_track(store, repo, *track),
+        OwnerAction::StartTrack {
+            repo,
+            title,
+            intent,
+        } => start_track(store, repo, title, intent.as_deref()),
         OwnerAction::PlanScope { repo, done } => plan_scope(store, repo, done.as_deref()),
         OwnerAction::PromoteWait { wait_id } => store.write(|tx| {
             let w = crate::waits::find(tx, wait_id)?;
@@ -307,9 +342,26 @@ pub fn act(store: &mut Store, ctx: &ActCtx, action: &OwnerAction) -> Result<Stri
     }
 }
 
-fn close_run(store: &mut Store, repo: &str) -> Result<String> {
+/// The track an action means: the one named, or the only open one. Several open tracks
+/// and none named is refused with the list.
+fn pick_track(conn: &Connection, repo: &str, track: Option<u32>) -> Result<u32> {
+    if let Some(t) = track {
+        return Ok(t);
+    }
+    let open = crate::plan::track::open_tracks(conn, repo)?;
+    match open.as_slice() {
+        [] => Err(Error::Invalid("there is no plan to close a run of".into())),
+        [one] => Ok(one.no),
+        many => Err(Error::Invalid(format!(
+            "this folder has several tracks: say which one ({}); nothing was closed",
+            crate::plan::track::open_list_text(many)
+        ))),
+    }
+}
+
+fn close_run(store: &mut Store, repo: &str, track: Option<u32>) -> Result<String> {
     store.write(|tx| {
-        let track = crate::plan::track::primary(tx, repo)?;
+        let track = pick_track(tx, repo, track)?;
         let run = crate::plan::runs::close_in(tx, repo, track, OWNER_SESSION, &Actor::default())?;
         record(
             tx,
@@ -319,6 +371,63 @@ fn close_run(store: &mut Store, repo: &str) -> Result<String> {
         Ok(format!(
             "Closed run {}. Its tasks stay readable under \"Completed runs\"; the next plan starts a new run from 1.",
             run.number
+        ))
+    })
+}
+
+fn close_track(store: &mut Store, repo: &str, track: u32) -> Result<String> {
+    store.write(|tx| {
+        let t = crate::plan::track::close_track_in(tx, repo, OWNER_SESSION, &Actor::default(), track)?;
+        record(
+            tx,
+            repo,
+            &owner_data("close_track", None, Some(t.goal_id.clone())),
+        )?;
+        Ok(format!(
+            "Finished track {} '{}'. It leaves the front screen and sits under \"Finished tracks\"; you can reopen it.",
+            t.no, t.title
+        ))
+    })
+}
+
+fn reopen_track(store: &mut Store, repo: &str, track: u32) -> Result<String> {
+    store.write(|tx| {
+        let t =
+            crate::plan::track::reopen_track_in(tx, repo, OWNER_SESSION, &Actor::default(), track)?;
+        record(
+            tx,
+            repo,
+            &owner_data("reopen_track", None, Some(t.goal_id.clone())),
+        )?;
+        Ok(format!("Reopened track {} '{}'.", t.no, t.title))
+    })
+}
+
+fn start_track(store: &mut Store, repo: &str, title: &str, intent: Option<&str>) -> Result<String> {
+    store.write(|tx| {
+        let ctx = crate::plan::EditContext {
+            repo_id: repo.to_string(),
+            session_id: OWNER_SESSION.to_string(),
+            actor: Actor::default(),
+            reason: Some("track started by the owner".into()),
+            replan: false,
+        };
+        let intent = intent
+            .map(str::trim)
+            .filter(|i| !i.is_empty())
+            .unwrap_or(title);
+        let goal = crate::plan::start_track_in(tx, &ctx, title, intent)?;
+        record(
+            tx,
+            repo,
+            &owner_data("start_track", None, Some(goal.clone())),
+        )?;
+        let no = crate::plan::track::track_of(&goal);
+        Ok(format!(
+            "Started track {no} '{}' (goal {goal}). Its tasks read {}, {}, … and restart from 1.",
+            title.trim(),
+            crate::plan::track::raw(no, "1"),
+            crate::plan::track::raw(no, "1.1")
         ))
     })
 }

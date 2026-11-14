@@ -50,9 +50,11 @@ use serde_json::Value;
 
 mod onboard;
 mod pages;
+mod tracks;
 mod waits;
 
 pub use pages::{LeadPageReadInput, LeadPageWriteInput, LeadPagesInput};
+pub use tracks::StartTrackInput;
 pub use waits::{WaitIdInput, WaitingOnInput};
 
 const NO_SESSION: &str =
@@ -509,6 +511,16 @@ impl Bridge {
     )]
     async fn init_plan(&self, Parameters(args): Parameters<Args<InitDraft>>) -> CallToolResult {
         text(self.do_init_plan(&args))
+    }
+
+    #[tool(
+        description = "Start a new track: a separate piece of work in this folder, with its own goal, progress bar and numbering from 1 (its ids read T2-1.3 …). When the folder already has an open track, ask the owner first (\"continue track X or start a new one?\") and pass what they said in owner_said; never start one on your own. Then add its milestones and tasks with plan_edit under the new goal."
+    )]
+    async fn start_track(
+        &self,
+        Parameters(args): Parameters<Args<StartTrackInput>>,
+    ) -> CallToolResult {
+        text(self.do_start_track(&args))
     }
 
     #[tool(
@@ -1180,6 +1192,12 @@ impl Bridge {
         if matches!(input.action, OwnerAction::Withdraw { .. }) {
             return Err(
                 "refused: taking back a sign-off is done on the dashboard or with `bridge-screen verify <task> --withdraw`; nothing was recorded"
+                    .into(),
+            );
+        }
+        if !input.action.allowed_on_card() {
+            return Err(
+                "refused: the card can't finish or start tracks, hide or remove things; use the dashboard or the bridge-screen command; nothing was recorded"
                     .into(),
             );
         }
