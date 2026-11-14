@@ -1466,7 +1466,15 @@ pub fn history(conn: &Connection, repo: &str, f: &HistoryFilter) -> Result<Histo
                 shown,
                 title: task_title.clone().unwrap_or_default(),
             });
-        let summary = super::history_text::summarize(&kind, &full, &session_id, label.as_ref());
+        let mut summary = super::history_text::summarize(&kind, &full, &session_id, label.as_ref());
+        if kind == "claimed_done"
+            && task_id
+                .as_deref()
+                .is_some_and(|t| crate::verify::is_review(conn, repo, t).unwrap_or(false))
+        {
+            summary = super::history_text::review_saved_sentence(&full, label.as_ref())
+                .unwrap_or(summary);
+        }
         let data = if data.len() > HISTORY_DATA_MAX {
             let mut cut = HISTORY_DATA_MAX;
             while !data.is_char_boundary(cut) {

@@ -120,6 +120,27 @@ fn owner_action_words(d: &Value) -> String {
     }
 }
 
+/// A review task's claim, as a sentence: "Review saved for Task 1.2 (Plan the API)". `None`
+/// when the summary is too short to be a review (the plain "says it is done" sentence stays).
+#[must_use]
+pub fn review_saved_sentence(d: &Value, task: Option<&TaskLabel>) -> Option<String> {
+    let files = d
+        .get("files")
+        .and_then(Value::as_array)
+        .is_some_and(|f| !f.is_empty());
+    let what = task_text(task).to_lowercase_first();
+    if files {
+        // Saved only once the files are committed; don't round up.
+        Some(format!(
+            "Review of {what} written to files (saved once they are committed)"
+        ))
+    } else if crate::verify::review_text_is_real(str_of(d, "evidence").unwrap_or("")) {
+        Some(format!("Review saved for {what}"))
+    } else {
+        None
+    }
+}
+
 /// One event in a plain sentence. `task` is the task the event is about (from its task
 /// id), `session` the session that recorded it.
 #[allow(clippy::too_many_lines)] // one arm per kind of event

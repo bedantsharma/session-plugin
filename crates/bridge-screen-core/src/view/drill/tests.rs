@@ -166,6 +166,27 @@ fn scope_line_counts_a_saved_review_as_done() {
         })
         .unwrap();
     assert_eq!(status, "reviewed");
+    let h = history(
+        s.conn(),
+        "r",
+        &HistoryFilter {
+            limit: 50,
+            ..HistoryFilter::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        h.events
+            .iter()
+            .any(|e| e.summary.starts_with("Review saved for Task 1.1")),
+        "{:?}",
+        h.events.iter().map(|e| &e.summary).collect::<Vec<_>>()
+    );
+    assert!(
+        h.events
+            .iter()
+            .any(|e| e.summary.contains("not checked yet"))
+    );
     let before: Vec<u64> = p.scope.iter().map(|p| p.done_min).collect();
     assert_eq!(before.iter().filter(|d| **d == 30).count(), 1, "{before:?}");
 }
