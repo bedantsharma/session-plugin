@@ -407,8 +407,16 @@ pub fn progress(conn: &Connection, repo_id: &str) -> Result<Progress> {
         let minutes = minutes.unwrap_or(0);
         p.total_min += minutes;
         match status.as_str() {
-            "l2" | "l3" | "l4" => p.done_min += minutes,
-            "claimed" | "l1" => p.claimed_min += minutes,
+            s if crate::plan::NodeStatus::parse(s)
+                .is_some_and(crate::plan::NodeStatus::counts_as_done) =>
+            {
+                p.done_min += minutes;
+            }
+            s if crate::plan::NodeStatus::parse(s)
+                .is_some_and(crate::plan::NodeStatus::is_claimed_not_done) =>
+            {
+                p.claimed_min += minutes;
+            }
             _ => {}
         }
     }

@@ -202,10 +202,8 @@ fn suggest(
     };
     let action = match status {
         // Work outside any task can't be resumed by claiming it: keep it as a commit.
-        None
-        | Some(
-            NodeStatus::Claimed | NodeStatus::L1 | NodeStatus::L2 | NodeStatus::L3 | NodeStatus::L4,
-        ) => LeftoverAction::Adopt,
+        None => LeftoverAction::Adopt,
+        Some(s) if s.claimed_or_better() => LeftoverAction::Adopt,
         _ => LeftoverAction::Resume,
     };
 

@@ -133,10 +133,7 @@ fn resume_cue(conn: &Connection, sessions: &[&Session], task: &str) -> Result<Op
 }
 
 fn is_done(status: NodeStatus) -> bool {
-    matches!(
-        status,
-        NodeStatus::Claimed | NodeStatus::L1 | NodeStatus::L2 | NodeStatus::L3 | NodeStatus::L4
-    )
+    status.claimed_or_better()
 }
 
 /// `id ready`, `id waiting` or `id waiting on <session>` for each dependency of `task`,

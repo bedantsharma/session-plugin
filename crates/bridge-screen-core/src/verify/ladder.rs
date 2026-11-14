@@ -175,10 +175,7 @@ pub fn verify(
         .or_else(|| s.active_task.clone())
         .ok_or_else(|| refuse("no active task; give the id of the task to verify"))?;
     let node = leaf(conn, &s.repo_id, &task)?;
-    if !matches!(
-        node.status,
-        NodeStatus::Claimed | NodeStatus::L1 | NodeStatus::L2 | NodeStatus::L3 | NodeStatus::L4
-    ) {
+    if !node.status.claimed_or_better() {
         return Err(refuse(format!(
             "{task} isn't claimed done ({}); call claim_done first",
             node.status.as_str()

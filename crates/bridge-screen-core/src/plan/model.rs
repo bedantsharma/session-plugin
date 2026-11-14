@@ -56,9 +56,14 @@ pub enum NodeStatus {
     L2,
     L3,
     L4,
+    /// A task checked by review, not tests, whose result is saved: done, "without tests".
+    Reviewed,
     Failed,
     Dropped,
 }
+
+/// SQL list of the status names that count as done. One list, used by every query.
+pub const DONE_STATUS_SQL: &str = "'l2','l3','l4','reviewed'";
 
 impl NodeStatus {
     pub fn as_str(self) -> &'static str {
@@ -70,6 +75,7 @@ impl NodeStatus {
             Self::L2 => "l2",
             Self::L3 => "l3",
             Self::L4 => "l4",
+            Self::Reviewed => "reviewed",
             Self::Failed => "failed",
             Self::Dropped => "dropped",
         }
@@ -84,10 +90,32 @@ impl NodeStatus {
             "l2" => Some(Self::L2),
             "l3" => Some(Self::L3),
             "l4" => Some(Self::L4),
+            "reviewed" => Some(Self::Reviewed),
             "failed" => Some(Self::Failed),
             "dropped" => Some(Self::Dropped),
             _ => None,
         }
+    }
+
+    /// The one rule for "done": tests passed (L2 and up), or a review task whose result is
+    /// saved. Every progress number, roll-up and forecast asks this, never its own match.
+    pub fn counts_as_done(self) -> bool {
+        matches!(self, Self::L2 | Self::L3 | Self::L4 | Self::Reviewed)
+    }
+
+    /// Claimed done but not yet checked far enough to count (the claimed% share).
+    pub fn is_claimed_not_done(self) -> bool {
+        matches!(self, Self::Claimed | Self::L1)
+    }
+
+    /// The agent has said the work is finished: claimed, or checked further.
+    pub fn claimed_or_better(self) -> bool {
+        self.is_claimed_not_done() || self.counts_as_done()
+    }
+
+    /// Anything but untouched or removed.
+    pub fn has_work(self) -> bool {
+        !matches!(self, Self::Todo | Self::Dropped)
     }
 }
 
@@ -232,5 +260,66 @@ impl NodeSource {
             "init" => Self::Init,
             other => serde_json::from_str(other).unwrap_or_default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NodeStatus::{self, *};
+
+    #[test]
+    fn done_helper_behaviour_per_status() {
+        let done = [L2, L3, L4, Reviewed];
+        let claimed = [Claimed, L1];
+        let neither = [Todo, Active, Failed, Dropped];
+        for s in done {
+            assert!(s.counts_as_done() && !s.is_claimed_not_done() && s.claimed_or_better());
+        }
+        for s in claimed {
+            assert!(!s.counts_as_done() && s.is_claimed_not_done() && s.claimed_or_better());
+        }
+        for s in neither {
+            assert!(!s.counts_as_done() && !s.is_claimed_not_done() && !s.claimed_or_better());
+        }
+        assert!(Active.has_work() && Failed.has_work() && !Todo.has_work() && !Dropped.has_work());
+        for s in [
+            Todo, Active, Claimed, L1, L2, L3, L4, Reviewed, Failed, Dropped,
+        ] {
+            assert_eq!(NodeStatus::parse(s.as_str()), Some(s));
+        }
+    }
+
+    /// No source file outside this one spells the done rule by hand.
+    #[test]
+    fn done_helper_is_the_only_rule() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut stack = vec![root];
+        let mut found = Vec::new();
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                let name = path.file_name().unwrap().to_string_lossy().to_string();
+                if path.is_dir() {
+                    if name != "target" && name != "tests" {
+                        stack.push(path);
+                    }
+                } else if path.extension().is_some_and(|e| e == "rs")
+                    && name != "model.rs"
+                    && name != "tests.rs"
+                    && !path.components().any(|c| c.as_os_str() == "tests")
+                {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    let normal = text.split("#[cfg(test)]").next().unwrap_or("");
+                    if normal.contains("L2 | NodeStatus::L3")
+                        || normal.contains("L2 | L3 | L4")
+                        || normal.contains("\"l2\" | \"l3\"")
+                        || normal.contains("L1 | NodeStatus::L2")
+                    {
+                        found.push(path.display().to_string());
+                    }
+                }
+            }
+        }
+        assert!(found.is_empty(), "hand-written done rule in {found:?}");
     }
 }

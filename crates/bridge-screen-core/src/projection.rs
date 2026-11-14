@@ -41,6 +41,7 @@ pub const VIEW_TABLES: &[&str] = &[
     "plan_sources",
     "plan_source_items",
     "waits",
+    "hides",
 ];
 
 /// Update view tables for one event. Unknown kinds change no views.

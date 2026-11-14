@@ -685,12 +685,7 @@ fn done_task(conn: &Connection, s: &Session, asked: bool) -> Result<Option<NodeR
         .prepare_cached("SELECT count(*) FROM claims_done WHERE session_id = ?1 AND task_id = ?2")?
         .query_row(params![s.session_id, task], |r| r.get(0))?;
     let status = get_node(conn, &s.repo_id, task)?.map(|n| n.status);
-    let finished = matches!(
-        status,
-        Some(
-            NodeStatus::Claimed | NodeStatus::L1 | NodeStatus::L2 | NodeStatus::L3 | NodeStatus::L4
-        )
-    );
+    let finished = status.is_some_and(NodeStatus::claimed_or_better);
     if claimed > 0 && finished {
         return Ok(Some(node_ref(conn, &s.repo_id, task)?));
     }
@@ -1234,10 +1229,10 @@ fn subtree_progress(tree: &[PlanNode], under: &HashSet<String>) -> (u32, u32) {
     for leaf in leaves(tree).into_iter().filter(|n| under.contains(&n.id)) {
         let minutes = u64::from(leaf.estimate_min.unwrap_or(0));
         total += minutes;
-        match leaf.status {
-            NodeStatus::L2 | NodeStatus::L3 | NodeStatus::L4 => done += minutes,
-            NodeStatus::Claimed | NodeStatus::L1 => claimed += minutes,
-            _ => {}
+        if leaf.status.counts_as_done() {
+            done += minutes;
+        } else if leaf.status.is_claimed_not_done() {
+            claimed += minutes;
         }
     }
     (pct(done, total), pct(claimed, total))

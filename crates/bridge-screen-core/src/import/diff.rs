@@ -100,10 +100,7 @@ fn has_work(status: NodeStatus) -> bool {
 }
 
 fn is_done(status: NodeStatus) -> bool {
-    matches!(
-        status,
-        NodeStatus::Claimed | NodeStatus::L1 | NodeStatus::L2 | NodeStatus::L3 | NodeStatus::L4
-    )
+    status.claimed_or_better()
 }
 
 type Matcher<'m, W, H> = &'m dyn Fn(&W, &H) -> bool;

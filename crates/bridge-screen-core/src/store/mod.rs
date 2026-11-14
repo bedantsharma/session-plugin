@@ -205,6 +205,9 @@ fn migrate(conn: &mut Connection) -> Result<()> {
     if current < 10 {
         tx.execute_batch(schema::V10)?;
     }
+    if current < 11 {
+        tx.execute_batch(schema::V11)?;
+    }
     tx.execute(
         "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
         [SCHEMA_VERSION.to_string()],
@@ -627,6 +630,87 @@ mod tests {
                 .unwrap();
             assert_eq!(n, 0, "{table}");
         }
+    }
+
+    #[test]
+    fn v10_database_migrates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            for v in [
+                super::schema::V1,
+                super::schema::V2,
+                super::schema::V3,
+                super::schema::V4,
+                super::schema::V5,
+                super::schema::V6,
+                super::schema::V7,
+                super::schema::V8,
+                super::schema::V9,
+                super::schema::V10,
+            ] {
+                conn.execute_batch(v).unwrap();
+            }
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('schema_version', '10')",
+                [],
+            )
+            .unwrap();
+            for (id, parent, kind, status) in [
+                ("G", None, "goal", "todo"),
+                ("1", Some("G"), "milestone", "todo"),
+                ("1.1", Some("1"), "task", "l2"),
+            ] {
+                conn.execute(
+                    "INSERT INTO plan_nodes (repo_id, id, parent_id, kind, title, status, position)
+                     VALUES ('r', ?1, ?2, ?3, ?1, ?4, 1)",
+                    rusqlite::params![id, parent, kind, status],
+                )
+                .unwrap();
+            }
+            conn.execute(
+                "INSERT INTO plan_source_items (repo_id, path, task_no, step_no, node_id, title)
+                 VALUES ('r', 'p.md', 1, 0, '1.1', 't')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO forecast_history (repo_id, ts, p50_hours, p90_hours, remaining_min,
+                                               unestimated, points)
+                 VALUES ('r', '2026-10-13T09:00:00Z', 1.0, 2.0, 60, 0, 3)",
+                [],
+            )
+            .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let (check, status): (String, String) = store
+            .conn()
+            .query_row(
+                "SELECT check_kind, status FROM plan_nodes WHERE id = '1.1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((check.as_str(), status.as_str()), ("tests", "l2"));
+        let removed: i64 = store
+            .conn()
+            .query_row("SELECT owner_removed FROM plan_source_items", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let track: i64 = store
+            .conn()
+            .query_row("SELECT track FROM forecast_history", [], |r| r.get(0))
+            .unwrap();
+        let hides: i64 = store
+            .conn()
+            .query_row("SELECT count(*) FROM hides", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!((removed, track, hides), (0, 1, 0));
+        let tree = crate::plan::load_tree(store.conn(), "r", true).unwrap();
+        assert_eq!(tree.len(), 3);
+        assert_eq!(tree[2].status, crate::plan::NodeStatus::L2);
     }
 
     #[test]

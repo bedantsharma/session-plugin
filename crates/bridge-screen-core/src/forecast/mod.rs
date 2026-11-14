@@ -173,7 +173,7 @@ fn leaf_model(conn: &Connection, repo: &str, task: &str) -> Result<Option<String
 }
 
 fn is_done(status: NodeStatus) -> bool {
-    matches!(status, NodeStatus::L2 | NodeStatus::L3 | NodeStatus::L4)
+    status.counts_as_done()
 }
 
 /// The calibration points of `repo` as of `now`.

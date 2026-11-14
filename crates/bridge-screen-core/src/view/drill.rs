@@ -109,9 +109,7 @@ fn external_rows(conn: &Connection, n: &PlanNode) -> Result<Vec<ExternalDepRow>>
         out.push(ExternalDepRow {
             label: format!("{}:{}", d.repo_name, d.id),
             title: target.as_ref().map(|t| t.title.clone()).unwrap_or_default(),
-            ready: target.is_some_and(|t| {
-                matches!(t.status, NodeStatus::L2 | NodeStatus::L3 | NodeStatus::L4)
-            }),
+            ready: target.is_some_and(|t| t.status.counts_as_done()),
         });
     }
     Ok(out)
@@ -952,7 +950,7 @@ fn steps(conn: &Connection, repo: &str, id: &str) -> Result<Vec<StepRow>> {
         .into_iter()
         .filter_map(|s| s.active_task)
         .collect();
-    let done = |s: NodeStatus| matches!(s, NodeStatus::L2 | NodeStatus::L3 | NodeStatus::L4);
+    let done = NodeStatus::counts_as_done;
     let current = kids
         .iter()
         .find(|n| held.contains(&n.id))
@@ -1039,9 +1037,7 @@ pub fn task(conn: &Connection, repo: &str, id: &str, cfg: &Config) -> Result<Tas
         .as_ref()
         .and_then(|n| n.estimate_min)
         .filter(|e| *e > 0);
-    let finished = node
-        .as_ref()
-        .is_some_and(|n| matches!(n.status, NodeStatus::L2 | NodeStatus::L3 | NodeStatus::L4));
+    let finished = node.as_ref().is_some_and(|n| n.status.counts_as_done());
     #[allow(clippy::cast_precision_loss)] // seconds of work, small
     let ratio = estimate
         .filter(|_| finished && active_secs > 0)

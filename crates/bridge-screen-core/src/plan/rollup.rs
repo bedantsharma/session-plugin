@@ -46,7 +46,7 @@ impl Rollup {
 
 /// The same "done" test as done%: tests passed, or better.
 pub fn is_done(status: NodeStatus) -> bool {
-    matches!(status, NodeStatus::L2 | NodeStatus::L3 | NodeStatus::L4)
+    status.counts_as_done()
 }
 
 /// The roll-up of a set of task statuses; `None` when there are none (dropped ones are
