@@ -76,6 +76,12 @@ pub struct NodeMoved {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeRef {
     pub id: String,
+    /// Removed for good by the owner (not an agent's `remove_node`, not the importer).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub by_owner: bool,
+    /// What it was when the owner removed it (a status code), for the History sentence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub was: Option<String>,
     #[serde(flatten)]
     pub meta: EditMeta,
 }
@@ -170,6 +176,34 @@ fn project_node_removed(tx: &Transaction, repo: &str, d: &NodeRef) -> Result<()>
         ),
         params![repo, d.id],
     )?;
+    // Work that is gone leaves no reminder behind.
+    tx.execute(
+        &format!(
+            "{subtree} DELETE FROM verify_nudges
+             WHERE repo_id = ?1 AND task_id IN (SELECT id FROM sub)"
+        ),
+        params![repo, d.id],
+    )?;
+    if d.by_owner {
+        // A plan file can't bring owner-removed work back.
+        tx.execute(
+            &format!(
+                "{subtree} UPDATE plan_source_items SET owner_removed = 1
+                 WHERE repo_id = ?1 AND node_id IN (SELECT id FROM sub)"
+            ),
+            params![repo, d.id],
+        )?;
+    }
+    if super::track::is_goal_id(&d.id) {
+        // A removed track leaves the hidden drawer too.
+        tx.execute(
+            "DELETE FROM hides WHERE repo_id = ?1 AND subject = ?2",
+            params![
+                repo,
+                format!("track:{repo}:{}", super::track::track_of(&d.id))
+            ],
+        )?;
+    }
     tx.execute(
         &format!(
             "{subtree} DELETE FROM plan_deps

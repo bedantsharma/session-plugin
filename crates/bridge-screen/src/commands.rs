@@ -93,6 +93,7 @@ pub fn run(cli: Cli) -> Result<()> {
             dir,
         } => crate::onboard::run_close(&dir, track),
         Command::Track { action, dir } => crate::onboard::track(&dir, action),
+        Command::Remove { id, yes, dir } => crate::onboard::remove(&dir, &id, yes),
         Command::Wait { action, dir } => crate::onboard::wait(&dir, action),
         Command::Pages { action, dir } => crate::onboard::pages(&dir, &action),
         Command::Rebuild => rebuild(),

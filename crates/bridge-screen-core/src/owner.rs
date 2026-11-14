@@ -6,6 +6,7 @@
 //! still open; a stale or double click is refused with [`Error::Stale`] and records
 //! nothing.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
@@ -130,6 +131,18 @@ pub enum OwnerAction {
     CloseTrack { repo: String, track: u32 },
     /// Take a finished track back into the open list.
     ReopenTrack { repo: String, track: u32 },
+    /// Remove a task, a milestone or a whole track for good (spec 2026-11-14 §4): abandoned
+    /// work leaves the bars, the queue and the forecast; the history keeps a record. Refused
+    /// without `confirm`, and stale when the node is gone or its title changed since the
+    /// screen showed it.
+    Remove {
+        repo: String,
+        id: String,
+        /// The title the screen showed.
+        title: String,
+        #[serde(default)]
+        confirm: bool,
+    },
     /// Start a new track from the CLI (the owner needs no words). `intent` defaults to the
     /// title.
     StartTrack {
@@ -154,7 +167,10 @@ impl OwnerAction {
     pub fn allowed_on_card(&self) -> bool {
         !matches!(
             self,
-            Self::CloseTrack { .. } | Self::ReopenTrack { .. } | Self::StartTrack { .. }
+            Self::CloseTrack { .. }
+                | Self::ReopenTrack { .. }
+                | Self::StartTrack { .. }
+                | Self::Remove { .. }
         )
     }
 }
@@ -321,6 +337,12 @@ pub fn act(store: &mut Store, ctx: &ActCtx, action: &OwnerAction) -> Result<Stri
             ))
         }),
         OwnerAction::CloseRun { repo, track } => close_run(store, repo, *track),
+        OwnerAction::Remove {
+            repo,
+            id,
+            title,
+            confirm,
+        } => remove(store, repo, id, title, *confirm),
         OwnerAction::CloseTrack { repo, track } => close_track(store, repo, *track),
         OwnerAction::ReopenTrack { repo, track } => reopen_track(store, repo, *track),
         OwnerAction::StartTrack {
@@ -371,6 +393,166 @@ fn close_run(store: &mut Store, repo: &str, track: Option<u32>) -> Result<String
         Ok(format!(
             "Closed run {}. Its tasks stay readable under \"Completed runs\"; the next plan starts a new run from 1.",
             run.number
+        ))
+    })
+}
+
+/// What a status reads as when the owner removes it, in words.
+pub fn state_phrase(status: NodeStatus) -> &'static str {
+    match status {
+        NodeStatus::Todo => "not started",
+        NodeStatus::Active => "being worked on",
+        NodeStatus::Claimed => "claimed, not checked",
+        NodeStatus::L1 => "code written, tests not run",
+        NodeStatus::L2 => "tests pass",
+        NodeStatus::L3 => "tried end to end",
+        NodeStatus::L4 => "you signed it off",
+        NodeStatus::Reviewed => "done, no tests",
+        NodeStatus::Failed => "failed a check",
+        NodeStatus::Dropped => "already removed",
+    }
+}
+
+/// `task`, `milestone`, `track`, `step`.
+fn kind_word(node: &crate::plan::PlanNode) -> &'static str {
+    match node.kind {
+        crate::plan::NodeKind::Goal => "track",
+        crate::plan::NodeKind::Milestone => "milestone",
+        crate::plan::NodeKind::Task => "task",
+        crate::plan::NodeKind::Subtask => "step",
+    }
+}
+
+/// The plain-words question the owner confirms before a node is removed for good: what goes,
+/// how much of it is done, who is working on it, and what removing means.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RemoveImpact {
+    pub title: String,
+    /// Tasks under it (live leaves), how many of them are done, and live sessions working
+    /// on it.
+    pub tasks: usize,
+    pub done: usize,
+    pub working: usize,
+    /// `Remove the track 'Docs refresh' for good? 7 tasks, 2 done. …`
+    pub text: String,
+}
+
+/// The question the owner confirms before removing `node` for good (see [`RemoveImpact`]).
+pub fn impact_text(
+    node: &crate::plan::PlanNode,
+    shown: &str,
+    tasks: usize,
+    done: usize,
+    working: usize,
+) -> String {
+    let kind = kind_word(node);
+    let what = match node.kind {
+        crate::plan::NodeKind::Goal => format!("the track '{}'", node.title),
+        _ => format!("{kind} {shown} '{}'", node.title),
+    };
+    let mut text = format!("Remove {what} for good?");
+    match node.kind {
+        crate::plan::NodeKind::Goal | crate::plan::NodeKind::Milestone => {
+            let _ = write!(
+                text,
+                " {tasks} task{}, {done} done.",
+                if tasks == 1 { "" } else { "s" }
+            );
+        }
+        _ => {
+            let _ = write!(text, " It is {}.", state_phrase(node.status));
+        }
+    }
+    if working > 0 {
+        let _ = write!(
+            text,
+            " {working} session{} {} working on it.",
+            if working == 1 { "" } else { "s" },
+            if working == 1 { "is" } else { "are" }
+        );
+    }
+    text.push_str(
+        " It leaves the bars, the queue and the forecast and can't be brought back from the dashboard. The history keeps a record.",
+    );
+    text
+}
+
+/// The impact of removing `id`, read from the plan as it is now.
+pub fn remove_impact(conn: &Connection, repo: &str, id: &str) -> Result<RemoveImpact> {
+    let node = get_node(conn, repo, id)?
+        .filter(|n| n.status != NodeStatus::Dropped)
+        .ok_or_else(|| stale(format!("{id} is already gone from the plan")))?;
+    let under = crate::plan::subtree_ids(conn, repo, id)?;
+    let tree = crate::plan::load_tree(conn, repo, false)?;
+    let leaves: Vec<&crate::plan::PlanNode> = tree
+        .iter()
+        .filter(|n| under.contains(&n.id))
+        .filter(|n| {
+            matches!(
+                n.kind,
+                crate::plan::NodeKind::Task | crate::plan::NodeKind::Subtask
+            )
+        })
+        .filter(|n| !tree.iter().any(|c| c.parent_id.as_deref() == Some(&n.id)))
+        .collect();
+    let done = leaves.iter().filter(|n| n.status.counts_as_done()).count();
+    let working = session::list_live(conn, Some(repo))?
+        .iter()
+        .filter(|s| s.active_task.as_ref().is_some_and(|t| under.contains(t)))
+        .count();
+    let shown = crate::plan::runs::load_all(conn, repo)?.shown(id);
+    let text = impact_text(&node, &shown, leaves.len(), done, working);
+    Ok(RemoveImpact {
+        title: node.title,
+        tasks: leaves.len(),
+        done,
+        working,
+        text,
+    })
+}
+
+fn remove(store: &mut Store, repo: &str, id: &str, title: &str, confirm: bool) -> Result<String> {
+    if !confirm {
+        return Err(Error::Invalid(
+            "removing is for good: confirm it first; nothing was removed".into(),
+        ));
+    }
+    store.write(|tx| {
+        let node = get_node(tx, repo, id)?
+            .filter(|n| n.status != NodeStatus::Dropped)
+            .ok_or_else(|| {
+                stale(format!(
+                    "already gone: {id} was removed before; nothing changed"
+                ))
+            })?;
+        if node.title.trim() != title.trim() {
+            return Err(stale(format!(
+                "{id} changed since you looked: it is now '{}'; nothing was removed",
+                node.title
+            )));
+        }
+        let impact = remove_impact(tx, repo, id)?;
+        let shown = crate::plan::runs::load_all(tx, repo)?.shown(id);
+        let was = state_phrase(node.status);
+        let kind = kind_word(&node);
+        let what = if node.kind == crate::plan::NodeKind::Goal {
+            format!("track '{}'", node.title)
+        } else {
+            format!("{kind} {shown} '{}'", node.title)
+        };
+        crate::plan::owner_remove_in(tx, repo, OWNER_SESSION, id, "removed by the owner")?;
+        record(tx, repo, &owner_data("remove", None, Some(id.to_string())))?;
+        let detail = match node.kind {
+            crate::plan::NodeKind::Goal | crate::plan::NodeKind::Milestone => format!(
+                "{} task{}, {} done",
+                impact.tasks,
+                if impact.tasks == 1 { "" } else { "s" },
+                impact.done
+            ),
+            _ => format!("it was {was}"),
+        };
+        Ok(format!(
+            "Removed {what} ({detail}). It has left the bars, the queue and the forecast."
         ))
     })
 }

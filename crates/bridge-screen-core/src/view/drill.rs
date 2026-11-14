@@ -48,6 +48,9 @@ pub struct TreeNode {
     pub check: crate::plan::CheckKind,
     /// ✓ Works / ✗ Broken for a task that was said done and isn't signed off yet.
     pub actions: Vec<super::ActionSpec>,
+    /// "Remove for good": the confirm question in plain words and the action to send once
+    /// the owner confirms (`confirm` is false in it; the screen sets it on confirming).
+    pub remove: Option<RemoveSpec>,
     /// A parent's status from its tasks (spec §10: derived, never stored); `None` for a
     /// leaf, which shows its own `status`.
     pub rollup: Option<crate::plan::Rollup>,
@@ -68,6 +71,14 @@ pub struct TreeNode {
     pub branch: Option<String>,
     pub decisions: usize,
     pub depth: usize,
+}
+
+/// The row menu's "Remove for good".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RemoveSpec {
+    /// `Remove task 1.2 'Login form' for good? It is claimed, not checked. …`
+    pub text: String,
+    pub action: OwnerAction,
 }
 
 /// A link to a task in another repo.
@@ -182,6 +193,54 @@ fn decision_counts(conn: &Connection, repo: &str) -> Result<HashMap<String, usiz
     Ok(counts)
 }
 
+/// For every node: the question to confirm and the action that removes it for good. One pass
+/// over the loaded tree: tasks under each node, how many are done, sessions working on it.
+fn remove_specs(
+    conn: &Connection,
+    repo: &str,
+    all: &[PlanNode],
+    runs: &crate::plan::runs::AllRuns,
+) -> Result<HashMap<String, RemoveSpec>> {
+    let by_id: HashMap<&str, &PlanNode> = all.iter().map(|n| (n.id.as_str(), n)).collect();
+    let mut counts: HashMap<&str, (usize, usize, usize)> = HashMap::new();
+    for leaf in super::leaves(all) {
+        let mut up = Some(leaf.id.as_str());
+        while let Some(id) = up {
+            let c = counts.entry(id).or_default();
+            c.0 += 1;
+            c.1 += usize::from(leaf.status.counts_as_done());
+            up = by_id.get(id).and_then(|n| n.parent_id.as_deref());
+        }
+    }
+    let live = session::list_live(conn, Some(repo))?;
+    for s in &live {
+        let mut up = s.active_task.as_deref().filter(|t| by_id.contains_key(t));
+        while let Some(id) = up {
+            counts.entry(id).or_default().2 += 1;
+            up = by_id.get(id).and_then(|n| n.parent_id.as_deref());
+        }
+    }
+    Ok(all
+        .iter()
+        .map(|n| {
+            let (tasks, done, working) = counts.get(n.id.as_str()).copied().unwrap_or_default();
+            let shown = runs.shown(&n.id);
+            (
+                n.id.clone(),
+                RemoveSpec {
+                    text: crate::owner::impact_text(n, &shown, tasks, done, working),
+                    action: OwnerAction::Remove {
+                        repo: repo.to_string(),
+                        id: n.id.clone(),
+                        title: n.title.clone(),
+                        confirm: false,
+                    },
+                },
+            )
+        })
+        .collect())
+}
+
 fn replans(conn: &Connection, repo: &str) -> Result<Vec<Replan>> {
     let mut stmt = conn.prepare(
         "SELECT ts, json_extract(data, '$.reason'), COALESCE(json_extract(data, '$.op_count'), 0),
@@ -211,12 +270,14 @@ pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectD
     let every_run = crate::plan::runs::load_all(conn, repo)?;
     let all = load_tree(conn, repo, false)?;
     let rolled = crate::plan::rollups(&all);
+    let removes = remove_specs(conn, repo, &all, &every_run)?;
     let build = |nodes: Vec<PlanNode>,
                  rolled: &HashMap<String, crate::plan::Rollup>|
      -> Result<Vec<TreeNode>> {
         let mut tree = Vec::with_capacity(nodes.len());
         for n in nodes {
             let external_deps = external_rows(conn, &n)?;
+            let remove = removes.get(&n.id).cloned();
             let actions = if matches!(n.kind, NodeKind::Task | NodeKind::Subtask)
                 && super::owner_can_check(n.status)
             {
@@ -242,6 +303,7 @@ pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectD
                 status: n.status,
                 check: n.check,
                 actions,
+                remove,
                 hill: n.hill,
                 estimate_min: n.estimate_min,
                 depends_on: n.depends_on,

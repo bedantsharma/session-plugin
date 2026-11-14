@@ -216,10 +216,86 @@ pub fn plan_edit_in_sourced(
                     data["source"] = serde_json::to_value(source)?;
                 }
             }
-            events.push(append_in(tx, draft(ctx, kind, data, Some(task)))?);
+            events.push(append_in(tx, draft(ctx, kind, data, Some(task.clone())))?);
+            if kind == "node_removed" {
+                after_removal(tx, ctx, &task)?;
+            }
         }
         Ok(EditOutcome { events, added_ids })
     }
+}
+
+/// What removing a node leaves to clean up, for everyone who removes (an agent, the
+/// importer, the owner): sessions holding a task in the removed subtree let go of it, and
+/// waits on it end. Nudges, links and hides are dropped by the projector.
+fn after_removal(tx: &Transaction, ctx: &EditContext, id: &str) -> Result<()> {
+    let subtree = super::query::subtree_ids(tx, &ctx.repo_id, id)?;
+    let mut stmt = tx.prepare_cached(
+        "SELECT session_id, active_task FROM sessions
+         WHERE repo_id = ?1 AND state != 'ended' AND active_task IS NOT NULL",
+    )?;
+    let holding: Vec<(String, String)> = stmt
+        .query_map([&ctx.repo_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (session, task) in holding.into_iter().filter(|(_, t)| subtree.contains(t)) {
+        let data = crate::session::TaskReleased {
+            task_id: task.clone(),
+            reason: "removed".into(),
+        };
+        append_in(
+            tx,
+            EventDraft::new(
+                &ctx.repo_id,
+                &session,
+                "task_released",
+                serde_json::to_value(data)?,
+            )
+            .actor(ctx.actor.clone())
+            .task(task),
+        )?;
+    }
+    crate::waits::clear_for_removed(tx, &ctx.repo_id, &subtree)?;
+    Ok(())
+}
+
+/// Remove a node (a task, a milestone, or a whole track by its goal) for good on the
+/// owner's say-so: the same `node_removed` an agent's `remove_node` writes, marked
+/// `by_owner`, with the same clean-up. Returns the node as it was.
+pub fn owner_remove_in(
+    tx: &Transaction,
+    repo_id: &str,
+    session_id: &str,
+    id: &str,
+    reason: &str,
+) -> Result<PlanNode> {
+    let node = live(tx, repo_id, 0, id)?;
+    let ctx = EditContext {
+        repo_id: repo_id.to_string(),
+        session_id: session_id.to_string(),
+        actor: Actor::default(),
+        reason: Some(reason.to_string()),
+        replan: false,
+    };
+    let data = NodeRef {
+        id: id.to_string(),
+        by_owner: true,
+        was: Some(node.status.as_str().to_string()),
+        meta: EditMeta {
+            reason: ctx.reason.clone(),
+            replan_id: None,
+        },
+    };
+    append_in(
+        tx,
+        draft(
+            &ctx,
+            "node_removed",
+            serde_json::to_value(data)?,
+            Some(id.to_string()),
+        ),
+    )?;
+    after_removal(tx, &ctx, id)?;
+    Ok(node)
 }
 
 /// Start a new track: its goal, with the next track number (`G` for the first, then `T2-G`,
@@ -597,6 +673,8 @@ impl Check<'_> {
         }
         let data = NodeRef {
             id: id.to_string(),
+            by_owner: false,
+            was: None,
             meta,
         };
         Ok(("node_removed", serde_json::to_value(data)?, id.to_string()))

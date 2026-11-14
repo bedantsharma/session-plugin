@@ -121,6 +121,39 @@ pub fn run_close(dir: &Path, track: Option<u32>) -> Result<()> {
     )
 }
 
+/// `bridge-screen remove <id> [--yes]`: remove abandoned work for good (an owner action).
+/// Says what goes and asks first, unless `--yes`.
+pub fn remove(dir: &Path, id: &str, yes: bool) -> Result<()> {
+    use std::io::{BufRead as _, Write as _};
+    let repo = repo::identify(dir)?;
+    let home = Home::resolve()?;
+    let mut store = open_store(&home)?;
+    store.register_repo(&repo)?;
+    let impact = bridge_screen_core::owner::remove_impact(store.conn(), &repo.id, id)?;
+    println!("{}", impact.text);
+    if !yes {
+        print!("Remove it for good? [y/N] ");
+        std::io::stdout().flush()?;
+        let mut answer = String::new();
+        std::io::stdin().lock().read_line(&mut answer)?;
+        if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+            println!("Kept it. Nothing was removed.");
+            return Ok(());
+        }
+    }
+    crate::commands::owner_cmd(
+        &home,
+        &mut store,
+        Some(dir),
+        &OwnerAction::Remove {
+            repo: repo.id,
+            id: id.to_string(),
+            title: impact.title,
+            confirm: true,
+        },
+    )
+}
+
 /// `bridge-screen track list|start|close|reopen`: the folder's tracks. Starting, finishing
 /// and reopening are owner actions (`owner::act`).
 pub fn track(dir: &Path, action: crate::cli::TrackCommand) -> Result<()> {

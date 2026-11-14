@@ -187,6 +187,19 @@ pub enum Command {
         #[arg(short = 'C', long = "dir", default_value = ".", global = true)]
         dir: PathBuf,
     },
+    /// Remove abandoned work for good: a task, a milestone or a whole track (`track` goal id,
+    /// e.g. `T2-G`). It leaves the bars, the queue and the forecast; the history keeps a
+    /// record. Asks first unless --yes.
+    Remove {
+        /// The plan id (`1.2`, `3`, `T2-1.1`, `T2-G`).
+        id: String,
+        /// Don't ask.
+        #[arg(long)]
+        yes: bool,
+        /// Any directory inside the repo.
+        #[arg(short = 'C', long = "dir", default_value = ".")]
+        dir: PathBuf,
+    },
     /// Tracks: one folder can hold several unrelated pieces of work, each with its own goal,
     /// bar and numbering. `track list | start "<goal>" [--intent T] | close N | reopen N`.
     Track {

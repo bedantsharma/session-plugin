@@ -279,6 +279,18 @@ fn source(conn: &Connection, repo_id: &str, path: &str) -> Result<Option<PlanSou
     Ok(sources(conn, repo_id)?.into_iter().find(|s| s.path == path))
 }
 
+/// Did the owner remove this node for good?
+fn removed_by_owner(conn: &Connection, repo_id: &str, id: &str) -> Result<bool> {
+    let n: i64 = conn
+        .prepare_cached(
+            "SELECT count(*) FROM events
+             WHERE repo_id = ?1 AND kind = 'node_removed'
+               AND json_extract(data, '$.id') = ?2 AND json_extract(data, '$.by_owner') = 1",
+        )?
+        .query_row(params![repo_id, id], |r| r.get(0))?;
+    Ok(n > 0)
+}
+
 /// Does the file's last import still hold step subtasks (older versions imported every
 /// step checkbox as a task)? Such a file is imported once more to drop them.
 fn has_step_items(conn: &Connection, repo_id: &str, path: &str) -> Result<bool> {
@@ -296,7 +308,7 @@ fn has_step_items(conn: &Connection, repo_id: &str, path: &str) -> Result<bool> 
 pub fn source_items(conn: &Connection, repo_id: &str, path: &str) -> Result<Vec<SourceItem>> {
     let mut stmt = conn.prepare_cached(
         "SELECT i.task_no, i.step_no, i.node_id, i.title, n.status, n.expected_files,
-                n.next_child
+                n.next_child, i.owner_removed
          FROM plan_source_items i JOIN plan_nodes n ON n.repo_id = i.repo_id AND n.id = i.node_id
          WHERE i.repo_id = ?1 AND i.path = ?2 ORDER BY i.task_no, i.step_no",
     )?;
@@ -312,6 +324,7 @@ pub fn source_items(conn: &Connection, repo_id: &str, path: &str) -> Result<Vec<
             status: NodeStatus::parse(&status).unwrap_or(NodeStatus::Todo),
             files: serde_json::from_str(&files).unwrap_or_default(),
             next_child: r.get(6)?,
+            owner_removed: r.get(7)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -421,6 +434,7 @@ fn items_by_title(
             status: node.status,
             files: node.expected_files.clone(),
             next_child: next,
+            owner_removed: false,
         });
     }
     Ok(out)
@@ -619,6 +633,18 @@ fn import_in(
         return Ok(ImportOutcome::NeedsLink { path: rel });
     }
     let linked = prev.as_ref().and_then(|p| p.node_id.clone());
+    // What the file was imported into was removed for good by the owner: the file stays out.
+    if into.is_none()
+        && ctx.track.is_none()
+        && let Some(container) = &linked
+        && removed_by_owner(tx, repo_id, container)?
+    {
+        append_in(tx, seen_draft(repo_id, ctx, &seen(false, &hash))?)?;
+        return Ok(ImportOutcome::Skipped {
+            path: rel,
+            why: "you removed what it was imported into, so it stays out".into(),
+        });
+    }
     let file = ReadFile {
         rel,
         hash,
@@ -704,6 +730,7 @@ fn apply_import(
                 step: i.step_no,
                 node_id: i.node_id.clone(),
                 title: i.title.clone(),
+                owner_removed: i.owner_removed,
             })
             .collect(),
     };

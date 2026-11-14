@@ -205,16 +205,33 @@ fn is_done(status: NodeStatus) -> bool {
 
 /// The calibration points of `repo` as of `now`.
 pub fn calibration(conn: &Connection, repo: &str, now: Timestamp) -> Result<Calibration> {
-    let tree = load_tree(conn, repo, false)?;
+    let full = load_tree(conn, repo, true)?;
+    let tree: Vec<PlanNode> = full
+        .iter()
+        .filter(|n| n.status != NodeStatus::Dropped)
+        .cloned()
+        .collect();
     let done_at = completed_at(conn, repo)?;
     let active = active_secs(conn, repo)?;
     let since = now - SignedDuration::from_hours(WINDOW_DAYS * 24);
     let mut out = Calibration::default();
-    for leaf in leaves(&tree) {
+    // Finished work the owner removed later really took that long: it keeps teaching.
+    let removed: Vec<&PlanNode> = full
+        .iter()
+        .filter(|n| {
+            n.status == NodeStatus::Dropped
+                && matches!(
+                    n.kind,
+                    crate::plan::NodeKind::Task | crate::plan::NodeKind::Subtask
+                )
+                && !full.iter().any(|c| c.parent_id.as_deref() == Some(&n.id))
+        })
+        .collect();
+    for leaf in leaves(&tree).into_iter().chain(removed) {
         let Some(estimate) = leaf.estimate_min.filter(|e| *e > 0) else {
             continue;
         };
-        if !is_done(leaf.status) {
+        if !is_done(leaf.status) && leaf.status != NodeStatus::Dropped {
             continue;
         }
         let Some(at) = done_at.get(&leaf.id).copied() else {

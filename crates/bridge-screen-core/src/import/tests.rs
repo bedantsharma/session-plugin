@@ -1562,3 +1562,128 @@ fn import_title_match_picks_track() {
         "Query"
     );
 }
+
+// ---- removed for good (spec 2026-11-14 §4) ----
+
+fn owner_remove(r: &mut Repo, id: &str) {
+    r.store
+        .write(|tx| {
+            crate::plan::owner_remove_in(tx, "r", "owner", id, "removed by the owner")?;
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn plan_file_does_not_resurrect_owner_removed_task() {
+    let mut r = Repo::new();
+    let a = r.write(
+        "a.md",
+        &plan_text("Login", &[("Endpoint", &[]), ("Form", &[])]),
+    );
+    r.scan();
+    owner_remove(&mut r, "2");
+    assert_eq!(
+        get_node(r.store.conn(), "r", "2").unwrap().unwrap().status,
+        NodeStatus::Dropped
+    );
+    // The file changes (a third task) and lists the removed one again.
+    std::fs::write(
+        &a,
+        plan_text(
+            "Login",
+            &[("Endpoint", &[]), ("Form", &[]), ("Logout", &[])],
+        ),
+    )
+    .unwrap();
+    let out = r.scan();
+    assert!(
+        matches!(&out[..], [ImportOutcome::Imported { added: 1, .. }]),
+        "{out:?}"
+    );
+    let live: Vec<String> = r
+        .tree()
+        .into_iter()
+        .filter(|(_, _, s)| *s != NodeStatus::Dropped)
+        .map(|(_, t, _)| t)
+        .collect();
+    assert!(!live.contains(&"Form".to_string()), "{live:?}");
+    assert!(live.contains(&"Logout".to_string()), "{live:?}");
+    // It stays out through another change, and a rebuild agrees.
+    std::fs::write(
+        &a,
+        plan_text(
+            "Login",
+            &[
+                ("Endpoint", &[]),
+                ("Form", &[]),
+                ("Logout", &[]),
+                ("Reset", &[]),
+            ],
+        ),
+    )
+    .unwrap();
+    r.scan();
+    assert!(
+        !r.tree()
+            .iter()
+            .any(|(_, t, s)| t == "Form" && *s != NodeStatus::Dropped)
+    );
+    r.store.rebuild().unwrap();
+    assert_eq!(
+        get_node(r.store.conn(), "r", "2").unwrap().unwrap().status,
+        NodeStatus::Dropped
+    );
+}
+
+#[test]
+fn importer_retired_task_returns_when_relisted() {
+    let mut r = Repo::new();
+    let a = r.write(
+        "a.md",
+        &plan_text("Login", &[("Endpoint", &[]), ("Form", &[])]),
+    );
+    r.scan();
+    // The file drops Form: the importer retires it (nothing was done on it).
+    std::fs::write(&a, plan_text("Login", &[("Endpoint", &[])])).unwrap();
+    r.scan();
+    assert_eq!(
+        get_node(r.store.conn(), "r", "2").unwrap().unwrap().status,
+        NodeStatus::Dropped
+    );
+    // The file lists it again: it comes back (as a new node).
+    std::fs::write(&a, plan_text("Login", &[("Endpoint", &[]), ("Form", &[])])).unwrap();
+    r.scan();
+    assert!(
+        r.tree()
+            .iter()
+            .any(|(_, t, s)| t == "Form" && *s != NodeStatus::Dropped),
+        "{:?}",
+        r.tree()
+    );
+}
+
+#[test]
+fn plan_file_of_removed_track_is_skipped_once() {
+    let mut r = Repo::new();
+    let a = r.write("a.md", &plan_text("Login", &[("Endpoint", &[])]));
+    r.scan();
+    // A second milestone from another file; the owner removes it.
+    let b = r.write("b.md", &plan_text("Search", &[("Index", &[])]));
+    r.scan();
+    owner_remove(&mut r, "2");
+    // The file changes: nothing comes back, and it is said once.
+    std::fs::write(&b, plan_text("Search", &[("Index", &[]), ("Query", &[])])).unwrap();
+    let out = r.scan();
+    assert!(
+        matches!(&out[..], [ImportOutcome::Skipped { why, .. }] if why.contains("you removed")),
+        "{out:?}"
+    );
+    assert!(
+        !r.tree()
+            .iter()
+            .any(|(_, t, s)| t == "Query" && *s != NodeStatus::Dropped)
+    );
+    assert_eq!(r.scan(), vec![]);
+    let _ = a;
+}

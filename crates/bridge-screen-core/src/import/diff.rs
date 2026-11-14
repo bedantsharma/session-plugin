@@ -24,6 +24,8 @@ pub struct SourceItem {
     pub files: Vec<String>,
     /// The number the node's next child gets.
     pub next_child: u32,
+    /// The owner removed it for good: the file listing it again does not bring it back.
+    pub owner_removed: bool,
 }
 
 /// Where a file's tasks go; decided by `import_file`.
@@ -69,6 +71,8 @@ pub struct ItemLink {
     pub step_no: Option<u32>,
     pub node_id: String,
     pub title: String,
+    /// Kept so the next import still knows the owner removed it.
+    pub owner_removed: bool,
 }
 
 /// The result of [`diff`].
@@ -85,6 +89,8 @@ pub struct ImportDiff {
     pub keeps: Vec<(String, String)>,
     /// Step subtasks from older imports that were dropped (they are no longer tasks).
     pub steps_removed: usize,
+    /// Tasks the file lists that the owner removed for good: skipped.
+    pub skipped_removed: usize,
     /// Plain-words notes for old step subtasks that were kept because they passed tests.
     pub step_notes: Vec<String>,
     /// Every task and step of the file after the import.
@@ -194,6 +200,7 @@ impl Builder<'_> {
             step_no,
             node_id: node_id.to_string(),
             title: title.to_string(),
+            owner_removed: false,
         });
     }
 
@@ -349,6 +356,11 @@ pub fn diff(
         file,
         d: ImportDiff::default(),
     };
+    // What the owner removed for good stays out, however the file lists it.
+    let gone: Vec<&SourceItem> = prev
+        .iter()
+        .filter(|i| i.owner_removed && i.step_no.is_none())
+        .collect();
     let prev: Vec<&SourceItem> = prev
         .iter()
         .filter(|i| i.status != NodeStatus::Dropped)
@@ -375,6 +387,18 @@ pub fn diff(
     for (t, matched) in parsed.tasks.iter().zip(&pairs) {
         if let Some(item) = matched {
             b.existing_task(t, item);
+        } else if let Some(g) = gone
+            .iter()
+            .find(|g| same_title(&g.title, &t.title) || g.task_no == t.number)
+        {
+            b.d.skipped_removed += 1;
+            b.d.items.push(ItemLink {
+                task_no: t.number,
+                step_no: None,
+                node_id: g.node_id.clone(),
+                title: g.title.clone(),
+                owner_removed: true,
+            });
         } else {
             let id = if crate::plan::track::is_goal_id(&container) {
                 crate::plan::track::raw(crate::plan::track::track_of(&container), &next.to_string())

@@ -20,6 +20,9 @@ pub struct ImportedItem {
     pub step: Option<u32>,
     pub node_id: String,
     pub title: String,
+    /// The owner removed this task for good; the file can't bring it back.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub owner_removed: bool,
 }
 
 /// A plan file was imported: its tasks and steps are now these nodes.
@@ -111,15 +114,16 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
             for item in &d.items {
                 tx.execute(
                     "INSERT OR REPLACE INTO plan_source_items (repo_id, path, task_no, step_no,
-                                                             node_id, title)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                                                             node_id, title, owner_removed)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                     params![
                         repo,
                         d.path,
                         item.task,
                         item.step.unwrap_or(0),
                         item.node_id,
-                        item.title
+                        item.title,
+                        item.owner_removed
                     ],
                 )?;
                 let source = NodeSource::File {

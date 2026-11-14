@@ -35,6 +35,8 @@ pub enum ClearedWhy {
     Owner,
     /// It became a plan link (`promote_wait`).
     Promoted,
+    /// Its target task was removed from the plan.
+    TargetRemoved,
 }
 
 impl ClearedWhy {
@@ -44,6 +46,7 @@ impl ClearedWhy {
             Self::Agent => "agent",
             Self::Owner => "owner",
             Self::Promoted => "promoted",
+            Self::TargetRemoved => "target_removed",
         }
     }
 
@@ -53,6 +56,7 @@ impl ClearedWhy {
             "agent" => Some(Self::Agent),
             "owner" => Some(Self::Owner),
             "promoted" => Some(Self::Promoted),
+            "target_removed" => Some(Self::TargetRemoved),
             _ => None,
         }
     }

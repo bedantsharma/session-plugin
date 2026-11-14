@@ -211,6 +211,28 @@ pub fn summarize(kind: &str, d: &Value, session: &str, task: Option<&TaskLabel>)
             None => format!("Edited {} in the plan", t.to_lowercase_first()),
         },
         "node_moved" => format!("Moved {} in the plan", t.to_lowercase_first()),
+        "node_removed" if d.get("by_owner").and_then(Value::as_bool) == Some(true) => {
+            let was = str_of(d, "was")
+                .and_then(crate::plan::NodeStatus::parse)
+                .map(|s| format!(" (it was {})", crate::owner::state_phrase(s)))
+                .unwrap_or_default();
+            if str_of(d, "id").is_some_and(crate::plan::track::is_goal_id) {
+                match task {
+                    Some(l) if !l.title.is_empty() => {
+                        format!("You removed the track '{}' for good", l.title)
+                    }
+                    _ => "You removed a track for good".to_string(),
+                }
+            } else {
+                match task {
+                    Some(l) if !l.title.is_empty() => {
+                        format!("You removed task {} '{}' for good{was}", l.shown, l.title)
+                    }
+                    Some(l) => format!("You removed task {} for good{was}", l.shown),
+                    None => format!("You removed a task for good{was}"),
+                }
+            }
+        }
         "node_removed" => format!("Removed {} from the plan", t.to_lowercase_first()),
         "dep_added" => format!("{t} now waits for another task"),
         "dep_removed" => format!("{t} no longer waits for another task"),

@@ -188,6 +188,20 @@ pub fn would_cycle_across(
     Ok(reaches > 0)
 }
 
+/// `root` and every node under it, removed ones included.
+pub fn subtree_ids(conn: &Connection, repo_id: &str, root: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare_cached(
+        "WITH RECURSIVE sub(id) AS (
+             SELECT ?2
+             UNION ALL
+             SELECT n.id FROM plan_nodes n JOIN sub ON n.parent_id = sub.id
+             WHERE n.repo_id = ?1)
+         SELECT id FROM sub",
+    )?;
+    let rows = stmt.query_map(params![repo_id, root], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// Is `candidate` equal to `root` or one of its descendants?
 pub fn is_in_subtree(
     conn: &Connection,
