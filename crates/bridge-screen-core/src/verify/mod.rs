@@ -289,9 +289,13 @@ pub fn review_saved(conn: &Connection, repo_id: &str, task_id: &str) -> Result<b
     if !claim.files.is_empty() {
         return Ok(current_level(conn, repo_id, task_id)? >= 1);
     }
-    let text = claim.evidence.trim();
-    Ok(text.split_whitespace().count() >= REVIEW_MIN_WORDS
-        && text.chars().count() >= REVIEW_MIN_CHARS)
+    Ok(review_text_is_real(&claim.evidence))
+}
+
+/// Is a claim's summary a real review result (not a one-liner)?
+pub fn review_text_is_real(evidence: &str) -> bool {
+    let text = evidence.trim();
+    text.split_whitespace().count() >= REVIEW_MIN_WORDS && text.chars().count() >= REVIEW_MIN_CHARS
 }
 
 /// Set a task's plan status from its verifications and claims (never a dropped node):

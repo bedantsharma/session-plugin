@@ -131,6 +131,46 @@ fn project_tree_scope_line_and_replans() {
 }
 
 #[test]
+fn scope_line_counts_a_saved_review_as_done() {
+    let mut s = store();
+    ev(
+        &mut s,
+        "owner",
+        10,
+        "node_edited",
+        json!({"id": "1.1", "check": "review"}),
+    );
+    // A one-liner is not a saved review.
+    ev(
+        &mut s,
+        "s1",
+        20,
+        "claimed_done",
+        json!({"task_id": "1.1", "evidence": "done"}),
+    );
+    ev(
+        &mut s,
+        "s1",
+        30,
+        "claimed_done",
+        json!({"task_id": "1.1", "evidence": "Reviewed the login flow end to end and wrote down every finding, with the fixes proposed for each one of them."}),
+    );
+    let p = project(s.conn(), "r", at(200)).unwrap();
+    let last = p.scope.last().unwrap();
+    assert_eq!((last.total_min, last.done_min), (60, 30));
+    // Matches the live status the rest of the screens use.
+    let status: String = s
+        .conn()
+        .query_row("SELECT status FROM plan_nodes WHERE id = '1.1'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(status, "reviewed");
+    let before: Vec<u64> = p.scope.iter().map(|p| p.done_min).collect();
+    assert_eq!(before.iter().filter(|d| **d == 30).count(), 1, "{before:?}");
+}
+
+#[test]
 fn scope_lines_are_downsampled_evenly() {
     let pts: Vec<usize> = (0..1000).collect();
     let d = downsample(pts, SCOPE_MAX_POINTS);

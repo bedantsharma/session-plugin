@@ -543,6 +543,14 @@ struct Replayed {
     kind: String,
     estimate: u64,
     dropped: bool,
+    /// Checked by review, not tests.
+    review: bool,
+}
+
+/// The newest claim of a task, as the scope replay needs it for review tasks.
+struct ReplayClaim {
+    has_files: bool,
+    real_text: bool,
 }
 
 /// The plan and its verifications, replayed event by event.
@@ -551,6 +559,8 @@ struct Replay {
     nodes: BTreeMap<String, Replayed>,
     /// verif_id → (task, level, still counts)
     verifs: HashMap<String, (String, i64, bool)>,
+    /// task → its newest claim
+    claims: HashMap<String, ReplayClaim>,
 }
 
 impl Replay {
@@ -566,6 +576,24 @@ impl Replay {
                         kind: text("kind").unwrap_or_else(|| "task".into()),
                         estimate: d["estimate_min"].as_u64().unwrap_or(0),
                         dropped: false,
+                        review: d["check"].as_str() == Some("review"),
+                    },
+                );
+            }
+            "node_edited" => {
+                if let (Some(n), Some(c)) = (self.nodes.get_mut(&id), d["check"].as_str()) {
+                    n.review = c == "review";
+                }
+            }
+            "claimed_done" => {
+                let task = d["task_id"].as_str().unwrap_or("").to_string();
+                self.claims.insert(
+                    task,
+                    ReplayClaim {
+                        has_files: d["files"].as_array().is_some_and(|f| !f.is_empty()),
+                        real_text: crate::verify::review_text_is_real(
+                            d["evidence"].as_str().unwrap_or(""),
+                        ),
                     },
                 );
             }
@@ -626,12 +654,28 @@ impl Replay {
 
     /// (total live estimate, the part at L2 or above).
     fn totals(&self, runs: &crate::plan::runs::AllRuns) -> (u64, u64) {
-        let done: HashSet<&str> = self
+        let mut done: HashSet<&str> = self
             .verifs
             .values()
             .filter(|(_, level, counts)| *counts && *level >= 2)
             .map(|(task, _, _)| task.as_str())
             .collect();
+        // A review task whose result is saved counts as done (the shared rule).
+        for (id, n) in self.nodes.iter().filter(|(_, n)| n.review) {
+            let Some(claim) = self.claims.get(id) else {
+                continue;
+            };
+            let saved = if claim.has_files {
+                self.verifs
+                    .values()
+                    .any(|(t, level, counts)| t == id && *counts && *level >= 1)
+            } else {
+                claim.real_text
+            };
+            if saved && !n.dropped {
+                done.insert(id.as_str());
+            }
+        }
         let parents: HashSet<&str> = self
             .nodes
             .values()
@@ -662,7 +706,8 @@ impl Replay {
 pub fn scope_line(conn: &Connection, repo: &str) -> Result<Vec<ScopePoint>> {
     let mut stmt = conn.prepare(
         "SELECT ts, kind, data FROM events WHERE repo_id = ?1 AND kind IN (
-           'node_added', 'node_removed', 'node_moved', 'estimate_set', 'verified',
+           'node_added', 'node_edited', 'claimed_done', 'node_removed', 'node_moved',
+           'estimate_set', 'verified',
            'verification_failed', 'verification_stale') ORDER BY pos",
     )?;
     let rows = stmt.query_map([repo], |r| {
