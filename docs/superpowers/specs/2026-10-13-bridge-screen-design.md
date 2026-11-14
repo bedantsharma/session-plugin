@@ -616,3 +616,11 @@ The name `bridge-screen` was unclaimed on PyPI, crates.io, npm and Homebrew on 2
 - The Svelte frontend is built before the Rust build so the assets are embedded.
 - The plugin manifest's `version` is bumped from the same tag.
 
+---
+
+**Addendum 2026-11-14 — tracks, hiding, removing, no-test tasks, Back.** New event kinds (`track_closed`,
+`track_reopened`, `hidden`, `unhidden`, optional `check`, `track`, `by_owner`, `target_removed`) extend §5.2;
+§10.1 gains one bar per track, the Hidden drawer and hash routes; §11.2 gains `start_track` and the `check`
+field; §12.1 stops importing step checkboxes as tasks. See
+`docs/superpowers/specs/2026-11-14-tracks-hide-review-design.md`.
+

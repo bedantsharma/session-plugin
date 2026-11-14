@@ -212,3 +212,39 @@ Choices someone will later ask "why?" about. Newest last. Entries are never dele
 **Context:** The crates.io route needed a licence file (#37), and that change broke the release itself: dist reads an inherited `license-file` as `../../LICENSE.md` from the repo root and failed all six program builds for v0.1.2 and v0.1.3, so neither got a GitHub release (no downloads, no Homebrew update, and fresh plugin installs from main pointed at a release that didn't exist). crates.io had also taken only part of v0.1.3 (the core library without the program). The owner chose to drop crates.io for now rather than keep patching its requirements.
 **Decision:** No crates.io publishing: the crates workflow is removed, the `cargo install bridge-screen` lines are gone from the README and the launcher's message, and the licence is again `license = "PolyForm-Strict-1.0.0"`. A test (`crates_name_their_licence_by_string`) fails if `license-file` comes back, and `docs/RELEASING.md` says why and adds a local `dist build` to the checklist (the plan check can't see the copy step). The work ships as 0.1.4 on the other routes.
 **Consequences:** The crates already published (core 0.1.2 and 0.1.3, program 0.1.2) can't be deleted; `cargo yank` would stop new users picking them up, left to the owner. `cargo install` from source still works. Spec §16.1's crates.io row is out of date. 0.1.2 and 0.1.3 stay as public tags with no GitHub release.
+
+## #43 Work no test can check counts as done once its result is saved ("done — no tests") — Accepted; owner decided 2026-11-14 — 2026-11-14
+**Context:** Research, planning, writing and tidying plan files can't be tested, so they could never reach "done": the bar never filled and the owner was nudged about them for ever.
+**Decision:** A task has a way of being checked: tests (the default) or review. A review task counts as done everywhere as soon as its result is saved: its named files are committed, or it has no files and its summary is a real one (at least 10 words and 60 characters). It reads "done — no tests", never as a pretend "tests pass", is never nudged or marked out of date, and its real time teaches the forecast like any finished task. You can still mark it broken or sign it off. Agents set it when they create or edit a task; switching needs a reason, and is refused once you marked the task broken or tests already passed it, so an agent can't dodge a failing test.
+**Consequences:** Progress can include work nobody checked by running anything; the bar says how many tasks count this way. A repo of mostly writing tasks can skew the "how long things take" ratio (open question 1 of the design, settled: they count).
+
+## #44 A folder can hold several tracks; track numbers are never reused — Accepted; owner decided 2026-11-14 — 2026-11-14
+**Context:** One folder is not always one plan; unrelated work shared one bar.
+**Decision:** A track is a goal with its own bar, runs and numbering from 1. Track 1 keeps every id it ever had; track 2 and up use a prefix on the same ids (`T2-1.3`), so the track is read from the id alone and every tool still takes one id. The owner reads numbers per track (the prefix dropped), with the real id in small text. Track numbers are never reused, even after a track is removed. Only the owner starts a track without a question: an agent that finds an open track must ask and pass your words (`start_track`); finishing and reopening are yours.
+**Consequences:** Old plans are track 1 unchanged. With several tracks the project shows one bar each and no single big percentage; the pooled figure feeds the status line and the tab.
+
+## #45 Runs and forecasts are per track — Accepted — 2026-11-14
+**Context:** Two tracks sharing one person-day would double-count if forecast together.
+**Decision:** A run belongs to a track (`run_closed` and `forecast_ran` carry the track; none means track 1). Each track's forecast takes what is left of that track at the pace that track actually had; how long tasks really took stays repo-wide.
+**Consequences:** A track nobody worked on lately says so instead of showing a date.
+
+## #46 Hiding is a stamp, not a timer; hiding never changes a number — Accepted; owner decided 2026-11-14 — 2026-11-14
+**Context:** The front screen needed tidying without losing anything.
+**Decision:** You can hide a card, a track's bar or a whole project. Each carries a stamp: the position of the newest event that counts as "something new" for it. Hidden things sit in a Hidden drawer; one comes back by itself only when its stamp moves (the agent asks again, a task is claimed, a session starts). No clock, so a rebuild replays it the same way. Only what is on screen is counted in "3 need you · 2 hidden"; progress, forecasts, task counts and cost never change. Agents and the desktop card can't hide.
+**Consequences:** A hidden project's sessions still count as live.
+
+## #47 "Remove for good" is the owner's, behind a confirm, and a plan file can't undo it — Accepted; owner decided 2026-11-14 — 2026-11-14
+**Context:** Abandoned work sat in the bars, the queue and the forecast for ever.
+**Decision:** You can remove a task, a milestone or a whole track after a plain-words question (what goes, how much is done, who is working on it). It is the same removal agents already had, marked as yours; for everyone, removing also clears its reminders, ends waits on it and releases sessions holding it. Plan files can't bring owner-removed work back (the link remembers); a task the importer itself retired comes back if the file lists it again. The history keeps a record, and the money already spent stays in the cost.
+**Consequences:** Not undoable from the dashboard. Finished removed tasks keep teaching the forecast.
+
+## #48 The dashboard's Back button works: hash routes — Accepted — 2026-11-14
+**Context:** Back and the two-finger swipe left the dashboard because it never told the browser it changed screens.
+**Decision:** Every screen has an address after `#` (`#/project/<repo>`, …) and each change adds a history entry; no new server routes, so the single page and the token flow stay. A reload keeps the screen; a page that no longer exists says so.
+**Consequences:** The `#token=` handling keeps any route in front of it.
+
+## #49 Step checkboxes in plan files are not tasks — Accepted; owner decided 2026-11-14 — 2026-11-14
+**Context:** Importing a plan turned every step checkbox into a subtask (13–59 per file), drowning the real counts.
+**Decision:** A plan file's task is the unit. Step checkboxes are read only for their ticks: a task whose steps are all ticked is recorded as claimed done; partly ticked changes nothing. The next import of a file drops the step subtasks an older import made (a step that really passed tests is kept and named).
+**Consequences:** No manual clean-up; the dry run lists what would be dropped.
+

@@ -83,3 +83,30 @@ and cost lines, "drift ⚠ 40m", "tuned drift .35–.65, tolerance 25%".
 | Project row (dashboard, status) | — | "Run finished — 100%, 5 tasks" (done colour; row sits below active projects) |
 | Project page | — | "Run 2" next to the name · "Completed runs" (Run 1: Core · finished 2026-10-20 · 5 tasks · 100%) · ids read `1.1` with the real id `(3.1)` in small muted text |
 | History panel | raw event name and JSON on every row; a free-text "kind" box | one sentence per row, e.g. "Task 4 (Login form) claimed by session a1b2c3", "Task 4 (Login form) passed its tests", "Plan edited: 3 changes (scope grew)"; the task's number and title; a "details" button for the raw data; a menu "All kinds of event" with plain labels ("Checked and passed", "Task claimed", …); an unknown kind reads as its name in words |
+
+## Tracks, hiding, removing, no-test tasks and Back (2026-11-14)
+
+| Where it appears | Before | Now |
+|---|---|---|
+| A task done without tests (project page, task page, status) | — | "done — no tests" (a muted ✓); the bar caption says "includes 3 tasks done without tests" |
+| Task page, a review task | — | "Checked by: Review, not tests: done once its result is saved" |
+| Task page and each task row, a task said done | buttons only after two ignored reminders | **✓ Works** / **✗ Broken** (asks "what's wrong") |
+| Agent's `claim_done` reply for a review task | — | "This task is checked by review, not tests: its result is saved, so it counts as done." or "… it counts as done once its result is saved. Commit the files you named, or add a fuller summary (at least 10 words) with claim_done." |
+| Switching a task to review, refused | — | "switching a task to review needs a reason: say why no test can check it" · "… was marked broken by the owner, so it can't be switched to review; fix it and claim it done again" · "… already passed tests, so it stays checked by tests" |
+| Starting a track while one is open (agent) | — | "this folder already has track 1 'Ship it'. Ask the owner: continue one of them, or start a new track? Pass what they said in owner_said; nothing was started." |
+| A second goal through `plan_edit` | "the plan already has a goal (G)" | "this folder already has track 1 'Ship it' (goal G); to start another track, ask the owner and use start_track" |
+| Adding work to a finished track | — | "track 'Docs refresh' is finished, so nothing can be added to it; ask the owner to reopen it" |
+| Finishing a track, refused | — | "can't finish track 'Docs refresh' yet: 2 of 7 tasks aren't done (1.2 Login, …). If the rest was abandoned, remove it first; nothing was changed." |
+| Finishing / reopening / starting a track | — | "Finished track 2 'Docs refresh'. It leaves the front screen and sits under "Finished tracks"; you can reopen it." · "Reopened track 2 'Docs refresh'." · "Started track 2 'Docs refresh' (goal T2-G). Its tasks read T2-1, T2-1.1, … and restart from 1." |
+| Closing a run with several tracks | — | "this folder has several tracks: say which one (track 1 'Ship it', track 2 'Docs'); nothing was closed" |
+| Project card with 2+ tracks | one big percentage | one bar per track ("Track 2 · Docs refresh · 10%"), no single big percentage; "2 tracks" under the name |
+| Hide (card, bar, project) | — | button **Hide** on a card, "Hide this track" / "Hide this project" in the ⋯ menu · "Hid 'label'. It sits under "Hidden" and comes back by itself when something new happens to it; the numbers did not change." · stale: "something new just happened, so it was not hidden; have another look" |
+| Header | "3 need you" | "3 need you · 2 hidden" and a **Hidden (2)** button; all clear says "All clear · 1 hidden" |
+| Hidden drawer | — | "Hidden (n)" · "These stay out of the way until something new happens to them. Hiding never changes a number." · each row: label, project, "hidden 1h ago", **Bring back** · "Brought back 'label'." · "it isn't hidden any more; nothing changed" |
+| Remove for good (dashboard, `bridge-screen remove`) | — | question: "Remove the track 'Docs refresh' for good? 7 tasks, 2 done. 1 session is working on it. It leaves the bars, the queue and the forecast and can't be brought back from the dashboard. The history keeps a record." · buttons **Remove for good** (off until the tick "I understand this can't be undone from the dashboard") / **Keep it** · "Removed task 1.2 'Login form' (it was claimed, not checked). It has left the bars, the queue and the forecast." · "removing is for good: confirm it first; nothing was removed" · "already gone: 1.2 was removed before; nothing changed" · "1.2 changed since you looked: it is now '…'; nothing was removed" |
+| Plan file of removed work | — | "Skipped login: you removed what it was imported into, so it stays out" |
+| Import, step checkboxes | "added 5 tasks and steps; 1 ticked step recorded as claimed" | "added 2 tasks; 1 finished task recorded as claimed (not checked); dropped 45 step items (steps are not tasks)" · "kept step 3.2 because it passed its tests" |
+| Import, several tracks | — | "x could belong to more than one track (track 1 'A', track 2 'B'), so nothing was imported; run `bridge-screen import --track <number> <file>` to place it." · "track 7 isn't open; open tracks: …" |
+| History | — | "Track started: Docs refresh" · "Task 2.1 (Vendor survey) changed to: no tests possible — it is research" · "You removed task 1.2 'Login form' for good (it was claimed, not checked)" · "You hid something from the front screen" · "You brought something back to the front screen" · "A track was finished" · "A finished track was reopened" |
+| Browser, a page that no longer exists | an empty or error page | "That page is gone." (and the glance takes its place in the history) |
+| Status line | — | `track 1 Ship it  · done 40% · claimed 0%` under a project with 2+ open tracks; "2 need you · 1 hidden (`bridge-screen hidden` lists them)" |
