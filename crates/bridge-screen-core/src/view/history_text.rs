@@ -278,10 +278,7 @@ pub fn summarize(kind: &str, d: &Value, session: &str, task: Option<&TaskLabel>)
             Some("fresh") => "You chose to count progress from now".to_string(),
             _ => "You said which plan files are already finished".to_string(),
         },
-        "hidden" => match str_of(d, "label") {
-            Some(l) => format!("You hid '{}' from the front screen", clip(l, 60)),
-            None => "You hid something from the front screen".to_string(),
-        },
+        "hidden" => "You hid something from the front screen".to_string(),
         "unhidden" => "You brought something back to the front screen".to_string(),
         "track_closed" => "A track was finished".to_string(),
         "track_reopened" => "A finished track was reopened".to_string(),
