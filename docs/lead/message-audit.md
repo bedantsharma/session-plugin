@@ -110,3 +110,4 @@ and cost lines, "drift ⚠ 40m", "tuned drift .35–.65, tolerance 25%".
 | History | — | "Track started: Docs refresh" · "Task 2.1 (Vendor survey) changed to: no tests possible — it is research" · "You removed task 1.2 'Login form' for good (it was claimed, not checked)" · "You hid something from the front screen" · "You brought something back to the front screen" · "A track was finished" · "A finished track was reopened" |
 | Browser, a page that no longer exists | an empty or error page | "That page is gone." (and the glance takes its place in the history) |
 | Status line | — | `track 1 Ship it  · done 40% · claimed 0%` under a project with 2+ open tracks; "2 need you · 1 hidden (`bridge-screen hidden` lists them)" |
+| History, a review task's claim | "Session ab12cd says task 2.1 is done (not checked yet)" | "Review saved for Task 2.1 (Vendor survey)" (summary is a real one), or "Review of Task 2.1 (…) written to files (saved once they are committed)" |
