@@ -211,7 +211,7 @@
           {@const parent = parents.has(n.id)}
           <li class="border-b border-line last:border-b-0" data-node={n.id}>
             <Collapsible.Root bind:open={() => !!intentOpen[n.id], (v) => (intentOpen[n.id] = v)}>
-              <div class="flex min-h-10 items-center gap-2 py-1.5">
+              <div class="flex min-h-10 flex-wrap items-center gap-2 py-1.5 sm:flex-nowrap">
                 <!-- Indent guides: one 20 px step per level. -->
                 {#each Array.from({ length: n.depth }, (_, i) => i) as i (i)}
                   <span
@@ -330,7 +330,7 @@
                   <OwnerButtons actions={n.actions} {act} />
                 {/if}
                 {#if n.remove}
-                  <RowMenu label={`More for ${n.title}`}>
+                  <RowMenu label={`Menu for step ${n.shown}`}>
                     {#snippet children(close)}
                       <button
                         type="button"

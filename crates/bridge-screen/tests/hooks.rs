@@ -1609,8 +1609,9 @@ fn hook_latency_five_open_tracks() {
         )
         .unwrap();
     }
+    // The repo already has a hand-made plan, so the files are noted as a baseline at the
+    // first start and only stat'ed afterwards.
     env.hook("session-start", "first-start");
-    assert!(env.run(&["import", "--fresh"], "").status.success());
     let starts = (0..40)
         .map(|i| {
             let payload =

@@ -38,10 +38,6 @@
     nav.go(next)
     screen = next
   }
-  /** "← Glance": one step back when the dashboard's own entry is before this one. */
-  function goBack() {
-    if (!nav.back()) screen = { kind: 'glance' }
-  }
   let showAll = $state(false)
   let allProjects = $state(false)
   let allSessions = $state(false)
@@ -149,7 +145,7 @@
       <button
         type="button"
         class="-ml-2 inline-flex h-9 items-center rounded-lg px-2 text-sm font-medium text-muted hover:bg-hover hover:text-fg"
-        onclick={goBack}>← Glance</button
+        onclick={() => go({ kind: 'glance' })}>← Glance</button
       >
     </nav>
     <div class="flex flex-col gap-8">

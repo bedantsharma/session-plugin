@@ -30,7 +30,7 @@ describe('TrackBar', () => {
   it('the menu hides the bar with the stamp the screen saw', async () => {
     const act = vi.fn(async () => ok())
     render(TrackBar, { track: track(2), repo: 'r1', act })
-    await userEvent.click(screen.getByRole('button', { name: 'More for track 2' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Menu for track 2' }))
     await userEvent.click(screen.getByRole('menuitem', { name: 'Hide this track' }))
     expect(act).toHaveBeenCalledWith({
       kind: 'hide',
@@ -44,7 +44,7 @@ describe('TrackBar', () => {
   it('the menu finishes a track', async () => {
     const act = vi.fn(async () => ok())
     render(TrackBar, { track: track(2), repo: 'r1', act })
-    await userEvent.click(screen.getByRole('button', { name: 'More for track 2' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Menu for track 2' }))
     await userEvent.click(screen.getByRole('menuitem', { name: 'Finish track' }))
     expect(act).toHaveBeenCalledWith({ kind: 'close_track', repo: 'r1', track: 2 })
   })
@@ -74,7 +74,7 @@ describe('ProjectRow with tracks', () => {
         }) as ActResult,
     )
     render(ProjectRow, { project: project(), act })
-    await userEvent.click(screen.getByRole('button', { name: 'More for shop' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Project menu' }))
     await userEvent.click(screen.getByRole('menuitem', { name: 'Hide this project' }))
     expect(await screen.findByText(/something new just happened/)).toBeInTheDocument()
     expect(act).toHaveBeenCalledWith({

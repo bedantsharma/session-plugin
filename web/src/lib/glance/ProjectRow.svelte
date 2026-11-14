@@ -86,7 +86,7 @@
         </div>
       {/if}
       {#if act}
-        <RowMenu label={`More for ${project.name}`}>
+        <RowMenu label="Project menu">
           {#snippet children(close)}
             <button
               type="button"

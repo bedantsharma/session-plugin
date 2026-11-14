@@ -74,7 +74,7 @@
         {/if}
       </div>
       {#if act}
-        <RowMenu label={`More for track ${track.track}`}>
+        <RowMenu label={`Menu for track ${track.track}`}>
           {#snippet children(close)}
             <button
               type="button"
