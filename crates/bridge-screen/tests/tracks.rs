@@ -426,3 +426,19 @@ fn status_tool_prints_each_track() {
     );
     assert!(text.contains("T2-1.1 Readme rewrite"), "{text}");
 }
+
+#[test]
+fn status_lists_tracks() {
+    let env = two_track_env();
+    env.hook("session-start", "s1");
+    let text = stdout(&env.run(&["status"], ""));
+    assert!(
+        text.contains("  track 1 Ship it") && text.contains("  track 2 Docs refresh"),
+        "{text}"
+    );
+    // Hiding one bar says so and the line disappears.
+    assert!(env.run(&["hide", "track", "2"], "").status.success());
+    let text = stdout(&env.run(&["status"], ""));
+    assert!(!text.contains("  track 2 Docs refresh"), "{text}");
+    assert!(text.contains("1 track hidden"), "{text}");
+}

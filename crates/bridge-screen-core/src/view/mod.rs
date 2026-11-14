@@ -130,6 +130,35 @@ pub struct ProjectRow {
     /// What "Hide" sends for this project and the stamp the screen saw.
     pub subject: String,
     pub stamp: i64,
+    /// One bar per open track the owner has not hidden. With exactly one open track every
+    /// field above describes that track; with several they are the pooled figures (the
+    /// status line and the tab use them; the project header shows the bars instead).
+    pub tracks: Vec<TrackRow>,
+    /// Open tracks the owner hid from this project (their bars sit in the drawer).
+    pub hidden_tracks: usize,
+    /// Tasks counted as done without tests (review tasks with a saved result).
+    pub reviewed_tasks: usize,
+}
+
+/// One open track on the glance: its own goal, bar, run and forecast.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TrackRow {
+    /// Its number (1 for the plan every old repo has).
+    pub track: u32,
+    pub goal: NodeRef,
+    pub goal_status: crate::plan::Rollup,
+    pub done_pct: u32,
+    pub claimed_pct: u32,
+    /// "includes 3 tasks done without tests".
+    pub reviewed_tasks: usize,
+    pub run: RunRow,
+    pub unestimated: usize,
+    pub milestones: Vec<MilestoneRow>,
+    /// This track's forecast, at the pace this track had.
+    pub forecast: Option<ForecastRow>,
+    /// What "Hide" on the bar sends and the stamp the screen saw.
+    pub subject: String,
+    pub stamp: i64,
 }
 
 /// The current run of a project (spec §10.1).
@@ -153,8 +182,7 @@ pub struct RunFinished {
 }
 
 /// The run of a repo as the glance shows it.
-fn run_row(conn: &Connection, repo_id: &str) -> Result<RunRow> {
-    let primary = crate::plan::track::primary(conn, repo_id)?;
+fn run_row(conn: &Connection, repo_id: &str, primary: u32) -> Result<RunRow> {
     let runs = crate::plan::runs::load(conn, repo_id, primary)?;
     let state = crate::plan::runs::state(conn, repo_id, primary)?;
     let tasks = if state.tasks > 0 && state.unverified == 0 {
@@ -1615,6 +1643,7 @@ fn apply_hides(
 /// What `glance` knows about one repo before its project row is built.
 struct ProjectBits<'a> {
     repo_id: &'a str,
+    hidden_tracks: HashSet<u32>,
     name: String,
     needs_you: usize,
     sessions: Vec<SessionRow>,
@@ -1631,8 +1660,36 @@ fn project_row(
 ) -> Result<ProjectRow> {
     let repo_id = bits.repo_id;
     let tree = crate::plan::runs::open_run_tree(conn, repo_id)?;
-    let run = run_row(conn, repo_id)?;
     let primary = crate::plan::track::primary(conn, repo_id)?;
+    let open = crate::plan::track::open_tracks(conn, repo_id)?;
+    let mut run = run_row(conn, repo_id, primary)?;
+    if open.len() > 1 {
+        // The project is finished only when every open track is.
+        let mut tasks = 0;
+        let mut all_finished = true;
+        for t in &open {
+            match run_row(conn, repo_id, t.no)?.finished {
+                Some(f) => tasks += f.tasks,
+                None => all_finished = false,
+            }
+        }
+        run.finished = all_finished.then(|| RunFinished {
+            tasks,
+            text: format!(
+                "Run finished — 100%, {tasks} task{}",
+                if tasks == 1 { "" } else { "s" }
+            ),
+        });
+    }
+    let mut tracks = Vec::new();
+    let mut hidden_tracks = 0;
+    for t in &open {
+        if bits.hidden_tracks.contains(&t.no) {
+            hidden_tracks += 1;
+            continue;
+        }
+        tracks.push(track_row(conn, repo_id, t, open.len() == 1, now)?);
+    }
     let goal = get_node(conn, repo_id, &crate::plan::track::goal_id(primary))?
         .filter(|g| g.status != NodeStatus::Dropped)
         .map(|g| NodeRef {
@@ -1678,6 +1735,51 @@ fn project_row(
         sessions: bits.sessions,
         subject: crate::hide::project_subject(repo_id),
         stamp: bits.stamp,
+        tracks,
+        hidden_tracks,
+        reviewed_tasks: p.reviewed_tasks,
+    })
+}
+
+/// The bar of one open track.
+fn track_row(
+    conn: &Connection,
+    repo_id: &str,
+    t: &crate::plan::track::Track,
+    only_track: bool,
+    now: Timestamp,
+) -> Result<TrackRow> {
+    let tree = crate::plan::runs::run_tree(conn, repo_id, t.no)?;
+    let run = run_row(conn, repo_id, t.no)?;
+    let p = verify::progress(conn, repo_id, t.no)?;
+    let goal_status = crate::plan::rollups(&tree)
+        .get(&t.goal_id)
+        .copied()
+        .unwrap_or(crate::plan::Rollup::Todo);
+    let finished = run.finished.is_some();
+    Ok(TrackRow {
+        track: t.no,
+        goal: NodeRef {
+            shown: t.goal_id.clone(),
+            id: t.goal_id.clone(),
+            title: t.title.clone(),
+        },
+        goal_status,
+        done_pct: if finished { 100 } else { p.done_pct },
+        claimed_pct: if finished { 0 } else { p.claimed_pct },
+        reviewed_tasks: p.reviewed_tasks,
+        unestimated: p.unestimated,
+        milestones: milestones(conn, repo_id, &tree)?,
+        // With one open track its forecast is the project's (nothing looks different from
+        // before); with several, each is read at its own pace.
+        forecast: Some(if only_track {
+            forecast_row(conn, repo_id, now)?
+        } else {
+            forecast_row_track(conn, repo_id, t.no, now)?
+        }),
+        subject: crate::hide::track_subject(repo_id, t.no),
+        stamp: crate::hide::stamp_of_track(conn, repo_id, t.no)?,
+        run,
     })
 }
 
@@ -1711,7 +1813,7 @@ pub fn glance(conn: &Connection, cfg: &Config, now: Timestamp) -> Result<Glance>
         let hiding = apply_hides(conn, &repo_id, &name, now, &mut items)?;
         let project_hidden = hiding.project_hidden;
         let project_stamp = hiding.project_stamp;
-        hidden.extend(hiding.items);
+        hidden.extend(hiding.items.clone());
         if project_hidden {
             continue;
         }
@@ -1720,6 +1822,7 @@ pub fn glance(conn: &Connection, cfg: &Config, now: Timestamp) -> Result<Glance>
             cfg,
             ProjectBits {
                 repo_id: &repo_id,
+                hidden_tracks: hiding.hidden_tracks,
                 name,
                 needs_you: items.len(),
                 sessions: rows,

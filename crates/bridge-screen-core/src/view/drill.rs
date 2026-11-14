@@ -37,8 +37,11 @@ pub const HISTORY_DATA_MAX: usize = 2048;
 pub struct TreeNode {
     /// The raw id agents and the CLI use (`3.1`).
     pub id: String,
-    /// The id as the owner reads it: numbers restart in each run (`1.1`).
+    /// The id as the owner reads it: the track prefix dropped, numbers restart in each run
+    /// (`1.1`).
     pub shown: String,
+    /// The track it belongs to (1 for a plan without tracks).
+    pub track: u32,
     pub parent_id: Option<String>,
     pub kind: NodeKind,
     pub title: String,
@@ -148,11 +151,12 @@ pub struct Replan {
 }
 
 /// The project drill-down.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ProjectDrill {
     pub repo_id: String,
     pub name: String,
-    /// The current run (spec §10.1): what the progress numbers count.
+    /// The current run (spec §10.1) of the track a single-plan screen shows (the lowest
+    /// open one): what its progress numbers count.
     pub tree: Vec<TreeNode>,
     /// Which run `tree` is (1 for the first).
     pub run_number: u32,
@@ -162,6 +166,44 @@ pub struct ProjectDrill {
     pub replans: Vec<Replan>,
     /// The current run is finished and can be closed with "Close this run".
     pub can_close_run: bool,
+    /// One section per open track: its goal, bar, forecast, plan tree and completed runs.
+    pub tracks: Vec<TrackSection>,
+    /// Tracks the owner finished, with a "Reopen" button.
+    pub finished_tracks: Vec<FinishedTrack>,
+}
+
+/// One open track on the project page.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TrackSection {
+    pub track: u32,
+    pub goal: super::NodeRef,
+    pub done_pct: u32,
+    pub claimed_pct: u32,
+    /// "includes 3 tasks done without tests".
+    pub reviewed_tasks: usize,
+    pub unestimated: usize,
+    pub forecast: Option<super::ForecastRow>,
+    pub run_number: u32,
+    /// The track's current run, goal first; every row carries the display id (the prefix
+    /// dropped, numbers from 1) and the raw id.
+    pub tree: Vec<TreeNode>,
+    /// "Completed runs" of this track.
+    pub completed_runs: Vec<CompletedRun>,
+    pub can_close_run: bool,
+    /// "Finish this track" (refused in words while a task is neither done nor removed).
+    pub finish: Option<super::ActionSpec>,
+    /// "Remove for good" for the whole track.
+    pub remove: Option<RemoveSpec>,
+}
+
+/// A finished track under "Finished tracks".
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FinishedTrack {
+    pub track: u32,
+    pub goal: super::NodeRef,
+    pub done_pct: u32,
+    pub reopen: super::ActionSpec,
+    pub remove: Option<RemoveSpec>,
 }
 
 /// A run that was closed after every task passed its tests.
@@ -259,25 +301,28 @@ fn replans(conn: &Connection, repo: &str) -> Result<Vec<Replan>> {
         .collect::<rusqlite::Result<_>>()?)
 }
 
-#[allow(clippy::too_many_lines)] // one pass over the plan per run; split in the per-track page
-pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectDrill> {
-    let _ = now;
-    let marks = verify::plan_marks(conn, repo)?;
-    let actual = actual_minutes(conn, repo)?;
-    let decisions = decision_counts(conn, repo)?;
-    let primary = crate::plan::track::primary(conn, repo)?;
-    let runs = crate::plan::runs::load(conn, repo, primary)?;
-    let every_run = crate::plan::runs::load_all(conn, repo)?;
-    let all = load_tree(conn, repo, false)?;
-    let rolled = crate::plan::rollups(&all);
-    let removes = remove_specs(conn, repo, &all, &every_run)?;
-    let build = |nodes: Vec<PlanNode>,
-                 rolled: &HashMap<String, crate::plan::Rollup>|
-     -> Result<Vec<TreeNode>> {
+/// What every tree node of a project page is built from.
+struct TreeCtx<'a> {
+    conn: &'a Connection,
+    repo: &'a str,
+    marks: HashMap<String, String>,
+    actual: HashMap<String, i64>,
+    decisions: HashMap<String, usize>,
+    runs: crate::plan::runs::AllRuns,
+    removes: HashMap<String, RemoveSpec>,
+}
+
+impl TreeCtx<'_> {
+    fn build(
+        &self,
+        nodes: Vec<PlanNode>,
+        rolled: &HashMap<String, crate::plan::Rollup>,
+    ) -> Result<Vec<TreeNode>> {
+        let repo = self.repo;
         let mut tree = Vec::with_capacity(nodes.len());
         for n in nodes {
-            let external_deps = external_rows(conn, &n)?;
-            let remove = removes.get(&n.id).cloned();
+            let external_deps = external_rows(self.conn, &n)?;
+            let remove = self.removes.get(&n.id).cloned();
             let actions = if matches!(n.kind, NodeKind::Task | NodeKind::Subtask)
                 && super::owner_can_check(n.status)
             {
@@ -290,11 +335,12 @@ pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectD
                 source_text: source_text(&n.source),
                 branch: n.branch.clone(),
                 rollup: rolled.get(&n.id).copied(),
-                stale: marks.get(&n.id).is_some_and(|m| m == "stale"),
-                owner_checked: marks.get(&n.id).is_some_and(|m| m == "✓owner"),
-                actual_min: actual.get(&n.id).copied().unwrap_or(0),
-                decisions: decisions.get(&n.id).copied().unwrap_or(0),
-                shown: every_run.shown(&n.id),
+                stale: self.marks.get(&n.id).is_some_and(|m| m == "stale"),
+                owner_checked: self.marks.get(&n.id).is_some_and(|m| m == "✓owner"),
+                actual_min: self.actual.get(&n.id).copied().unwrap_or(0),
+                decisions: self.decisions.get(&n.id).copied().unwrap_or(0),
+                shown: self.runs.shown(&n.id),
+                track: crate::plan::track::track_of(&n.id),
                 id: n.id,
                 parent_id: n.parent_id,
                 kind: n.kind,
@@ -311,8 +357,19 @@ pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectD
             });
         }
         Ok(tree)
-    };
-    let mut completed_runs = Vec::new();
+    }
+}
+
+/// The runs of one track already closed, still readable (their tasks and numbers as they
+/// were).
+fn completed_runs_of(
+    ctx: &TreeCtx,
+    all: &[PlanNode],
+    runs: &crate::plan::runs::Runs,
+    rolled: &HashMap<String, crate::plan::Rollup>,
+) -> Result<Vec<CompletedRun>> {
+    let track = runs.track;
+    let mut out = Vec::new();
     for run in &runs.closed {
         let mine: Vec<PlanNode> = all
             .iter()
@@ -320,7 +377,7 @@ pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectD
                 runs.closed_run_of(&n.id)
                     .is_some_and(|r| r.number == run.number)
                     || (crate::plan::track::is_goal_id(&n.id)
-                        && crate::plan::track::track_of(&n.id) == primary)
+                        && crate::plan::track::track_of(&n.id) == track)
             })
             .cloned()
             .collect();
@@ -335,7 +392,7 @@ pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectD
             .iter()
             .filter(|n| crate::plan::is_done(n.status))
             .count();
-        completed_runs.push(CompletedRun {
+        out.push(CompletedRun {
             number: run.number,
             title: if titles.is_empty() {
                 format!("Run {}", run.number)
@@ -345,27 +402,138 @@ pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectD
             closed_at: run.closed_at.clone(),
             tasks,
             done_pct: u32::try_from(done * 100 / tasks.max(1)).unwrap_or(100),
-            tree: build(
+            tree: ctx.build(
                 mine.into_iter()
                     .filter(|n| !crate::plan::track::is_goal_id(&n.id))
                     .collect(),
-                &rolled,
+                rolled,
             )?,
         });
     }
-    let current: Vec<PlanNode> = all.into_iter().filter(|n| runs.in_current(&n.id)).collect();
+    Ok(out)
+}
+
+/// One open track's section of the project page.
+fn track_section(
+    ctx: &TreeCtx,
+    all: &[PlanNode],
+    rolled: &HashMap<String, crate::plan::Rollup>,
+    t: &crate::plan::track::Track,
+    now: Timestamp,
+    only_track: bool,
+) -> Result<TrackSection> {
+    let conn = ctx.conn;
+    let repo = ctx.repo;
+    let runs = ctx.runs.of(t.no);
+    let current: Vec<PlanNode> = all
+        .iter()
+        .filter(|n| runs.in_current(&n.id))
+        .cloned()
+        .collect();
     let rolled_now = crate::plan::rollups(&current);
-    let tree = build(current, &rolled_now)?;
-    let replans = replans(conn, repo)?;
+    let p = verify::progress(conn, repo, t.no)?;
+    let can_close_run = crate::plan::runs::finished(conn, repo, t.no)?;
+    let state = crate::plan::runs::state(conn, repo, t.no)?;
+    let finished = state.tasks > 0 && state.unverified == 0;
+    Ok(TrackSection {
+        track: t.no,
+        goal: super::NodeRef {
+            id: t.goal_id.clone(),
+            shown: t.goal_id.clone(),
+            title: t.title.clone(),
+        },
+        done_pct: if finished { 100 } else { p.done_pct },
+        claimed_pct: if finished { 0 } else { p.claimed_pct },
+        reviewed_tasks: p.reviewed_tasks,
+        unestimated: p.unestimated,
+        forecast: Some(if only_track {
+            super::forecast_row(conn, repo, now)?
+        } else {
+            super::forecast_row_track(conn, repo, t.no, now)?
+        }),
+        run_number: u32::try_from(runs.closed.len() + 1).unwrap_or(u32::MAX),
+        completed_runs: completed_runs_of(ctx, all, &runs, rolled)?,
+        tree: ctx.build(current, &rolled_now)?,
+        can_close_run,
+        finish: Some(super::ActionSpec {
+            label: "Finish this track".to_string(),
+            action: OwnerAction::CloseTrack {
+                repo: repo.to_string(),
+                track: t.no,
+            },
+            inputs: Vec::new(),
+            tone: super::Tone::Neutral,
+        }),
+        remove: ctx.removes.get(&t.goal_id).cloned(),
+    })
+}
+
+pub fn project(conn: &Connection, repo: &str, now: Timestamp) -> Result<ProjectDrill> {
+    let all = load_tree(conn, repo, false)?;
+    let every_run = crate::plan::runs::load_all(conn, repo)?;
+    let ctx = TreeCtx {
+        conn,
+        repo,
+        marks: verify::plan_marks(conn, repo)?,
+        actual: actual_minutes(conn, repo)?,
+        decisions: decision_counts(conn, repo)?,
+        removes: remove_specs(conn, repo, &all, &every_run)?,
+        runs: every_run,
+    };
+    let rolled = crate::plan::rollups(&all);
+    let tracks = crate::plan::track::tracks(conn, repo)?;
+    let open: Vec<&crate::plan::track::Track> = tracks.iter().filter(|t| t.is_open()).collect();
+    let mut sections = Vec::new();
+    for t in &open {
+        sections.push(track_section(&ctx, &all, &rolled, t, now, open.len() == 1)?);
+    }
+    let mut finished_tracks = Vec::new();
+    for t in tracks.iter().filter(|t| !t.is_open()) {
+        let p = verify::progress(conn, repo, t.no)?;
+        finished_tracks.push(FinishedTrack {
+            track: t.no,
+            goal: super::NodeRef {
+                id: t.goal_id.clone(),
+                shown: t.goal_id.clone(),
+                title: t.title.clone(),
+            },
+            done_pct: p.done_pct,
+            reopen: super::ActionSpec {
+                label: "Reopen".to_string(),
+                action: OwnerAction::ReopenTrack {
+                    repo: repo.to_string(),
+                    track: t.no,
+                },
+                inputs: Vec::new(),
+                tone: super::Tone::Neutral,
+            },
+            remove: ctx.removes.get(&t.goal_id).cloned(),
+        });
+    }
+    // The fields from before tracks describe the track a single-plan screen shows.
+    let primary = crate::plan::track::primary(conn, repo)?;
+    let main = if let Some(i) = sections.iter().position(|s| s.track == primary) {
+        sections.get(i).cloned()
+    } else if let Some(t) = tracks.iter().find(|t| t.no == primary) {
+        Some(track_section(&ctx, &all, &rolled, t, now, true)?)
+    } else {
+        None
+    };
+    let (tree, run_number, completed_runs, can_close_run) = match main {
+        Some(m) => (m.tree, m.run_number, m.completed_runs, m.can_close_run),
+        None => (Vec::new(), 1, Vec::new(), false),
+    };
     Ok(ProjectDrill {
         repo_id: repo.to_string(),
         name: repo_name(conn, repo)?.unwrap_or_else(|| repo.to_string()),
         tree,
-        run_number: u32::try_from(runs.closed.len() + 1).unwrap_or(u32::MAX),
+        run_number,
         completed_runs,
         scope: scope_line(conn, repo)?,
-        replans,
-        can_close_run: crate::plan::runs::finished(conn, repo, primary)?,
+        replans: replans(conn, repo)?,
+        can_close_run,
+        tracks: sections,
+        finished_tracks,
     })
 }
 

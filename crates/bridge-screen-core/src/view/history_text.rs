@@ -190,6 +190,10 @@ pub fn summarize(kind: &str, d: &Value, session: &str, task: Option<&TaskLabel>)
             Some(n) => format!("{t} marked broken: {}", clip(n, 80)),
             None => format!("{t} marked broken"),
         },
+        "node_added" if str_of(d, "kind") == Some("goal") => match str_of(d, "title") {
+            Some(title) => format!("Track started: {}", clip(title, 80)),
+            None => "Track started".to_string(),
+        },
         "node_added" => {
             let what = match str_of(d, "kind") {
                 Some("goal") => "the goal",

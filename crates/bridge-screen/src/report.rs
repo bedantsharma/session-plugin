@@ -141,6 +141,14 @@ pub fn write(store: &Store, glance: &Glance, label: &str) -> Result<Report> {
 /// Every title the page shows for a project: its name, goal and milestones.
 fn titles(p: &ProjectRow) -> String {
     let mut parts: Vec<String> = p.goal.iter().map(|g| format!("goal {}", g.title)).collect();
+    if p.tracks.len() > 1 {
+        let names: Vec<String> = p
+            .tracks
+            .iter()
+            .map(|t| format!("track {} {}", t.track, t.goal.title))
+            .collect();
+        parts.push(names.join(", "));
+    }
     if !p.milestones.is_empty() {
         let ms: Vec<String> = p
             .milestones
@@ -153,6 +161,28 @@ fn titles(p: &ProjectRow) -> String {
         p.name.clone()
     } else {
         format!("{} ({})", p.name, parts.join("; "))
+    }
+}
+
+/// From two open tracks up, one line per track under the project's bar.
+fn tracks_html(p: &ProjectRow, html: &mut String) {
+    if p.tracks.len() > 1 {
+        html.push_str("<ul>");
+        for t in &p.tracks {
+            let _ = write!(
+                html,
+                "<li>track {} {} — {}% done · +{}% claimed",
+                t.track,
+                esc(&t.goal.title),
+                t.done_pct,
+                t.claimed_pct
+            );
+            if let Some(f) = &t.forecast {
+                let _ = write!(html, " · {}", esc(&f.short));
+            }
+            html.push_str("</li>");
+        }
+        html.push_str("</ul>\n");
     }
 }
 
@@ -191,6 +221,14 @@ fn project_html(
             })
         );
     }
+    if p.reviewed_tasks > 0 {
+        let _ = writeln!(
+            html,
+            "<p class=\"muted\">includes {} done without tests</p>",
+            p.reviewed_tasks
+        );
+    }
+    tracks_html(p, html);
     if let Some(cost) = &p.cost {
         let _ = writeln!(html, "<p class=\"muted\">{}</p>", esc(&cost.summary));
     }

@@ -1552,3 +1552,168 @@ fn rebuild_reproduces_hides() {
     s.rebuild().unwrap();
     assert_eq!(rows(&s), before);
 }
+
+// ---- one bar per track (spec 2026-11-14 §2, §3) ----
+
+/// `store()` plus a second track `T2-G` with a milestone `T2-1` and a task `T2-1.1`.
+fn two_tracks_store() -> Store {
+    let mut s = store();
+    for (id, parent, kind, est) in [
+        ("T2-G", None, "goal", None),
+        ("T2-1", Some("T2-G"), "milestone", None),
+        ("T2-1.1", Some("T2-1"), "task", Some(40)),
+    ] {
+        let mut n = node(id, parent, kind, est);
+        n["title"] = json!(format!("Docs {id}"));
+        ev(&mut s, "owner", 1, "node_added", n);
+    }
+    s
+}
+
+#[test]
+fn glance_one_track_equals_old_shape() {
+    let mut s = store();
+    start(&mut s, "live0001", 0);
+    claim(&mut s, "live0001", 1, "1.1");
+    ev(&mut s, "live0001", 5, "verified", l2_event("v1", "1.1"));
+    let g = glance_at(&s, 100);
+    let p = &g.projects[0];
+    assert_eq!(p.tracks.len(), 1);
+    let t = &p.tracks[0];
+    assert_eq!(t.track, 1);
+    assert_eq!(
+        (t.done_pct, t.claimed_pct, t.unestimated, t.milestones.len()),
+        (p.done_pct, p.claimed_pct, p.unestimated, p.milestones.len())
+    );
+    assert_eq!(t.run, p.run);
+    assert_eq!(t.forecast, p.forecast);
+    assert_eq!(p.goal.as_ref().map(|g| g.id.as_str()), Some("G"));
+    assert_eq!(p.hidden_tracks, 0);
+}
+
+#[test]
+fn glance_two_tracks_two_bars() {
+    let mut s = two_tracks_store();
+    start(&mut s, "live0001", 0);
+    ev(&mut s, "live0001", 5, "verified", l2_event("v1", "1.1"));
+    let g = glance_at(&s, 100);
+    let p = &g.projects[0];
+    assert_eq!(p.tracks.len(), 2);
+    let (one, two) = (&p.tracks[0], &p.tracks[1]);
+    assert_eq!((one.track, two.track), (1, 2));
+    assert_eq!((one.goal.id.as_str(), two.goal.id.as_str()), ("G", "T2-G"));
+    // 30 of 120 minutes in track 1; nothing in track 2.
+    assert_eq!((one.done_pct, two.done_pct), (25, 0));
+    // The pooled figure: 30 of 160.
+    assert_eq!(p.done_pct, 18);
+    assert_eq!(one.subject, "track:r:1");
+    assert!(one.stamp > 0);
+}
+
+#[test]
+#[allow(clippy::many_single_char_names)] // short names for the store and its rows
+fn finished_track_leaves_glance_and_lists_under_finished() {
+    let mut s = two_tracks_store();
+    start(&mut s, "live0001", 0);
+    ev(&mut s, "live0001", 5, "verified", l2_event("v1", "T2-1.1"));
+    ev(&mut s, "owner", 6, "track_closed", json!({"track": 2}));
+    let g = glance_at(&s, 100);
+    let p = &g.projects[0];
+    assert_eq!(
+        p.tracks.iter().map(|t| t.track).collect::<Vec<_>>(),
+        vec![1]
+    );
+    let d = drill::project(s.conn(), "r", at(100)).unwrap();
+    assert_eq!(d.tracks.len(), 1);
+    assert_eq!(d.finished_tracks.len(), 1);
+    let f = &d.finished_tracks[0];
+    assert_eq!(
+        (f.track, f.goal.title.as_str(), f.done_pct),
+        (2, "Docs T2-G", 100)
+    );
+    assert_eq!(
+        f.reopen.action,
+        crate::owner::OwnerAction::ReopenTrack {
+            repo: "r".into(),
+            track: 2
+        }
+    );
+}
+
+#[test]
+fn project_drill_sections_per_track() {
+    let mut s = two_tracks_store();
+    ev(
+        &mut s,
+        "owner",
+        5,
+        "claimed_done",
+        json!({"task_id": "T2-1.1", "evidence": "done"}),
+    );
+    let d = drill::project(s.conn(), "r", at(100)).unwrap();
+    assert_eq!(d.tracks.len(), 2);
+    let two = &d.tracks[1];
+    assert_eq!(two.goal.title, "Docs T2-G");
+    let ids: Vec<(&str, &str, u32)> = two
+        .tree
+        .iter()
+        .map(|n| (n.id.as_str(), n.shown.as_str(), n.track))
+        .collect();
+    // Raw ids stay for agents; the owner reads G, 1, 1.1 from 1 again.
+    assert_eq!(
+        ids,
+        vec![("T2-G", "G", 2), ("T2-1", "1", 2), ("T2-1.1", "1.1", 2)]
+    );
+    // The claimed task offers the owner's check; finishing is offered per track.
+    assert_eq!(two.tree[2].actions.len(), 2);
+    assert!(matches!(
+        two.finish.as_ref().map(|a| &a.action),
+        Some(crate::owner::OwnerAction::CloseTrack { track: 2, .. })
+    ));
+    // Every node can be removed for good, in plain words.
+    let r = two.tree[1].remove.as_ref().unwrap();
+    assert!(
+        r.text
+            .starts_with("Remove milestone 1 'Docs T2-1' for good? 1 task, 0 done."),
+        "{}",
+        r.text
+    );
+    // The fields from before tracks describe track 1.
+    assert_eq!(d.tree.first().map(|n| n.id.as_str()), Some("G"));
+}
+
+#[test]
+fn history_sentences_for_new_kinds() {
+    use super::history_text::{TaskLabel, summarize};
+    let t = TaskLabel {
+        shown: "1".into(),
+        title: "Docs".into(),
+    };
+    let goal = json!({"id": "T2-G", "kind": "goal", "title": "Docs refresh"});
+    assert_eq!(
+        summarize("node_added", &goal, "s1", Some(&t)),
+        "Track started: Docs refresh"
+    );
+    assert_eq!(
+        summarize("track_closed", &json!({"track": 2}), "s1", None),
+        "A track was finished"
+    );
+    assert_eq!(
+        summarize(
+            "hidden",
+            &json!({"subject": "x", "label": "on_task"}),
+            "s1",
+            None
+        ),
+        "You hid something from the front screen"
+    );
+    let removed = json!({"id": "1.2", "by_owner": true, "was": "claimed"});
+    let l = TaskLabel {
+        shown: "1.2".into(),
+        title: "Login form".into(),
+    };
+    assert_eq!(
+        summarize("node_removed", &removed, "s1", Some(&l)),
+        "You removed task 1.2 'Login form' for good (it was claimed, not checked)"
+    );
+}
