@@ -81,20 +81,27 @@ describe('hash routes', () => {
     expect(b.hist.pushState).toHaveBeenCalledTimes(2)
   })
 
-  it('Back restores the screen and the header button uses history.back when it can', () => {
+  it('"← Glance" goes back when the glance is the entry before, else replaces', () => {
     const b = fakeBrowser()
     const nav = makeNav(b.loc, b.hist as unknown as History, b.target)
     const seen: Screen[] = []
     nav.listen((s) => seen.push(s))
     nav.go({ kind: 'project', repo: 'R' })
     nav.go({ kind: 'task', repo: 'R', id: '1.1' })
-    expect(nav.back()).toBe(true)
-    expect(seen.at(-1)).toEqual({ kind: 'project', repo: 'R' })
-    expect(nav.back()).toBe(true)
-    expect(seen.at(-1)).toEqual({ kind: 'glance' })
-    // Nothing of the dashboard's own before: the glance replaces the entry.
-    expect(nav.back()).toBe(false)
+    // Came from the project, not the glance: the entry is replaced, nothing is pushed.
+    expect(nav.toGlance()).toBe(false)
     expect(b.loc.hash).toBe('#/')
+    expect(b.hist.back).not.toHaveBeenCalled()
+  })
+
+  it('"← Glance" from a screen opened from the glance uses history.back', () => {
+    const b = fakeBrowser()
+    const nav = makeNav(b.loc, b.hist as unknown as History, b.target)
+    const seen: Screen[] = []
+    nav.listen((s) => seen.push(s))
+    nav.go({ kind: 'project', repo: 'R' })
+    expect(nav.toGlance()).toBe(true)
+    expect(seen.at(-1)).toEqual({ kind: 'glance' })
   })
 
   it('a reload on a drill screen opens it from the hash', () => {

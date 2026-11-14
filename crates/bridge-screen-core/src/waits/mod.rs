@@ -459,6 +459,18 @@ pub fn clear_for_removed(tx: &Transaction, repo_id: &str, removed: &[String]) ->
     Ok(())
 }
 
+/// A review-checked task that just became `reviewed` is done like a tested one: clear the
+/// waits on it at `sha` (`""` when the commit is unknown). Does nothing for any other
+/// status, so callers may call it after every event that could make a task reviewed.
+pub fn clear_if_reviewed(tx: &Transaction, repo_id: &str, task: &str, sha: &str) -> Result<()> {
+    let reviewed = crate::plan::get_node(tx, repo_id, task)?
+        .is_some_and(|n| n.status == crate::plan::NodeStatus::Reviewed);
+    if reviewed {
+        clear_for_in(tx, repo_id, task, sha)?;
+    }
+    Ok(())
+}
+
 /// Append [`clear_for`]'s events inside `tx`.
 pub fn clear_for_in(tx: &Transaction, repo_id: &str, task: &str, sha: &str) -> Result<()> {
     for draft in clear_for(tx, repo_id, task, sha)? {

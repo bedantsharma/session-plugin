@@ -141,6 +141,10 @@ pub fn apply(
 
 /// L1 for claimed tasks at a checkpoint: `verified {level 1, by auto}` for each pass, and
 /// the context line for files or symbols not found.
+fn verify_waits(tx: &Transaction, repo: &str, task: &str, sha: &str) -> Result<()> {
+    bridge_screen_core::waits::clear_if_reviewed(tx, repo, task, sha)
+}
+
 fn l1_at_checkpoint(
     tx: &Transaction,
     s: &Session,
@@ -151,6 +155,10 @@ fn l1_at_checkpoint(
     for (task, outcome) in checks {
         if let Some(draft) = verify::l1_draft(&s.repo_id, &s.session_id, task, outcome)? {
             append_in(tx, draft.actor(actor.clone()))?;
+            // Files of a review task just reached HEAD: it is reviewed, its waits clear.
+            if let L1Outcome::Passed { sha, .. } = outcome {
+                verify_waits(tx, &s.repo_id, task, sha)?;
+            }
         } else if let L1Outcome::Missing {
             sha,
             paths,

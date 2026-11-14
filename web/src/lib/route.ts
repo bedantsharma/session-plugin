@@ -63,13 +63,18 @@ export function fromHash(hash: string): Screen {
 /**
  * The navigation helper `App` uses: `go` pushes a history entry (never twice for the same
  * screen) and counts entries of the dashboard's own, so "← Glance" can use `history.back()`
- * when the previous entry is the dashboard's; `restore` reads the screen back after
+ * when the previous entry is the glance; `restore` reads the screen back after
  * Back/forward.
  */
 export interface Nav {
   go(next: Screen): void
-  /** `true` when it went back through the browser's history (a popstate follows). */
-  back(): boolean
+  /**
+   * "← Glance": `true` when the entry before this one is the glance and it went back
+   * through the browser's history (a popstate follows); `false` when it replaced this
+   * entry with the glance (the caller shows it), so Back from the glance never lands on a
+   * drill screen.
+   */
+  toGlance(): boolean
   /** The screen the current hash names. */
   current(): Screen
   /** The page asked for is gone: replace the entry with the glance. */
@@ -87,6 +92,7 @@ export function makeNav(
 ): Nav {
   const base = () => loc.pathname + loc.search
   const index = () => ((hist.state as { bs?: number } | null)?.bs ?? 0) as number
+  const fromGlance = () => (hist.state as { fromGlance?: boolean } | null)?.fromGlance === true
   // The first screen is whatever the hash says; mark the entry as the dashboard's first.
   if ((hist.state as { bs?: number } | null)?.bs === undefined)
     hist.replaceState({ bs: 0 }, '', base() + loc.hash)
@@ -96,15 +102,20 @@ export function makeNav(
       hist.replaceState({ bs: index() }, '', base() + toHash({ kind: 'glance' }))
     },
     go(next) {
-      if (toHash(next) === toHash(fromHash(loc.hash))) return
-      hist.pushState({ bs: index() + 1 }, '', base() + toHash(next))
+      const here = fromHash(loc.hash)
+      if (toHash(next) === toHash(here)) return
+      hist.pushState(
+        { bs: index() + 1, fromGlance: here.kind === 'glance' },
+        '',
+        base() + toHash(next),
+      )
     },
-    back() {
-      if (index() > 0) {
+    toGlance() {
+      if (fromGlance()) {
         hist.back()
         return true
       }
-      hist.replaceState({ bs: 0 }, '', base() + toHash({ kind: 'glance' }))
+      hist.replaceState({ bs: index() }, '', base() + toHash({ kind: 'glance' }))
       return false
     },
     listen(onScreen) {

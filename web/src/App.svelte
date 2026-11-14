@@ -145,7 +145,9 @@
       <button
         type="button"
         class="-ml-2 inline-flex h-9 items-center rounded-lg px-2 text-sm font-medium text-muted hover:bg-hover hover:text-fg"
-        onclick={() => go({ kind: 'glance' })}>← Glance</button
+        onclick={() => {
+          if (!nav.toGlance()) screen = { kind: 'glance' }
+        }}>← Glance</button
       >
     </nav>
     <div class="flex flex-col gap-8">

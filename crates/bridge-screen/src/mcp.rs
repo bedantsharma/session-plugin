@@ -757,7 +757,21 @@ impl Bridge {
                     verify::l1_draft(&session.repo_id, &session.session_id, &task, &outcome)
                         .map_err(msg)?
                 {
-                    store.append(draft).map_err(msg)?;
+                    let sha = match &outcome {
+                        L1Outcome::Passed { sha, .. } => sha.clone(),
+                        _ => String::new(),
+                    };
+                    store
+                        .write(|tx| {
+                            bridge_screen_core::store::append_in(tx, draft)?;
+                            bridge_screen_core::waits::clear_if_reviewed(
+                                tx,
+                                &session.repo_id,
+                                &task,
+                                &sha,
+                            )
+                        })
+                        .map_err(msg)?;
                 }
                 if let L1Outcome::Passed { sha, .. } = &outcome {
                     let _ = write!(reply, " L1: the code exists at {}.", short(sha));

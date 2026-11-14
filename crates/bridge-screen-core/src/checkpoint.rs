@@ -173,6 +173,18 @@ fn claim_done_in(tx: &Transaction, req: &ClaimDoneRequest) -> Result<String> {
         },
     )?;
     append_in(tx, draft)?;
+    // A review task with a real summary is done now: its waits clear at HEAD (claim_done is
+    // an MCP call, never a hook, so reading git here is fine).
+    if crate::plan::get_node(tx, &session.repo_id, &task)?
+        .is_some_and(|n| n.status == NodeStatus::Reviewed)
+    {
+        let sha = session
+            .worktree
+            .as_deref()
+            .and_then(|w| crate::git::head(Path::new(w)).ok().flatten())
+            .unwrap_or_default();
+        crate::waits::clear_if_reviewed(tx, &session.repo_id, &task, &sha)?;
+    }
     append_in(
         tx,
         due_draft(&session, CheckpointReason::ClaimedDone, &req.actor)?,
