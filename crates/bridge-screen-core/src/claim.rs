@@ -51,6 +51,8 @@ pub enum ClaimTarget {
         parent: String,
         title: String,
         estimate_min: Option<u32>,
+        /// `review` for work no test can check.
+        check: Option<crate::plan::CheckKind>,
     },
 }
 
@@ -206,6 +208,7 @@ pub fn claim_in_with_reason(
             parent,
             title,
             estimate_min,
+            check,
         } => {
             let parent_kind = get_node(tx, &req.repo_id, parent)?.map(|n| n.kind);
             let kind = match parent_kind {
@@ -226,6 +229,7 @@ pub fn claim_in_with_reason(
                 intent: None,
                 estimate_min: *estimate_min,
                 expected_files: Vec::new(),
+                check: *check,
             };
             let outcome = plan_edit_in(tx, &ctx, &[op])?;
             (outcome.added_ids[0].clone(), true)
@@ -303,6 +307,7 @@ mod tests {
             intent: kind.requires_intent().then(|| format!("{title} intent")),
             estimate_min: None,
             expected_files: files.iter().map(ToString::to_string).collect(),
+            check: None,
         }
     }
 
@@ -328,6 +333,7 @@ mod tests {
                     intent: Some("Users can sign in and keep their data.".into()),
                     estimate_min: None,
                     expected_files: vec![],
+                    check: None,
                 },
                 add("G", NodeKind::Milestone, "Authentication", &[]),
                 add("1", NodeKind::Task, "Login form", &["src/ui/login_form.rs"]),
@@ -500,6 +506,26 @@ mod tests {
     }
 
     #[test]
+    fn claim_task_new_task_accepts_check() {
+        let mut s = plan();
+        let out = claim(
+            &mut s,
+            &req(
+                "s1",
+                ClaimTarget::New {
+                    parent: "2".into(),
+                    title: "Survey the options".into(),
+                    estimate_min: None,
+                    check: Some(crate::plan::CheckKind::Review),
+                },
+            ),
+        )
+        .unwrap();
+        let node = get_node(s.conn(), "r", &out.task_id).unwrap().unwrap();
+        assert_eq!(node.check, crate::plan::CheckKind::Review);
+    }
+
+    #[test]
     fn claim_new_task_and_subtask() {
         let mut s = plan();
         let out = claim(
@@ -510,6 +536,7 @@ mod tests {
                     parent: "2".into(),
                     title: "Restore drill".into(),
                     estimate_min: Some(45),
+                    check: None,
                 },
             ),
         )
@@ -528,6 +555,7 @@ mod tests {
                     parent: "2.3".into(),
                     title: "Write the runbook".into(),
                     estimate_min: None,
+                    check: None,
                 },
             ),
         )
@@ -548,6 +576,7 @@ mod tests {
                     parent: "9".into(),
                     title: "x".into(),
                     estimate_min: None,
+                    check: None,
                 },
             ),
         )

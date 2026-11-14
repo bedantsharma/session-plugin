@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::model::{Hill, NodeKind, NodeSource, NodeStatus, PlanNode};
+use super::model::{CheckKind, Hill, NodeKind, NodeSource, NodeStatus, PlanNode};
 use super::project::{
     DepChange, EditMeta, EstimateSet, HillMoved, IntentSet, NodeAdded, NodeEdited, NodeMoved,
     NodeRef,
@@ -38,14 +38,21 @@ pub enum PlanOp {
         /// Files this work is expected to touch, relative to the repo root.
         #[serde(default)]
         expected_files: Vec<String>,
+        /// `tests` (default), or `review` for research, planning, docs and similar work no
+        /// test can check: done once its result is saved.
+        #[serde(default)]
+        check: Option<CheckKind>,
     },
-    /// Change a node's title and/or expected files.
+    /// Change a node's title, expected files and/or how it is checked. Switching a task
+    /// to `review` needs a reason (the batch's `reason`).
     EditNode {
         id: String,
         #[serde(default)]
         title: Option<String>,
         #[serde(default)]
         expected_files: Option<Vec<String>>,
+        #[serde(default)]
+        check: Option<CheckKind>,
     },
     /// Move a node (and its children) under another parent.
     MoveNode { id: String, new_parent: String },
@@ -304,8 +311,14 @@ fn validate(
             intent,
             estimate_min,
             expected_files,
+            check,
         } => {
             let title = check_title(index, title)?;
+            if check == &Some(CheckKind::Review)
+                && !matches!(kind, NodeKind::Task | NodeKind::Subtask)
+            {
+                return Err(invalid(index, "only tasks can be checked by review"));
+            }
             let intent = intent.as_deref().map(str::trim).filter(|i| !i.is_empty());
             if kind.requires_intent() && intent.is_none() {
                 return Err(PlanError::MissingIntent {
@@ -327,6 +340,7 @@ fn validate(
                 estimate_min: *estimate_min,
                 expected_files: expected_files.clone(),
                 source: None,
+                check: *check,
                 meta,
             };
             Ok(("node_added", serde_json::to_value(data)?, id))
@@ -335,7 +349,8 @@ fn validate(
             id,
             title,
             expected_files,
-        } => c.edit_node(id, title.as_deref(), expected_files.as_ref(), meta),
+            check,
+        } => c.edit_node(id, title.as_deref(), expected_files.as_ref(), *check, meta),
         PlanOp::MoveNode { id, new_parent } => c.move_node(id, new_parent, meta),
         PlanOp::RemoveNode { id } => c.remove_node(id, meta),
         PlanOp::AddDep {
@@ -405,23 +420,65 @@ impl Check<'_> {
         id: &str,
         title: Option<&str>,
         expected_files: Option<&Vec<String>>,
+        check: Option<CheckKind>,
         meta: EditMeta,
     ) -> Result<Validated> {
-        self.live(id)?;
+        let node = self.live(id)?;
         let title = title.map(|t| check_title(self.index, t)).transpose()?;
-        if title.is_none() && expected_files.is_none() {
+        if title.is_none() && expected_files.is_none() && check.is_none() {
             return Err(invalid(
                 self.index,
-                "edit_node needs a title or expected_files",
+                "edit_node needs a title, expected_files or check",
             ));
+        }
+        let check = check.filter(|k| *k != node.check);
+        if check == Some(CheckKind::Review) {
+            self.guard_switch_to_review(&node, &meta)?;
+        }
+        if check.is_some() && !matches!(node.kind, NodeKind::Task | NodeKind::Subtask) {
+            return Err(invalid(self.index, "only tasks can be checked by review"));
         }
         let data = NodeEdited {
             id: id.to_string(),
             title,
             expected_files: expected_files.cloned(),
+            check,
             meta,
         };
         Ok(("node_edited", serde_json::to_value(data)?, id.to_string()))
+    }
+
+    /// Switching a task to review is how an agent could dodge a failing test, so it needs a
+    /// reason, and is refused once the owner said "broken" or tests already passed.
+    fn guard_switch_to_review(self, node: &PlanNode, meta: &EditMeta) -> Result<()> {
+        if meta.reason.as_deref().is_none_or(|r| r.trim().is_empty()) {
+            return Err(invalid(
+                self.index,
+                "switching a task to review needs a reason: say why no test can check it",
+            ));
+        }
+        if crate::verify::withdraw::withdrawable(self.conn, self.repo, &node.id)?
+            .is_some_and(|w| !w.signoff)
+        {
+            return Err(invalid(
+                self.index,
+                format!(
+                    "{} was marked broken by the owner, so it can't be switched to review; \
+                     fix it and claim it done again",
+                    node.id
+                ),
+            ));
+        }
+        if node.status.counts_as_done() {
+            return Err(invalid(
+                self.index,
+                format!(
+                    "{} already passed tests, so it stays checked by tests",
+                    node.id
+                ),
+            ));
+        }
+        Ok(())
     }
 
     fn move_node(self, id: &str, new_parent: &str, meta: EditMeta) -> Result<Validated> {
@@ -619,6 +676,7 @@ mod tests {
             intent: Some("Owner sees progress".into()),
             estimate_min: None,
             expected_files: vec![],
+            check: None,
         }
     }
 
@@ -630,6 +688,7 @@ mod tests {
             intent: kind.requires_intent().then(|| "why".to_string()),
             estimate_min: None,
             expected_files: vec![],
+            check: None,
         }
     }
 
@@ -745,6 +804,7 @@ mod tests {
             intent: Some("   ".into()),
             estimate_min: None,
             expected_files: vec![],
+            check: None,
         };
         assert_eq!(
             plan_error(plan_edit(&mut s, &ctx(), &[no_intent])),
@@ -803,6 +863,7 @@ mod tests {
             intent: None,
             estimate_min: None,
             expected_files: vec![],
+            check: None,
         };
         assert_eq!(
             plan_error(plan_edit(&mut s, &ctx(), &[orphan])),
@@ -943,7 +1004,8 @@ mod tests {
                 &[PlanOp::EditNode {
                     id: "1.1".into(),
                     title: Some("x".into()),
-                    expected_files: None
+                    expected_files: None,
+                    check: None,
                 }]
             )),
             PlanError::Dropped {

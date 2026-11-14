@@ -22,6 +22,7 @@ fn add(parent: Option<&str>, kind: NodeKind, title: &str) -> PlanOp {
         intent: kind.requires_intent().then(|| "why".to_string()),
         estimate_min: Some(20),
         expected_files: vec![format!("src/{title}.rs")],
+        check: None,
     }
 }
 
@@ -107,6 +108,7 @@ fn rebuild_reproduces_incremental_views() {
                 id: "1.1".into(),
                 title: Some("schema v1".into()),
                 expected_files: None,
+                check: None,
             },
             PlanOp::MoveNode {
                 id: "1.2".into(),
@@ -319,6 +321,7 @@ fn rebuild_reproduces_session_views() {
                 parent: "1".into(),
                 title: "late work".into(),
                 estimate_min: Some(10),
+                check: None,
             },
         ),
     )

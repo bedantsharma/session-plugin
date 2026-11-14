@@ -631,6 +631,7 @@ fn scoring_path(event: &str, label: &str) {
         intent: Some("People can buy things and see their orders.".into()),
         estimate_min: None,
         expected_files: vec![],
+        check: None,
     }];
     for m in 1..=10 {
         ops.push(PlanOp::AddNode {
@@ -640,6 +641,7 @@ fn scoring_path(event: &str, label: &str) {
             intent: Some("Part of the shop works end to end.".into()),
             estimate_min: None,
             expected_files: vec![],
+            check: None,
         });
         for t in 1..=29 {
             ops.push(PlanOp::AddNode {
@@ -649,6 +651,7 @@ fn scoring_path(event: &str, label: &str) {
                 intent: None,
                 estimate_min: Some(30),
                 expected_files: vec![format!("src/mod{m}/task{t}.rs")],
+                check: None,
             });
         }
     }
@@ -774,6 +777,7 @@ fn hook_latency_commit_path() {
                 intent: Some("Ship it.".into()),
                 estimate_min: None,
                 expected_files: vec![],
+                check: None,
             },
             PlanOp::AddNode {
                 parent: Some("G".into()),
@@ -782,6 +786,7 @@ fn hook_latency_commit_path() {
                 intent: None,
                 estimate_min: Some(30),
                 expected_files: vec![],
+                check: None,
             },
         ],
     )
@@ -898,6 +903,7 @@ fn hook_latency_prompt_with_verify_notes() {
         intent: None,
         estimate_min: Some(30),
         expected_files: vec![],
+        check: None,
     };
     plan_edit(
         &mut store,
@@ -916,6 +922,7 @@ fn hook_latency_prompt_with_verify_notes() {
                 intent: Some("Ship it.".into()),
                 estimate_min: None,
                 expected_files: vec![],
+                check: None,
             },
             task("Login"),
             task("Reset"),
@@ -1215,6 +1222,7 @@ fn hook_latency_prompt_with_waits_and_external_deps() {
         intent: Some("Ship it.".into()),
         estimate_min: None,
         expected_files: vec![],
+        check: None,
     };
     let task = |title: String| PlanOp::AddNode {
         parent: Some("G".into()),
@@ -1223,6 +1231,7 @@ fn hook_latency_prompt_with_waits_and_external_deps() {
         intent: None,
         estimate_min: Some(30),
         expected_files: vec![],
+        check: None,
     };
     let mut api = vec![goal.clone()];
     api.extend((1..=25).map(|i| task(format!("Endpoint {i}"))));

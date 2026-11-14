@@ -98,6 +98,7 @@ fn sessions_grouped_by_project_needs_you_first() {
                 intent: Some("People can buy things.".into()),
                 estimate_min: None,
                 expected_files: vec![],
+                check: None,
             },
             PlanOp::AddNode {
                 parent: Some("G".into()),
@@ -106,6 +107,7 @@ fn sessions_grouped_by_project_needs_you_first() {
                 intent: None,
                 estimate_min: None,
                 expected_files: vec![],
+                check: None,
             },
             PlanOp::AddNode {
                 parent: Some("G".into()),
@@ -114,6 +116,7 @@ fn sessions_grouped_by_project_needs_you_first() {
                 intent: None,
                 estimate_min: None,
                 expected_files: vec![],
+                check: None,
             },
         ],
     )
@@ -188,6 +191,7 @@ fn long_titles_are_cut_to_fit() {
                 intent: Some("i".into()),
                 estimate_min: None,
                 expected_files: vec![],
+                check: None,
             },
             PlanOp::AddNode {
                 parent: Some("G".into()),
@@ -196,6 +200,7 @@ fn long_titles_are_cut_to_fit() {
                 intent: None,
                 estimate_min: None,
                 expected_files: vec![],
+                check: None,
             },
         ],
     )
@@ -397,6 +402,7 @@ fn status_from_glance_matches_every_kind() {
                 intent: Some("People can buy things.".into()),
                 estimate_min: None,
                 expected_files: vec![],
+                check: None,
             },
             PlanOp::AddNode {
                 parent: Some("G".into()),
@@ -405,6 +411,7 @@ fn status_from_glance_matches_every_kind() {
                 intent: None,
                 estimate_min: Some(30),
                 expected_files: vec![],
+                check: None,
             },
         ],
     )

@@ -24,7 +24,7 @@ use bridge_screen_core::handoff::{self, LeftoverAction};
 use bridge_screen_core::init::InitDraft;
 use bridge_screen_core::owner::{self, OwnerAction};
 use bridge_screen_core::paths::Home;
-use bridge_screen_core::plan::{EditContext, NodeKind, NodeStatus, PlanOp, get_node};
+use bridge_screen_core::plan::{CheckKind, EditContext, NodeKind, NodeStatus, PlanOp, get_node};
 use bridge_screen_core::recovery::{self, Caller};
 use bridge_screen_core::session::{self, Session, SessionState};
 use bridge_screen_core::store::{Actor, Store};
@@ -104,6 +104,10 @@ pub struct NewTask {
     /// Your estimate in agent-minutes.
     #[serde(default)]
     pub estimate_min: Option<u32>,
+    /// `review` for research, planning, docs and similar work no test can check: it counts
+    /// as done once its result is saved. Default `tests`.
+    #[serde(default)]
+    pub check: Option<CheckKind>,
 }
 
 /// Claim the task this session is working on. Give exactly one of `id` or `new_task`.
@@ -687,6 +691,7 @@ impl Bridge {
                 parent: t.parent.clone(),
                 title: t.title.clone(),
                 estimate_min: t.estimate_min,
+                check: t.check,
             },
             _ => return Err("give exactly one of id or new_task".into()),
         };

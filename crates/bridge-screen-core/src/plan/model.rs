@@ -119,6 +119,35 @@ impl NodeStatus {
     }
 }
 
+/// How a task is checked: by tests (the default) or, for work no test can check, by
+/// review — done once its result is saved.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckKind {
+    #[default]
+    Tests,
+    /// Research, planning, docs and similar work no test can check.
+    Review,
+}
+
+impl CheckKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Tests => "tests",
+            Self::Review => "review",
+        }
+    }
+
+    /// Anything unknown reads as `tests`, like every node from before this existed.
+    pub fn parse(s: &str) -> Self {
+        if s == "review" {
+            Self::Review
+        } else {
+            Self::Tests
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Hill {
@@ -153,6 +182,8 @@ pub struct PlanNode {
     pub intent: Option<String>,
     pub estimate_min: Option<u32>,
     pub status: NodeStatus,
+    /// How the task is checked (`tests`, or `review` for work no test can check).
+    pub check: CheckKind,
     pub hill: Option<Hill>,
     pub expected_files: Vec<String>,
     pub depends_on: Vec<String>,

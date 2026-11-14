@@ -689,6 +689,7 @@ fn record_keeps(
                     reason: Some(reason.clone()),
                     replan_id: None,
                 },
+                check: None,
             };
             append_in(
                 tx,

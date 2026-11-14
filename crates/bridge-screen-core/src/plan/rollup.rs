@@ -128,6 +128,7 @@ mod tests {
             intent: None,
             estimate_min: None,
             status,
+            check: crate::plan::CheckKind::Tests,
             hill: Some(Hill::Downhill),
             expected_files: vec![],
             depends_on: vec![],

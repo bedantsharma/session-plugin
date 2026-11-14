@@ -329,6 +329,9 @@ pub struct DraftTask {
     pub estimate_min: Option<u32>,
     #[serde(default)]
     pub expected_files: Vec<String>,
+    /// `review` for research, planning, docs and similar work no test can check.
+    #[serde(default)]
+    pub check: Option<crate::plan::CheckKind>,
     /// Set when the task looks done already.
     #[serde(default)]
     pub done: Option<DoneEvidence>,
@@ -383,6 +386,53 @@ pub struct InitBy<'a> {
     pub actor: &'a crate::store::Actor,
 }
 
+/// The plan ops of a draft, and for each the draft task it adds (to find the done ones by
+/// their new id).
+fn draft_ops(draft: &InitDraft) -> (Vec<PlanOp>, Vec<Option<&DraftTask>>) {
+    let mut ops = vec![PlanOp::AddNode {
+        parent: None,
+        kind: NodeKind::Goal,
+        title: draft.goal.title.clone(),
+        intent: Some(draft.goal.intent.clone()),
+        estimate_min: None,
+        expected_files: Vec::new(),
+        check: None,
+    }];
+    // For each op, the draft task it adds (to find the done ones by their new id).
+    let mut task_of: Vec<Option<&DraftTask>> = vec![None];
+    let add_task = |parent: String, t: &DraftTask| PlanOp::AddNode {
+        parent: Some(parent),
+        kind: NodeKind::Task,
+        title: t.title.clone(),
+        intent: None,
+        estimate_min: t.estimate_min,
+        expected_files: t.expected_files.clone(),
+        check: t.check,
+    };
+    for (i, m) in draft.milestones.iter().enumerate() {
+        let id = (i + 1).to_string();
+        ops.push(PlanOp::AddNode {
+            parent: Some("G".into()),
+            kind: NodeKind::Milestone,
+            title: m.title.clone(),
+            intent: Some(m.intent.clone()),
+            estimate_min: None,
+            expected_files: Vec::new(),
+            check: None,
+        });
+        task_of.push(None);
+        for t in &m.tasks {
+            ops.push(add_task(id.clone(), t));
+            task_of.push(Some(t));
+        }
+    }
+    for t in &draft.tasks {
+        ops.push(add_task("G".into(), t));
+        task_of.push(Some(t));
+    }
+    (ops, task_of)
+}
+
 /// Create the drafted plan in one batch (sources `init`), then record the done tasks as
 /// claimed with their evidence. Refused when the repo already has a goal or the owner's
 /// words are missing.
@@ -403,44 +453,7 @@ pub fn apply(tx: &Transaction, by: &InitBy, draft: &InitDraft) -> Result<InitApp
             "owner_said must be at most {MAX_OWNER_SAID} characters"
         )));
     }
-    let mut ops = vec![PlanOp::AddNode {
-        parent: None,
-        kind: NodeKind::Goal,
-        title: draft.goal.title.clone(),
-        intent: Some(draft.goal.intent.clone()),
-        estimate_min: None,
-        expected_files: Vec::new(),
-    }];
-    // For each op, the draft task it adds (to find the done ones by their new id).
-    let mut task_of: Vec<Option<&DraftTask>> = vec![None];
-    let add_task = |parent: String, t: &DraftTask| PlanOp::AddNode {
-        parent: Some(parent),
-        kind: NodeKind::Task,
-        title: t.title.clone(),
-        intent: None,
-        estimate_min: t.estimate_min,
-        expected_files: t.expected_files.clone(),
-    };
-    for (i, m) in draft.milestones.iter().enumerate() {
-        let id = (i + 1).to_string();
-        ops.push(PlanOp::AddNode {
-            parent: Some("G".into()),
-            kind: NodeKind::Milestone,
-            title: m.title.clone(),
-            intent: Some(m.intent.clone()),
-            estimate_min: None,
-            expected_files: Vec::new(),
-        });
-        task_of.push(None);
-        for t in &m.tasks {
-            ops.push(add_task(id.clone(), t));
-            task_of.push(Some(t));
-        }
-    }
-    for t in &draft.tasks {
-        ops.push(add_task("G".into(), t));
-        task_of.push(Some(t));
-    }
+    let (ops, task_of) = draft_ops(draft);
     let ctx = EditContext {
         repo_id: by.repo_id.to_string(),
         session_id: by.session_id.to_string(),

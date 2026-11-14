@@ -265,6 +265,7 @@ mod tests {
             intent: matches!(kind, NodeKind::Goal | NodeKind::Milestone).then(|| "why".into()),
             estimate_min: matches!(kind, NodeKind::Task).then_some(30),
             expected_files: Vec::new(),
+            check: None,
         }
     }
 

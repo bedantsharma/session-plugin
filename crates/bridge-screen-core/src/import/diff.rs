@@ -172,6 +172,7 @@ impl Builder<'_> {
                 intent: None,
                 estimate_min: None,
                 expected_files: n.files,
+                check: None,
             },
             Some(NodeSource::File {
                 file: self.file.to_string(),
@@ -221,6 +222,7 @@ impl Builder<'_> {
                         intent: Some(intent.clone()),
                         estimate_min: None,
                         expected_files: Vec::new(),
+                        check: None,
                     },
                     None,
                 );
@@ -241,6 +243,7 @@ impl Builder<'_> {
                         intent: Some(intent.clone()),
                         estimate_min: None,
                         expected_files: Vec::new(),
+                        check: None,
                     },
                     None,
                 );
@@ -295,6 +298,7 @@ impl Builder<'_> {
                     id: item.node_id.clone(),
                     title,
                     expected_files: files,
+                    check: None,
                 },
                 None,
             );

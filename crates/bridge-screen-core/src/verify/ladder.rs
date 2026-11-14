@@ -181,6 +181,12 @@ pub fn verify(
             node.status.as_str()
         )));
     }
+    if super::is_review(conn, &s.repo_id, &task)? {
+        return Err(refuse(format!(
+            "{task} is checked by review, not tests: it counts as done once its result is \
+             saved (commit the files you named, or give a fuller summary with claim_done)"
+        )));
+    }
     let evidence = clip(&req.evidence, super::MAX_EVIDENCE);
     if evidence.is_empty() {
         return Err(refuse(

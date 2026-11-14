@@ -387,7 +387,8 @@ fn progress_counts_l2_up_as_done_and_claimed_apart() {
             done_min: 0,
             claimed_min: 0,
             total_min: 100,
-            unestimated: 1
+            unestimated: 1,
+            reviewed_tasks: 0
         }
     );
     script(
@@ -853,4 +854,279 @@ fn a_double_click_on_take_back_is_stale() {
         before
     );
     assert_eq!(status(&s, "r", "1.1"), NodeStatus::L4);
+}
+
+// ---- review tasks: done without tests (spec 2026-11-14 §1) ----
+
+const LONG: &str = "Read the three vendor reports and compared their pricing, limits and support \
+                    terms; the summary table is in the notes and the choice is clear.";
+
+fn make_review(s: &mut Store, id: &str) {
+    script(
+        s,
+        &[(
+            "r",
+            "s1",
+            2,
+            "node_edited",
+            json!({"id": id, "check": "review", "reason": "research, no test can check it"}),
+        )],
+    );
+}
+
+fn claim(s: &mut Store, secs: i64, id: &str, evidence: &str, files: &[&str]) {
+    script(
+        s,
+        &[(
+            "r",
+            "s1",
+            secs,
+            "claimed_done",
+            json!({"task_id": id, "evidence": evidence, "files": files}),
+        )],
+    );
+}
+
+#[test]
+fn review_task_done_when_file_committed() {
+    let mut s = store();
+    make_review(&mut s, "1.1");
+    claim(&mut s, 5, "1.1", "notes written", &["docs/notes.md"]);
+    // Named but the L1 check hasn't found it committed yet.
+    assert_eq!(status(&s, "r", "1.1"), NodeStatus::Claimed);
+    script(
+        &mut s,
+        &[(
+            "r",
+            "s1",
+            6,
+            "verified",
+            json!({"verif_id": "v1", "task_id": "1.1", "level": 1, "sha": "a",
+                   "files": ["docs/notes.md"], "evidence": "code exists at HEAD", "by": "auto"}),
+        )],
+    );
+    assert_eq!(status(&s, "r", "1.1"), NodeStatus::Reviewed);
+    let p = progress(s.conn(), "r").unwrap();
+    assert_eq!((p.done_min, p.done_pct, p.reviewed_tasks), (30, 30, 1));
+}
+
+#[test]
+fn files_named_but_uncommitted_stays_claimed_until_commit() {
+    let mut s = store();
+    make_review(&mut s, "1.1");
+    claim(&mut s, 5, "1.1", LONG, &["docs/notes.md"]);
+    // A long summary does not stand in for named files.
+    assert_eq!(status(&s, "r", "1.1"), NodeStatus::Claimed);
+    assert_eq!(progress(s.conn(), "r").unwrap().done_min, 0);
+}
+
+#[test]
+fn missing_file_does_not_count() {
+    let mut s = store();
+    make_review(&mut s, "1.1");
+    claim(&mut s, 5, "1.1", "notes written", &["docs/missing.md"]);
+    // The L1 check found nothing, so no `verified` event: still claimed.
+    assert_eq!(status(&s, "r", "1.1"), NodeStatus::Claimed);
+}
+
+#[test]
+fn review_task_done_with_long_summary_and_no_files() {
+    let mut s = store();
+    make_review(&mut s, "1.1");
+    claim(&mut s, 5, "1.1", LONG, &[]);
+    assert_eq!(status(&s, "r", "1.1"), NodeStatus::Reviewed);
+}
+
+#[test]
+fn short_summary_stays_claimed() {
+    let mut s = store();
+    make_review(&mut s, "1.1");
+    claim(&mut s, 5, "1.1", "done, looked fine to me ok", &[]);
+    assert_eq!(status(&s, "r", "1.1"), NodeStatus::Claimed);
+    // Many words but too few characters does not count either.
+    claim(&mut s, 6, "1.1", "a b c d e f g h i j k", &[]);
+    assert_eq!(status(&s, "r", "1.1"), NodeStatus::Claimed);
+}
+
+#[test]
+fn owner_broken_takes_review_task_back() {
+    let mut s = store();
+    make_review(&mut s, "1.1");
+    claim(&mut s, 5, "1.1", LONG, &[]);
+    assert_eq!(status(&s, "r", "1.1"), NodeStatus::Reviewed);
+    script(
+        &mut s,
+        &[(
+            "r",
+            "owner",
+            6,
+            "verification_failed",
+            json!({"task_id": "1.1", "level": 1, "evidence": "the table is wrong", "by": "owner"}),
+        )],
+    );
+    assert_eq!(status(&s, "r", "1.1"), NodeStatus::Failed);
+    assert_eq!(progress(s.conn(), "r").unwrap().done_pct, 0);
+    claim(&mut s, 7, "1.1", LONG, &[]);
+    assert_eq!(status(&s, "r", "1.1"), NodeStatus::Reviewed);
+}
+
+#[test]
+fn owner_works_beats_reviewed() {
+    let mut s = store();
+    make_review(&mut s, "1.1");
+    claim(&mut s, 5, "1.1", LONG, &[]);
+    script(
+        &mut s,
+        &[("r", "owner", 6, "verified", by_owner("v9", "1.1", 4))],
+    );
+    assert_eq!(status(&s, "r", "1.1"), NodeStatus::L4);
+}
+
+#[test]
+fn no_nudge_for_reviewed_and_never_stale() {
+    let mut s = store();
+    make_review(&mut s, "1.1");
+    script(
+        &mut s,
+        &[(
+            "r",
+            "s1",
+            4,
+            "verify_nudged",
+            json!({"task_id": "1.1", "level": 0}),
+        )],
+    );
+    claim(&mut s, 5, "1.1", LONG, &[]);
+    assert_eq!(status(&s, "r", "1.1"), NodeStatus::Reviewed);
+    // Saving the result answers the nudges.
+    let n: i64 = s
+        .conn()
+        .query_row("SELECT count(*) FROM verify_nudges", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 0);
+    let pending = pending_claims(s.conn(), "s1", "2027-01-01T00:00:00Z".parse().unwrap()).unwrap();
+    assert!(pending.is_empty(), "{pending:?}");
+}
+
+#[test]
+fn old_events_read_as_tests() {
+    let s = store();
+    let n = get_node(s.conn(), "r", "1.1").unwrap().unwrap();
+    assert_eq!(n.check, crate::plan::CheckKind::Tests);
+}
+
+#[test]
+fn switching_back_to_tests_rederives_the_status() {
+    let mut s = store();
+    make_review(&mut s, "1.1");
+    claim(&mut s, 5, "1.1", LONG, &[]);
+    assert_eq!(status(&s, "r", "1.1"), NodeStatus::Reviewed);
+    script(
+        &mut s,
+        &[(
+            "r",
+            "owner",
+            6,
+            "node_edited",
+            json!({"id": "1.1", "check": "tests"}),
+        )],
+    );
+    assert_eq!(status(&s, "r", "1.1"), NodeStatus::Claimed);
+}
+
+fn edit_check(s: &mut Store, id: &str, reason: Option<&str>) -> crate::error::Result<()> {
+    let ctx = crate::plan::EditContext {
+        repo_id: "r".into(),
+        session_id: "s1".into(),
+        actor: crate::store::Actor::default(),
+        reason: reason.map(str::to_string),
+        replan: false,
+    };
+    crate::plan::plan_edit(
+        s,
+        &ctx,
+        &[crate::plan::PlanOp::EditNode {
+            id: id.into(),
+            title: None,
+            expected_files: None,
+            check: Some(crate::plan::CheckKind::Review),
+        }],
+    )
+    .map(|_| ())
+}
+
+#[test]
+fn switch_to_review_needs_reason() {
+    let mut s = store();
+    let e = edit_check(&mut s, "1.1", None).unwrap_err().to_string();
+    assert!(e.contains("needs a reason"), "{e}");
+    edit_check(&mut s, "1.1", Some("it is a research task")).unwrap();
+    assert_eq!(
+        get_node(s.conn(), "r", "1.1").unwrap().unwrap().check,
+        crate::plan::CheckKind::Review
+    );
+}
+
+#[test]
+fn switch_refused_after_owner_broken() {
+    let mut s = store();
+    claim(&mut s, 5, "1.1", "done", &[]);
+    script(
+        &mut s,
+        &[(
+            "r",
+            "owner",
+            6,
+            "verification_failed",
+            json!({"task_id": "1.1", "level": 2, "evidence": "broken", "by": "owner"}),
+        )],
+    );
+    let e = edit_check(&mut s, "1.1", Some("no test fits")).unwrap_err();
+    assert!(e.to_string().contains("marked broken by the owner"), "{e}");
+}
+
+#[test]
+fn switch_refused_when_already_l2() {
+    let mut s = store();
+    claim(&mut s, 5, "1.1", "done", &["a.rs"]);
+    script(
+        &mut s,
+        &[(
+            "r",
+            "s1",
+            6,
+            "verified",
+            verified("v1", "1.1", 2, "a", &["a.rs"]),
+        )],
+    );
+    let e = edit_check(&mut s, "1.1", Some("no test fits")).unwrap_err();
+    assert!(e.to_string().contains("already passed tests"), "{e}");
+}
+
+#[test]
+fn progress_counts_reviewed_tasks_apart() {
+    let mut s = store();
+    make_review(&mut s, "1.1");
+    make_review(&mut s, "1.2");
+    claim(&mut s, 5, "1.1", LONG, &[]);
+    claim(&mut s, 6, "1.2", LONG, &[]);
+    claim(&mut s, 7, "1.4.1", "done", &[]);
+    let p = progress(s.conn(), "r").unwrap();
+    assert_eq!(
+        (p.done_min, p.claimed_min, p.reviewed_tasks, p.total_min),
+        (40, 20, 2, 100)
+    );
+}
+
+#[test]
+fn rollup_counts_reviewed_as_done() {
+    use crate::plan::{Rollup, rollup_of};
+    assert_eq!(
+        rollup_of([NodeStatus::Reviewed, NodeStatus::L2]),
+        Some(Rollup::Done)
+    );
+    assert_eq!(
+        rollup_of([NodeStatus::Reviewed, NodeStatus::Todo]),
+        Some(Rollup::InProgress)
+    );
 }

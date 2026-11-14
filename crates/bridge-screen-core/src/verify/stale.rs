@@ -61,6 +61,23 @@ pub struct StaleChange {
     pub changed: Vec<String>,
 }
 
+/// The repo's live verifications, leaving out review tasks' saved results: those are
+/// never marked stale.
+fn unreviewed_verifications(
+    conn: &rusqlite::Connection,
+    repo_id: &str,
+) -> Result<Vec<super::Verification>> {
+    let mut stmt = conn
+        .prepare_cached("SELECT id FROM plan_nodes WHERE repo_id = ?1 AND status = 'reviewed'")?;
+    let reviewed: std::collections::HashSet<String> = stmt
+        .query_map([repo_id], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(live_verifications(conn, repo_id, SCAN_LIMIT)?
+        .into_iter()
+        .filter(|r| !reviewed.contains(&r.task_id))
+        .collect())
+}
+
 /// Find verifications whose files changed between their commit and HEAD of `wt`, drop
 /// each one level, then re-check L1 at HEAD for tasks left with nothing. Events go out as
 /// `session_id`. Git failures mean "nothing known": that commit is skipped.
@@ -70,7 +87,7 @@ pub fn scan_stale(
     session_id: &str,
     wt: &Path,
 ) -> Result<Vec<StaleChange>> {
-    let rows = live_verifications(store.conn(), repo_id, SCAN_LIMIT)?;
+    let rows = unreviewed_verifications(store.conn(), repo_id)?;
     if rows.iter().all(|r| r.level < 1) {
         // Nothing to drop: no git.
         return Ok(Vec::new());

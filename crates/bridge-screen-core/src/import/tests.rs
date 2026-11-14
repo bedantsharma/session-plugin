@@ -611,6 +611,7 @@ fn existing_plan_gets_a_baseline() {
                 intent: Some("why".into()),
                 estimate_min: None,
                 expected_files: vec![],
+                check: None,
             },
             PlanOp::AddNode {
                 parent: Some("G".into()),
@@ -619,6 +620,7 @@ fn existing_plan_gets_a_baseline() {
                 intent: Some("why".into()),
                 estimate_min: None,
                 expected_files: vec![],
+                check: None,
             },
         ],
     )
@@ -671,6 +673,7 @@ fn changed_baseline_file_without_a_match_needs_a_link() {
                 intent: Some("why".into()),
                 estimate_min: None,
                 expected_files: vec![],
+                check: None,
             },
             PlanOp::AddNode {
                 parent: Some("G".into()),
@@ -679,6 +682,7 @@ fn changed_baseline_file_without_a_match_needs_a_link() {
                 intent: Some("why".into()),
                 estimate_min: None,
                 expected_files: vec![],
+                check: None,
             },
         ],
     )
@@ -763,6 +767,7 @@ fn into_links_a_file_to_a_milestone() {
                 intent: Some("why".into()),
                 estimate_min: None,
                 expected_files: vec![],
+                check: None,
             },
             PlanOp::AddNode {
                 parent: Some("G".into()),
@@ -771,6 +776,7 @@ fn into_links_a_file_to_a_milestone() {
                 intent: Some("why".into()),
                 estimate_min: None,
                 expected_files: vec![],
+                check: None,
             },
             PlanOp::AddNode {
                 parent: Some("1".into()),
@@ -779,6 +785,7 @@ fn into_links_a_file_to_a_milestone() {
                 intent: None,
                 estimate_min: None,
                 expected_files: vec![],
+                check: None,
             },
         ],
     )

@@ -4,11 +4,11 @@ use std::collections::{BTreeMap, HashMap};
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
-use super::model::{ExternalDep, Hill, NodeKind, NodeSource, NodeStatus, PlanNode};
+use super::model::{CheckKind, ExternalDep, Hill, NodeKind, NodeSource, NodeStatus, PlanNode};
 use crate::error::Result;
 
 const NODE_COLUMNS: &str = "id, parent_id, kind, title, intent, estimate_min, status, hill, \
-                            expected_files, position, source, branch";
+                            expected_files, position, source, branch, check_kind";
 
 struct RawNode {
     node: PlanNode,
@@ -28,6 +28,7 @@ fn read_row(row: &Row) -> rusqlite::Result<(RawNode, String)> {
         intent: row.get(4)?,
         estimate_min: row.get(5)?,
         status: NodeStatus::parse(&status).unwrap_or(NodeStatus::Todo),
+        check: CheckKind::parse(&row.get::<_, String>(12)?),
         hill: hill.as_deref().and_then(Hill::parse),
         expected_files: Vec::new(),
         depends_on: Vec::new(),

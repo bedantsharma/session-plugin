@@ -376,6 +376,7 @@ fn seeded_usage(env: &Env) {
         intent: Some("why".into()),
         estimate_min: Some(30),
         expected_files: vec![],
+        check: None,
     };
     plan_edit(
         &mut store,
