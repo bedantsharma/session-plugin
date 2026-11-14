@@ -159,6 +159,10 @@ pub struct TrackRow {
     /// What "Hide" on the bar sends and the stamp the screen saw.
     pub subject: String,
     pub stamp: i64,
+    /// "Finish this track" (refused in words while a task is neither done nor removed).
+    pub finish: ActionSpec,
+    /// "Remove for good" for the whole track, with its confirm question.
+    pub remove: Option<drill::RemoveSpec>,
 }
 
 /// The current run of a project (spec §10.1).
@@ -1779,6 +1783,25 @@ fn track_row(
         }),
         subject: crate::hide::track_subject(repo_id, t.no),
         stamp: crate::hide::stamp_of_track(conn, repo_id, t.no)?,
+        finish: button(
+            "Finish this track",
+            OwnerAction::CloseTrack {
+                repo: repo_id.to_string(),
+                track: t.no,
+            },
+            Tone::Neutral,
+        ),
+        remove: crate::owner::remove_impact(conn, repo_id, &t.goal_id)
+            .ok()
+            .map(|impact| drill::RemoveSpec {
+                text: impact.text,
+                action: OwnerAction::Remove {
+                    repo: repo_id.to_string(),
+                    id: t.goal_id.clone(),
+                    title: impact.title,
+                    confirm: false,
+                },
+            }),
         run,
     })
 }

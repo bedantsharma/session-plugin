@@ -1,4 +1,11 @@
-import type { ForecastRow, Glance, NeedsYou, ProjectRow } from '../src/lib/types'
+import type {
+  ForecastRow,
+  Glance,
+  HiddenItem,
+  NeedsYou,
+  ProjectRow,
+  TrackRow,
+} from '../src/lib/types'
 
 export function item(over: Partial<NeedsYou> = {}): NeedsYou {
   return {
@@ -36,6 +43,8 @@ export function item(over: Partial<NeedsYou> = {}): NeedsYou {
     respond_in: null,
     rank: 0,
     age_s: 600,
+    subject: 'card:drift_red:s1aaaa',
+    stamp: 11,
     ...over,
   }
 }
@@ -115,6 +124,11 @@ export function project(over: Partial<ProjectRow> = {}): ProjectRow {
     cost: null,
     needs_you: 1,
     sessions: [],
+    subject: 'project:r1',
+    stamp: 21,
+    tracks: [],
+    hidden_tracks: 0,
+    reviewed_tasks: 0,
     ...over,
   }
 }
@@ -129,6 +143,7 @@ export function glance(items: NeedsYou[] = [item()]): Glance {
     needs_you_count: items.length,
     escalated: items.length > 4,
     branch_groups: [],
+    hidden: [],
   }
 }
 
@@ -159,4 +174,58 @@ export const COST = {
   unpriced_models: [],
   text: '$12.40',
   summary: '$12.40 spent · 3.1M tokens',
+}
+
+/** One open track with its own goal and bar. */
+export function track(no: number, over: Partial<TrackRow> = {}): TrackRow {
+  return {
+    track: no,
+    goal: {
+      id: no === 1 ? 'G' : `T${no}-G`,
+      shown: 'G',
+      title: no === 1 ? 'Online shop' : 'Docs refresh',
+    },
+    goal_status: 'in_progress',
+    done_pct: no === 1 ? 40 : 10,
+    claimed_pct: 0,
+    reviewed_tasks: 0,
+    run: { number: 1, closed: 0, finished: null },
+    unestimated: 0,
+    milestones: [],
+    forecast: null,
+    subject: `track:r1:${no}`,
+    stamp: 30 + no,
+    finish: {
+      label: 'Finish this track',
+      action: { kind: 'close_track', repo: 'r1', track: no },
+      inputs: [],
+      tone: 'neutral',
+    },
+    remove: {
+      text: `Remove the track 'Docs refresh' for good? 7 tasks, 2 done. 1 session is working on it. It leaves the bars, the queue and the forecast and can't be brought back from the dashboard. The history keeps a record.`,
+      action: {
+        kind: 'remove',
+        repo: 'r1',
+        id: no === 1 ? 'G' : `T${no}-G`,
+        title: 'Docs refresh',
+        confirm: false,
+      },
+    },
+    ...over,
+  }
+}
+
+export function hiddenItem(over: Partial<HiddenItem> = {}): HiddenItem {
+  return {
+    subject: 'card:verify_overdue:r1:1.2',
+    kind: 'card',
+    label: 'Check 1.2 Password reset',
+    repo_id: 'r1',
+    repo_name: 'shop',
+    hidden_at: '2026-10-14T08:00:00Z',
+    age_s: 3600,
+    stamp: 40,
+    unhide: { kind: 'unhide', repo: 'r1', subject: 'card:verify_overdue:r1:1.2' },
+    ...over,
+  }
 }

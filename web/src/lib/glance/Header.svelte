@@ -13,15 +13,20 @@
     conn,
     version = 0,
     onShowAll,
+    onShowHidden,
   }: {
     glance: Glance | null
     conn: ConnState
     /** The polling cursor: each move is a heartbeat on the Live dot. */
     version?: number
     onShowAll?: () => void
+    /** Open the "Hidden" drawer. */
+    onShowHidden?: () => void
   } = $props()
 
   const count = $derived(glance?.needs_you_count ?? 0)
+  /** Cards, track bars and projects the owner hid and that stay hidden. */
+  const hiddenCount = $derived(glance?.hidden?.length ?? 0)
   // Pulse each time the count rises past 4 (at most 3 cycles, under 5 s; a fade under
   // reduced motion), then stay still and emphasised.
   let pulses = $state(0)
@@ -97,6 +102,14 @@
           {/if}
         </svg>
       </button>
+      {#if hiddenCount > 0}
+        <button
+          type="button"
+          class="inline-flex h-8 items-center rounded-lg border border-edge px-3 text-sm text-muted transition-colors duration-150 hover:bg-hover hover:text-fg"
+          data-testid="hidden-button"
+          onclick={() => onShowHidden?.()}>Hidden ({hiddenCount})</button
+        >
+      {/if}
       <div role="status" aria-live="polite">
         {#if !conn.connected}
           <span
@@ -120,7 +133,9 @@
             >
               {#key bumps}
                 <span class={[bumps > 0 && 'bump']}
-                  >■ {count} need you{glance.escalated ? ' · show all' : ''}</span
+                  >■ {count} need you{hiddenCount > 0
+                    ? ` · ${hiddenCount} hidden`
+                    : ''}{glance.escalated ? ' · show all' : ''}</span
                 >
               {/key}
             </button>
@@ -130,7 +145,7 @@
             class="inline-flex h-8 items-center rounded-full border-[1.5px] border-ok px-3.5 text-sm font-medium text-ok"
             data-testid="all-clear"
           >
-            ● All clear
+            ● All clear{hiddenCount > 0 ? ` · ${hiddenCount} hidden` : ''}
           </span>
         {/if}
       </div>

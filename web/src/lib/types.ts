@@ -49,6 +49,9 @@ export interface NeedsYou {
   respond_in: RespondIn | null
   rank: number
   age_s: number
+  /** What "Hide" sends (`card:<id>`) and the stamp the screen saw (something new moves it). */
+  subject: string
+  stamp: number
 }
 
 export interface SessionFlag {
@@ -182,6 +185,53 @@ export interface ProjectRow {
   cost: CostRow | null
   needs_you: number
   sessions: SessionRow[]
+  /** What "Hide" sends for the project and the stamp the screen saw. */
+  subject: string
+  stamp: number
+  /**
+   * One bar per open track the owner has not hidden. With one open track every field above
+   * is that track's; with several they are pooled and the project shows the bars instead.
+   */
+  tracks: TrackRow[]
+  /** Open tracks the owner hid (their bars sit in the drawer). */
+  hidden_tracks: number
+  /** Tasks counted as done without tests. */
+  reviewed_tasks: number
+}
+
+/** One open track: its own goal, bar, run and forecast. */
+export interface TrackRow {
+  track: number
+  goal: NodeRef
+  goal_status: Rollup
+  done_pct: number
+  claimed_pct: number
+  /** "includes 3 tasks done without tests". */
+  reviewed_tasks: number
+  run: RunRow
+  unestimated: number
+  milestones: MilestoneRow[]
+  forecast: ForecastRow | null
+  subject: string
+  stamp: number
+  /** "Finish this track". */
+  finish: ActionSpec
+  /** "Remove for good" for the whole track. */
+  remove: RemoveSpec | null
+}
+
+/** A card, track bar or project the owner hid, as the drawer lists it. */
+export interface HiddenItem {
+  subject: string
+  kind: 'card' | 'track' | 'project'
+  label: string
+  repo_id: string
+  repo_name: string
+  hidden_at: string
+  age_s: number
+  stamp: number
+  /** "Bring back", as the action to send. */
+  unhide: OwnerAction
 }
 
 export interface Glance {
@@ -193,6 +243,8 @@ export interface Glance {
   needs_you_count: number
   escalated: boolean
   branch_groups: BranchGroup[]
+  /** Things the owner hid that stay hidden; the counts above are of what is on screen. */
+  hidden: HiddenItem[]
 }
 
 export interface TreeNode {
@@ -218,6 +270,20 @@ export interface TreeNode {
   branch: string | null
   decisions: number
   depth: number
+  /** The track it belongs to (1 for a plan without tracks). */
+  track: number
+  /** How it is checked: tests, or review (done once its result is saved). */
+  check: 'tests' | 'review'
+  /** ✓ Works / ✗ Broken for a task that was said done and isn't signed off yet. */
+  actions: ActionSpec[]
+  /** "Remove for good": the confirm question in plain words and the action to send. */
+  remove: RemoveSpec | null
+}
+
+export interface RemoveSpec {
+  text: string
+  /** Sent with `confirm: true` once the owner confirms. */
+  action: OwnerAction
 }
 
 export interface CompletedRun {
@@ -238,6 +304,35 @@ export interface ProjectDrill {
   can_close_run: boolean
   scope: { ts: string; total_min: number; done_min: number }[]
   replans: { ts: string; reason: string | null; op_count: number; session_id: string }[]
+  /** One section per open track. */
+  tracks: TrackSection[]
+  /** Tracks the owner finished, with "Reopen". */
+  finished_tracks: FinishedTrack[]
+}
+
+export interface TrackSection {
+  track: number
+  goal: NodeRef
+  done_pct: number
+  claimed_pct: number
+  reviewed_tasks: number
+  unestimated: number
+  forecast: ForecastRow | null
+  run_number: number
+  tree: TreeNode[]
+  completed_runs: CompletedRun[]
+  can_close_run: boolean
+  /** "Finish this track". */
+  finish: ActionSpec | null
+  remove: RemoveSpec | null
+}
+
+export interface FinishedTrack {
+  track: number
+  goal: NodeRef
+  done_pct: number
+  reopen: ActionSpec
+  remove: RemoveSpec | null
 }
 
 export interface UnitRow {
@@ -312,6 +407,10 @@ export interface TaskDrill {
   id: string
   title: string
   status: string | null
+  /** How it is checked: tests, or review. */
+  check: 'tests' | 'review'
+  /** ✓ Works / ✗ Broken, for a task that was said done and isn't signed off yet. */
+  actions: ActionSpec[]
   estimate_min: number | null
   actual_min: number
   decisions: Decision[][]

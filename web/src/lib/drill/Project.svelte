@@ -11,9 +11,20 @@
   import type { Client } from '$lib/api'
   import { changed } from '$lib/changed'
   import { hhmm } from '$lib/format'
+  import ConfirmRemove from '$lib/ui/ConfirmRemove.svelte'
+  import OwnerButtons from '$lib/ui/OwnerButtons.svelte'
+  import RowMenu from '$lib/ui/RowMenu.svelte'
   import { hillWord, statusWord } from '$lib/words'
   import { addedGroups, addedText } from '$lib/scope'
-  import type { ProjectDrill, ProjectRow, TreeNode } from '$lib/types'
+  import type { ActResult } from '$lib/api'
+  import type {
+    OwnerAction,
+    ProjectDrill,
+    ProjectRow,
+    RemoveSpec,
+    TrackSection,
+    TreeNode,
+  } from '$lib/types'
   import { useModel } from './useModel.svelte'
 
   let {
@@ -63,13 +74,41 @@
     if (new Set(times).size < 2) return false
     return Math.max(...times) - Math.min(...times) >= 60_000
   })
+  const act = (a: OwnerAction): Promise<ActResult> => client.act(a)
+  /** One section per open track; the single-plan page is the one-track case. */
+  const sections = $derived<TrackSection[]>(
+    m.data?.tracks?.length
+      ? m.data.tracks
+      : m.data
+        ? [
+            {
+              track: 1,
+              goal: row?.goal ?? { id: 'G', shown: 'G', title: '' },
+              done_pct: row?.done_pct ?? 0,
+              claimed_pct: row?.claimed_pct ?? 0,
+              reviewed_tasks: 0,
+              unestimated: 0,
+              forecast: null,
+              run_number: m.data.run_number,
+              tree: m.data.tree,
+              completed_runs: m.data.completed_runs,
+              can_close_run: m.data.can_close_run,
+              finish: null,
+              remove: null,
+            },
+          ]
+        : [],
+  )
+  const several = $derived(sections.length > 1)
+  const allNodes = $derived(sections.flatMap((t) => t.tree))
+  let removing = $state<RemoveSpec | null>(null)
   let closing = $state(false)
   let closeMsg = $state<{ ok: boolean; text: string } | null>(null)
   /** "Close this run": every task passed its tests, so the next plan starts fresh. */
-  async function closeRun() {
+  async function closeRun(track: number) {
     closing = true
     closeMsg = null
-    const res = await client.act({ kind: 'close_run', repo })
+    const res = await client.act({ kind: 'close_run', repo, track })
     closing = false
     closeMsg = res.ok ? { ok: true, text: res.reply } : { ok: false, text: res.error }
   }
@@ -80,8 +119,8 @@
   let folded = $state<Record<string, boolean>>({})
   // Intents start collapsed; each has its own labelled show/hide control.
   let intentOpen = $state<Record<string, boolean>>({})
-  const parents = $derived(new Set((m.data?.tree ?? []).map((n) => n.parent_id).filter(Boolean)))
-  const byId = $derived(new Map((m.data?.tree ?? []).map((n) => [n.id, n])))
+  const parents = $derived(new Set(allNodes.map((n) => n.parent_id).filter(Boolean)))
+  const byId = $derived(new Map(allNodes.map((n) => [n.id, n])))
   function hidden(n: TreeNode): boolean {
     let p = n.parent_id
     while (p) {
@@ -91,146 +130,82 @@
     return false
   }
 
-  /** A node's bar: the glance's numbers for the goal and milestones, else its level. */
-  function progress(n: TreeNode): { done: number; claimed: number } {
-    if (n.kind === 'goal' && row) return { done: row.done_pct, claimed: row.claimed_pct }
-    const ms = row?.milestones.find((x) => x.id === n.id)
+  /** The milestones of one track: the glance's, from its bar (or the project's, with one). */
+  function milestonesOf(t: TrackSection) {
+    return row?.tracks?.find((x) => x.track === t.track)?.milestones ?? row?.milestones ?? []
+  }
+
+  /** A node's bar: its track's numbers for the goal and milestones, else its level. */
+  function progress(n: TreeNode, t: TrackSection): { done: number; claimed: number } {
+    if (n.kind === 'goal') return { done: t.done_pct, claimed: t.claimed_pct }
+    const ms = milestonesOf(t).find((x) => x.id === n.id)
     if (ms) return { done: ms.done_pct, claimed: ms.claimed_pct }
-    if (['l2', 'l3', 'l4'].includes(n.status)) return { done: 100, claimed: 0 }
+    if (['l2', 'l3', 'l4', 'reviewed'].includes(n.status)) return { done: 100, claimed: 0 }
     if (['claimed', 'l1'].includes(n.status)) return { done: 0, claimed: 100 }
     return { done: 0, claimed: 0 }
   }
 </script>
 
-{#if m.error}
-  <p class="text-row text-warn">{m.error}</p>
-{:else if m.data}
-  <header class="flex flex-col gap-4">
-    <div class="flex flex-wrap items-start justify-between gap-4">
-      <div class="flex min-w-0 flex-col gap-0.5">
-        <h2 class="text-xl font-semibold">
-          {m.data.name}{#if m.data.run_number > 1}<span
-              class="ml-2 text-meta font-normal text-muted"
-              data-testid="run-number">Run {m.data.run_number}</span
-            >{/if}
-        </h2>
-        {#if row?.goal}<p class="text-meta text-muted">{row.goal.title}</p>{/if}
-      </div>
-      <div class="flex flex-wrap items-center gap-2">
-        {#if m.data.can_close_run}
-          <button
-            type="button"
-            class="inline-flex h-9 items-center rounded-lg border border-ok px-4 text-sm font-medium text-ok transition-colors duration-150 hover:bg-hover disabled:opacity-60"
-            disabled={closing}
-            onclick={closeRun}>Close this run</button
-          >
-        {/if}
-        <button
-          type="button"
-          class="inline-flex h-9 items-center rounded-lg border border-edge px-4 text-sm font-medium transition-colors duration-150 hover:bg-hover"
-          onclick={() => onOpenHistory(repo)}>History</button
-        >
-        <button
-          type="button"
-          class="inline-flex h-9 items-center rounded-lg border border-edge px-4 text-sm font-medium transition-colors duration-150 hover:bg-hover"
-          onclick={() => onOpenTuning(repo)}>Drift tuning</button
-        >
-        <button
-          type="button"
-          class="inline-flex h-9 items-center rounded-lg border border-edge px-4 text-sm font-medium transition-colors duration-150 hover:bg-hover"
-          onclick={() => onOpenCalibration?.(repo)}>Calibration</button
-        >
-        <button
-          type="button"
-          class="inline-flex h-9 items-center rounded-lg border border-edge px-4 text-sm font-medium transition-colors duration-150 hover:bg-hover"
-          onclick={() => onOpenPages?.(repo)}>Project pages</button
-        >
-      </div>
-    </div>
-    {#if closeMsg}
-      <p class={['text-row', closeMsg.ok ? 'text-ok' : 'text-warn']} role="status">
-        {closeMsg.text}
-      </p>
-    {/if}
-    {#if row?.run.finished}
-      <p class="text-row font-medium text-ok" data-testid="run-finished">
-        {row.run.finished.text}
-      </p>
-    {/if}
-    {#if row}
-      <div class="flex items-end gap-6">
-        <div class="flex flex-col">
-          <span class="text-[1.75rem] leading-8 font-semibold tabular-nums">
-            <span class="inline-block" use:changed={{ value: row.done_pct, cls: 'num' }}
-              >{row.done_pct}%</span
-            >
-          </span>
-          <span class="text-meta text-muted tabular-nums"
-            >done{row.claimed_pct > 0 ? ` · +${row.claimed_pct}% claimed` : ''}</span
-          >
-        </div>
-        <div class="min-w-0 flex-1 pb-1.5">
-          <ProgressBar done={row.done_pct} claimed={row.claimed_pct} />
-        </div>
-      </div>
-    {/if}
-  </header>
-
-  {#if row?.milestones.length}
-    <section class="flex flex-col gap-3" aria-labelledby="milestones">
-      <h3 id="milestones" class="text-base font-semibold">Milestones</h3>
+{#snippet trackBody(t: TrackSection)}
+  {#if milestonesOf(t).length}
+    <section class="flex flex-col gap-3" aria-labelledby={`milestones-${t.track}`}>
+      <h3 id={`milestones-${t.track}`} class="text-base font-semibold">Milestones</h3>
       <div class="flex flex-col gap-5 rounded-xl border border-line bg-surface p-5">
-        <MilestoneList project={row} limit={100} />
+        <MilestoneList
+          project={{ milestones: milestonesOf(t), sessions: row?.sessions ?? [] }}
+          limit={100}
+        />
       </div>
     </section>
   {/if}
 
-  {#if latest}
-    <section class="flex flex-col gap-3" aria-labelledby="scope">
-      <h3 id="scope" class="text-base font-semibold">Scope over time</h3>
-      <div class="rounded-xl border border-line bg-surface p-5">
-        {#if chartable}
-          <div
-            class="scope-chart h-56"
-            aria-label="Scope line: total live estimate and done, over time"
-          >
-            <LineChart
-              data={points}
-              x="date"
-              series={[
-                { key: 'total', label: 'scope (min)', color: 'var(--muted)' },
-                { key: 'done', label: 'done (min)', color: 'var(--clay)' },
-              ]}
-              legend
-            />
-          </div>
-        {:else}
-          <p
-            class="flex flex-wrap items-baseline gap-x-3 text-row tabular-nums"
-            data-testid="scope-summary"
-          >
-            <span>Scope {latest.total_min} min · done {latest.done_min} min</span>
-            <span class="text-meta text-muted"
-              >a chart appears once the scope changes over time</span
+  {#if !several}
+    {#if latest}
+      <section class="flex flex-col gap-3" aria-labelledby="scope">
+        <h3 id="scope" class="text-base font-semibold">Scope over time</h3>
+        <div class="rounded-xl border border-line bg-surface p-5">
+          {#if chartable}
+            <div
+              class="scope-chart h-56"
+              aria-label="Scope line: total live estimate and done, over time"
             >
-          </p>
-        {/if}
-        {#if added.length}
-          <p class="mt-3 text-meta text-muted">
-            Scope added: {addedText(added)}
-          </p>
-        {/if}
-      </div>
-    </section>
+              <LineChart
+                data={points}
+                x="date"
+                series={[
+                  { key: 'total', label: 'scope (min)', color: 'var(--muted)' },
+                  { key: 'done', label: 'done (min)', color: 'var(--clay)' },
+                ]}
+                legend
+              />
+            </div>
+          {:else}
+            <p
+              class="flex flex-wrap items-baseline gap-x-3 text-row tabular-nums"
+              data-testid="scope-summary"
+            >
+              <span>Scope {latest.total_min} min · done {latest.done_min} min</span>
+              <span class="text-meta text-muted"
+                >a chart appears once the scope changes over time</span
+              >
+            </p>
+          {/if}
+          {#if added.length}
+            <p class="mt-3 text-meta text-muted">
+              Scope added: {addedText(added)}
+            </p>
+          {/if}
+        </div>
+      </section>
+    {/if}
   {/if}
-
-  <section class="flex flex-col gap-3" aria-labelledby="plan">
-    <h3 id="plan" class="text-base font-semibold">Plan</h3>
+  <section class="flex flex-col gap-3" aria-labelledby={`plan-${t.track}`}>
+    <h3 id={`plan-${t.track}`} class="text-base font-semibold">Plan</h3>
     <ul class="flex flex-col border-y border-line" aria-label="Plan tree">
-      {#each m.data.tree as n (n.id)}
+      {#each t.tree as n (n.id)}
         {#if !hidden(n)}
           {@const look = statusWord(n.rollup ?? n.status)}
-          {@const p = progress(n)}
+          {@const p = progress(n, t)}
           {@const hill =
             n.kind === 'milestone' ? hillWord(n.hill, n.rollup === 'done' ? 100 : p.done) : null}
           {@const parent = parents.has(n.id)}
@@ -300,6 +275,12 @@
                     />{/if}
                   {#if n.stale}<Chip tone="warn" icon="!" text="stale" />{/if}
                   {#if n.owner_checked}<Chip tone="clay" icon="✓" text="owner" />{/if}
+                  {#if n.check === 'review' && n.status !== 'reviewed'}<Chip
+                      tone="muted"
+                      icon="✎"
+                      text="no tests"
+                      tip="Checked by review: done once its result is saved"
+                    />{/if}
                   {#if n.intent}
                     <Collapsible.Trigger
                       class="inline-flex h-6 items-center gap-1 rounded-md border border-edge px-2 text-meta text-muted hover:bg-hover hover:text-fg"
@@ -345,6 +326,24 @@
                 <span class="sr-only shrink-0 text-meta text-muted lg:not-sr-only lg:w-28"
                   >{look.word}</span
                 >
+                {#if n.actions?.length}
+                  <OwnerButtons actions={n.actions} {act} />
+                {/if}
+                {#if n.remove}
+                  <RowMenu label={`More for ${n.title}`}>
+                    {#snippet children(close)}
+                      <button
+                        type="button"
+                        role="menuitem"
+                        class="rounded-md px-3 py-1.5 text-left text-sm text-bad hover:bg-tint-bad"
+                        onclick={() => {
+                          close()
+                          removing = n.remove
+                        }}>Remove for good</button
+                      >
+                    {/snippet}
+                  </RowMenu>
+                {/if}
               </div>
               {#if n.intent}
                 <Collapsible.Content
@@ -359,11 +358,11 @@
     </ul>
   </section>
 
-  {#if m.data.completed_runs.length}
-    <section class="flex flex-col gap-3" aria-labelledby="completed-runs">
-      <h3 id="completed-runs" class="text-base font-semibold">Completed runs</h3>
+  {#if t.completed_runs.length}
+    <section class="flex flex-col gap-3" aria-labelledby={`completed-runs-${t.track}`}>
+      <h3 id={`completed-runs-${t.track}`} class="text-base font-semibold">Completed runs</h3>
       <ul class="flex flex-col divide-y divide-line border-y border-line">
-        {#each m.data.completed_runs as r (r.number)}
+        {#each t.completed_runs as r (r.number)}
           <li data-run={r.number}>
             <Collapsible.Root>
               <Collapsible.Trigger
@@ -396,6 +395,196 @@
       </ul>
     </section>
   {/if}
+{/snippet}
+
+{#if m.error}
+  <p class="text-row text-warn">{m.error}</p>
+{:else if m.data}
+  <header class="flex flex-col gap-4">
+    <div class="flex flex-wrap items-start justify-between gap-4">
+      <div class="flex min-w-0 flex-col gap-0.5">
+        <h2 class="text-xl font-semibold">
+          {m.data.name}{#if m.data.run_number > 1}<span
+              class="ml-2 text-meta font-normal text-muted"
+              data-testid="run-number">Run {m.data.run_number}</span
+            >{/if}
+        </h2>
+        {#if row?.goal}<p class="text-meta text-muted">{row.goal.title}</p>{/if}
+      </div>
+      <div class="flex flex-wrap items-center gap-2">
+        {#if m.data.can_close_run && !several}
+          <button
+            type="button"
+            class="inline-flex h-9 items-center rounded-lg border border-ok px-4 text-sm font-medium text-ok transition-colors duration-150 hover:bg-hover disabled:opacity-60"
+            disabled={closing}
+            onclick={() => closeRun(sections[0]?.track ?? 1)}>Close this run</button
+          >
+        {/if}
+        <button
+          type="button"
+          class="inline-flex h-9 items-center rounded-lg border border-edge px-4 text-sm font-medium transition-colors duration-150 hover:bg-hover"
+          onclick={() => onOpenHistory(repo)}>History</button
+        >
+        <button
+          type="button"
+          class="inline-flex h-9 items-center rounded-lg border border-edge px-4 text-sm font-medium transition-colors duration-150 hover:bg-hover"
+          onclick={() => onOpenTuning(repo)}>Drift tuning</button
+        >
+        <button
+          type="button"
+          class="inline-flex h-9 items-center rounded-lg border border-edge px-4 text-sm font-medium transition-colors duration-150 hover:bg-hover"
+          onclick={() => onOpenCalibration?.(repo)}>Calibration</button
+        >
+        <button
+          type="button"
+          class="inline-flex h-9 items-center rounded-lg border border-edge px-4 text-sm font-medium transition-colors duration-150 hover:bg-hover"
+          onclick={() => onOpenPages?.(repo)}>Project pages</button
+        >
+      </div>
+    </div>
+    {#if closeMsg}
+      <p class={['text-row', closeMsg.ok ? 'text-ok' : 'text-warn']} role="status">
+        {closeMsg.text}
+      </p>
+    {/if}
+    {#if row?.run.finished && !several}
+      <p class="text-row font-medium text-ok" data-testid="run-finished">
+        {row.run.finished.text}
+      </p>
+    {/if}
+    {#if row && !several}
+      <div class="flex items-end gap-6">
+        <div class="flex flex-col">
+          <span class="text-[1.75rem] leading-8 font-semibold tabular-nums">
+            <span class="inline-block" use:changed={{ value: row.done_pct, cls: 'num' }}
+              >{row.done_pct}%</span
+            >
+          </span>
+          <span class="text-meta text-muted tabular-nums"
+            >done{row.claimed_pct > 0 ? ` · +${row.claimed_pct}% claimed` : ''}</span
+          >
+        </div>
+        <div class="min-w-0 flex-1 pb-1.5">
+          <ProgressBar done={row.done_pct} claimed={row.claimed_pct} />
+        </div>
+      </div>
+    {/if}
+  </header>
+
+  {#if several}
+    {#if latest}
+      <section class="flex flex-col gap-3" aria-labelledby="scope">
+        <h3 id="scope" class="text-base font-semibold">Scope over time</h3>
+        <div class="rounded-xl border border-line bg-surface p-5">
+          {#if chartable}
+            <div
+              class="scope-chart h-56"
+              aria-label="Scope line: total live estimate and done, over time"
+            >
+              <LineChart
+                data={points}
+                x="date"
+                series={[
+                  { key: 'total', label: 'scope (min)', color: 'var(--muted)' },
+                  { key: 'done', label: 'done (min)', color: 'var(--clay)' },
+                ]}
+                legend
+              />
+            </div>
+          {:else}
+            <p
+              class="flex flex-wrap items-baseline gap-x-3 text-row tabular-nums"
+              data-testid="scope-summary"
+            >
+              <span>Scope {latest.total_min} min · done {latest.done_min} min</span>
+              <span class="text-meta text-muted"
+                >a chart appears once the scope changes over time</span
+              >
+            </p>
+          {/if}
+          {#if added.length}
+            <p class="mt-3 text-meta text-muted">
+              Scope added: {addedText(added)}
+            </p>
+          {/if}
+        </div>
+      </section>
+    {/if}
+
+    {#each sections as t (t.track)}
+      <section
+        class="flex flex-col gap-6"
+        aria-label={`Track ${t.track}: ${t.goal.title}`}
+        data-track={t.track}
+      >
+        <div class="flex flex-col gap-3 rounded-xl border border-line bg-surface p-5">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div class="flex min-w-0 flex-col">
+              <span class="text-meta text-muted">Track {t.track}</span>
+              <h3 class="text-lg font-semibold">{t.goal.title}</h3>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              {#if t.can_close_run}
+                <button
+                  type="button"
+                  class="inline-flex h-9 items-center rounded-lg border border-ok px-4 text-sm font-medium text-ok transition-colors duration-150 hover:bg-hover disabled:opacity-60"
+                  disabled={closing}
+                  onclick={() => closeRun(t.track)}>Close this run</button
+                >
+              {/if}
+              {#if t.finish}<OwnerButtons actions={[t.finish]} {act} compact={false} />{/if}
+              {#if t.remove}
+                <button
+                  type="button"
+                  class="inline-flex h-9 items-center rounded-lg border border-bad px-4 text-sm font-medium text-bad transition-colors duration-150 hover:bg-tint-bad"
+                  onclick={() => (removing = t.remove)}>Remove for good</button
+                >
+              {/if}
+            </div>
+          </div>
+          <div class="flex items-end gap-6">
+            <div class="flex flex-col">
+              <span class="text-[1.5rem] leading-7 font-semibold tabular-nums">{t.done_pct}%</span>
+              <span class="text-meta text-muted tabular-nums"
+                >done{t.claimed_pct > 0
+                  ? ` · +${t.claimed_pct}% claimed`
+                  : ''}{#if t.reviewed_tasks > 0}
+                  · includes {t.reviewed_tasks}
+                  {t.reviewed_tasks === 1 ? 'task' : 'tasks'} done without tests{/if}</span
+              >
+            </div>
+            <div class="min-w-0 flex-1 pb-1.5">
+              <ProgressBar done={t.done_pct} claimed={t.claimed_pct} />
+            </div>
+          </div>
+          {#if t.forecast}<p class="text-meta text-muted">{t.forecast.text}</p>{/if}
+        </div>
+        {@render trackBody(t)}
+      </section>
+    {/each}
+  {:else if sections[0]}
+    {@render trackBody(sections[0])}
+  {/if}
+
+  {#if m.data.finished_tracks?.length}
+    <section class="flex flex-col gap-3" aria-labelledby="finished-tracks">
+      <h3 id="finished-tracks" class="text-base font-semibold">Finished tracks</h3>
+      <ul class="flex flex-col divide-y divide-line border-y border-line">
+        {#each m.data.finished_tracks as f (f.track)}
+          <li
+            class="flex min-h-10 flex-wrap items-center gap-3 py-1.5 text-row"
+            data-finished={f.track}
+          >
+            <span class="font-medium">{f.goal.title}</span>
+            <span class="text-meta text-muted tabular-nums"
+              >track {f.track} · {f.done_pct}% done</span
+            >
+            <span class="ml-auto"><OwnerButtons actions={[f.reopen]} {act} /></span>
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
 
   {#if m.data.replans.length}
     <section class="flex flex-col gap-3">
@@ -414,3 +603,5 @@
 {:else}
   <p class="text-row text-muted">Loading…</p>
 {/if}
+
+<ConfirmRemove spec={removing} onClose={() => (removing = null)} {act} />

@@ -7,7 +7,8 @@ export const TOKEN_KEY = 'bridge-screen-token'
 
 /**
  * The token: taken from `#token=…` (then dropped from the address bar, so it isn't
- * bookmarked or shared) and kept in sessionStorage; else the one stored earlier.
+ * bookmarked or shared) and kept in sessionStorage; else the one stored earlier. A route
+ * part of the hash (`#/project/R&token=abc`) is kept when the token is stripped.
  */
 export function takeToken(
   loc: Pick<Location, 'hash' | 'pathname' | 'search'> = window.location,
@@ -17,7 +18,12 @@ export function takeToken(
   const m = /(?:^#|&)token=([0-9a-f]+)/i.exec(loc.hash)
   if (m) {
     storage.setItem(TOKEN_KEY, m[1])
-    hist.replaceState(null, '', loc.pathname + loc.search)
+    const route = loc.hash
+      .replace(/^#/, '')
+      .split('&')
+      .filter((part) => !/^token=[0-9a-f]+$/i.test(part))
+      .join('&')
+    hist.replaceState(null, '', loc.pathname + loc.search + (route ? `#${route}` : ''))
     return m[1]
   }
   return storage.getItem(TOKEN_KEY)

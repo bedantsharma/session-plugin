@@ -158,6 +158,7 @@ export const STATUS: Record<string, { icon: string; word: string; cls: string }>
   l2: { icon: '✓', word: 'tests pass', cls: 'text-ok' },
   l3: { icon: '✓', word: 'tried end to end', cls: 'text-ok' },
   l4: { icon: '✓', word: 'you signed it off', cls: 'text-ok' },
+  reviewed: { icon: '✓', word: 'done — no tests', cls: 'text-muted' },
   failed: { icon: '✗', word: 'failed a check', cls: 'text-bad' },
   in_progress: { icon: '◔', word: 'in progress', cls: 'text-clay' },
   done: { icon: '✓', word: 'done', cls: 'text-ok' },

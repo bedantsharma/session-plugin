@@ -38,6 +38,10 @@ const drill = (scope: ProjectDrill['scope']): ProjectDrill => ({
       branch: null,
       decisions: 0,
       depth: 0,
+      track: 1,
+      check: 'tests',
+      actions: [],
+      remove: null,
     },
   ],
   run_number: 1,
@@ -45,6 +49,8 @@ const drill = (scope: ProjectDrill['scope']): ProjectDrill => ({
   can_close_run: false,
   scope,
   replans: [],
+  tracks: [],
+  finished_tracks: [],
 })
 
 const client = (d: ProjectDrill): Client => ({
@@ -197,5 +203,91 @@ describe('Project drill', () => {
     render(Project, props(drill([])))
     await screen.findByRole('button', { name: /show intent/i })
     expect(screen.queryByRole('button', { name: 'Close this run' })).toBeNull()
+  })
+
+  it('shows one section per track, the finished ones with Reopen, and row actions', async () => {
+    const base = drill([])
+    const node = base.tree[0]
+    const section = (no: number, title: string) => ({
+      track: no,
+      goal: { id: no === 1 ? 'G' : `T${no}-G`, shown: 'G', title },
+      done_pct: no * 10,
+      claimed_pct: 0,
+      reviewed_tasks: no === 2 ? 2 : 0,
+      unestimated: 0,
+      forecast: null,
+      run_number: 1,
+      tree: [
+        {
+          ...node,
+          id: no === 1 ? 'G' : `T${no}-G`,
+          title,
+          track: no,
+          kind: 'goal',
+        },
+        {
+          ...node,
+          id: no === 1 ? '1.1' : `T${no}-1.1`,
+          shown: '1.1',
+          parent_id: no === 1 ? 'G' : `T${no}-G`,
+          kind: 'task',
+          title: `Task of ${title}`,
+          status: 'claimed',
+          track: no,
+          depth: 1,
+          actions: [
+            {
+              label: '✓ Works',
+              action: {
+                kind: 'verify',
+                repo: 'r1',
+                task: no === 1 ? '1.1' : `T${no}-1.1`,
+                level: 4,
+              },
+              inputs: [],
+              tone: 'primary' as const,
+            },
+          ],
+          remove: {
+            text: 'Remove task 1.1 for good?',
+            action: { kind: 'remove', repo: 'r1', id: 'x', title: 'x', confirm: false },
+          },
+        },
+      ],
+      completed_runs: [],
+      can_close_run: false,
+      finish: null,
+      remove: null,
+    })
+    const d: ProjectDrill = {
+      ...base,
+      tracks: [section(1, 'Ship shop'), section(2, 'Docs refresh')],
+      finished_tracks: [
+        {
+          track: 3,
+          goal: { id: 'T3-G', shown: 'G', title: 'Old spike' },
+          done_pct: 100,
+          reopen: {
+            label: 'Reopen',
+            action: { kind: 'reopen_track', repo: 'r1', track: 3 },
+            inputs: [],
+            tone: 'neutral',
+          },
+          remove: null,
+        },
+      ],
+    }
+    const { container } = render(Project, props(d))
+    expect(await screen.findByRole('region', { name: 'Track 1: Ship shop' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Track 2: Docs refresh' })).toBeInTheDocument()
+    // The display id restarts from 1 in every track; the raw id stays in small text.
+    expect(container.querySelector('[data-node="T2-1.1"]')).toHaveTextContent('1.1')
+    expect(container.querySelector('[data-node="T2-1.1"]')).toHaveTextContent('(T2-1.1)')
+    expect(screen.getAllByRole('button', { name: '✓ Works' })).toHaveLength(2)
+    expect(container.querySelector('[data-track="2"]')).toHaveTextContent(
+      'includes 2 tasks done without tests',
+    )
+    expect(container.querySelector('[data-finished="3"]')).toHaveTextContent('Old spike')
+    expect(screen.getByRole('button', { name: 'Reopen' })).toBeInTheDocument()
   })
 })

@@ -12,6 +12,8 @@ export interface Seed {
   milestones?: { id: string; title: string; hill?: 'uphill' | 'downhill' }[]
   /** Tasks already verified at L2, with time and tokens (the calibration drill). */
   finished?: number
+  /** A second track ("Docs refresh") with a milestone and two tasks. */
+  secondTrack?: boolean
 }
 
 let n = 0
@@ -56,6 +58,28 @@ export function seed(bin: string, home: string, repos: Seed[]) {
       estimate_min: 30,
       expected_files: [],
     })
+    if (r.secondTrack) {
+      const node = (
+        nid: string,
+        parent: string | null,
+        kind: string,
+        title: string,
+        est?: number,
+      ) =>
+        add(r.repo, 'owner', ago(58), 'node_added', {
+          id: nid,
+          parent_id: parent,
+          kind,
+          title,
+          intent: kind === 'goal' || kind === 'milestone' ? 'Docs are current.' : undefined,
+          estimate_min: est ?? null,
+          expected_files: [],
+        })
+      node('T2-G', null, 'goal', 'Docs refresh')
+      node('T2-1', 'T2-G', 'milestone', 'Pages')
+      node('T2-1.1', 'T2-1', 'task', 'Rewrite the readme', 20)
+      node('T2-1.2', 'T2-1', 'task', 'Add a guide', 30)
+    }
     for (const m of r.milestones ?? []) {
       add(r.repo, 'owner', ago(59), 'node_added', {
         id: m.id,
