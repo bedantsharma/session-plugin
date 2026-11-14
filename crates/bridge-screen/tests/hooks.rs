@@ -631,6 +631,7 @@ fn scoring_path(event: &str, label: &str) {
         intent: Some("People can buy things and see their orders.".into()),
         estimate_min: None,
         expected_files: vec![],
+        check: None,
     }];
     for m in 1..=10 {
         ops.push(PlanOp::AddNode {
@@ -640,6 +641,7 @@ fn scoring_path(event: &str, label: &str) {
             intent: Some("Part of the shop works end to end.".into()),
             estimate_min: None,
             expected_files: vec![],
+            check: None,
         });
         for t in 1..=29 {
             ops.push(PlanOp::AddNode {
@@ -649,6 +651,7 @@ fn scoring_path(event: &str, label: &str) {
                 intent: None,
                 estimate_min: Some(30),
                 expected_files: vec![format!("src/mod{m}/task{t}.rs")],
+                check: None,
             });
         }
     }
@@ -774,6 +777,7 @@ fn hook_latency_commit_path() {
                 intent: Some("Ship it.".into()),
                 estimate_min: None,
                 expected_files: vec![],
+                check: None,
             },
             PlanOp::AddNode {
                 parent: Some("G".into()),
@@ -782,6 +786,7 @@ fn hook_latency_commit_path() {
                 intent: None,
                 estimate_min: Some(30),
                 expected_files: vec![],
+                check: None,
             },
         ],
     )
@@ -898,6 +903,7 @@ fn hook_latency_prompt_with_verify_notes() {
         intent: None,
         estimate_min: Some(30),
         expected_files: vec![],
+        check: None,
     };
     plan_edit(
         &mut store,
@@ -916,6 +922,7 @@ fn hook_latency_prompt_with_verify_notes() {
                 intent: Some("Ship it.".into()),
                 estimate_min: None,
                 expected_files: vec![],
+                check: None,
             },
             task("Login"),
             task("Reset"),
@@ -1215,6 +1222,7 @@ fn hook_latency_prompt_with_waits_and_external_deps() {
         intent: Some("Ship it.".into()),
         estimate_min: None,
         expected_files: vec![],
+        check: None,
     };
     let task = |title: String| PlanOp::AddNode {
         parent: Some("G".into()),
@@ -1223,6 +1231,7 @@ fn hook_latency_prompt_with_waits_and_external_deps() {
         intent: None,
         estimate_min: Some(30),
         expected_files: vec![],
+        check: None,
     };
     let mut api = vec![goal.clone()];
     api.extend((1..=25).map(|i| task(format!("Endpoint {i}"))));
@@ -1561,4 +1570,72 @@ fn stop_refreshes_branch() {
         "{branch:?}"
     );
     assert_eq!(n, 2);
+}
+
+/// Five open tracks on the large database: SessionStart with 20 unchanged plan files (the
+/// files wait for a track, so each scan only stats them) within the SessionStart budget,
+/// and UserPromptSubmit (the claim reminder across the tracks) within 50 ms.
+#[test]
+#[ignore = "perf check: run on demand with --release"]
+fn hook_latency_five_open_tracks() {
+    use std::time::Instant;
+
+    let env = Env::new();
+    big_database(&env);
+    let seed = r#"[{"op":"add_node","kind":"goal","title":"Ship the shop","intent":"People can buy things."},
+        {"op":"add_node","parent":"G","kind":"milestone","title":"Core","intent":"Core works"},
+        {"op":"add_node","parent":"1","kind":"task","title":"Checkout flow","estimate_min":30},
+        {"op":"add_node","parent":"1","kind":"task","title":"Order history","estimate_min":30}]"#;
+    assert!(env.run(&["plan", "edit"], seed).status.success());
+    for k in 2..=5 {
+        assert!(
+            env.run(&["track", "start", &format!("Side project {k}")], "")
+                .status
+                .success()
+        );
+        let ops = format!(
+            r#"[{{"op":"add_node","parent":"T{k}-G","kind":"milestone","title":"Part","intent":"p"}},
+               {{"op":"add_node","parent":"T{k}-1","kind":"task","title":"Item {k} one","estimate_min":20}},
+               {{"op":"add_node","parent":"T{k}-1","kind":"task","title":"Item {k} two","estimate_min":20}}]"#
+        );
+        assert!(env.run(&["plan", "edit"], &ops).status.success());
+    }
+    let dir = env.repo.path().join("docs/superpowers/plans");
+    std::fs::create_dir_all(&dir).unwrap();
+    for i in 0..20 {
+        std::fs::write(
+            dir.join(format!("p{i:02}.md")),
+            plan_file(8, 20, &format!("{i}")),
+        )
+        .unwrap();
+    }
+    // The repo already has a hand-made plan, so the files are noted as a baseline at the
+    // first start and only stat'ed afterwards.
+    env.hook("session-start", "first-start");
+    let starts = (0..40)
+        .map(|i| {
+            let payload =
+                common::fixture("session-start", &format!("trk-{i:03}"), &env.repo_path());
+            let start = Instant::now();
+            env.hook_raw("session-start", &payload);
+            start.elapsed()
+        })
+        .collect();
+    report_within(
+        "hook session-start (5 open tracks, 20 plan files)",
+        starts,
+        150,
+    );
+    let session = "perf-session-11";
+    env.hook("session-start", session);
+    let payload = common::fixture("user-prompt-submit", session, &env.repo_path());
+    let times = (0..200)
+        .map(|_| {
+            let start = Instant::now();
+            env.hook_raw("user-prompt-submit", &payload);
+            start.elapsed()
+        })
+        .collect();
+    assert_eq!(env.log(), "");
+    report("hook user-prompt-submit (5 open tracks)", times);
 }

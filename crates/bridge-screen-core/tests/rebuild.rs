@@ -22,6 +22,7 @@ fn add(parent: Option<&str>, kind: NodeKind, title: &str) -> PlanOp {
         intent: kind.requires_intent().then(|| "why".to_string()),
         estimate_min: Some(20),
         expected_files: vec![format!("src/{title}.rs")],
+        check: None,
     }
 }
 
@@ -53,6 +54,7 @@ fn dump(store: &Store) -> Vec<String> {
         ("plan_sources", "repo_id, path"),
         ("plan_source_items", "repo_id, path, task_no, step_no"),
         ("waits", "wait_id"),
+        ("hides", "repo_id, subject"),
     ] {
         let mut stmt = store
             .conn()
@@ -107,6 +109,7 @@ fn rebuild_reproduces_incremental_views() {
                 id: "1.1".into(),
                 title: Some("schema v1".into()),
                 expected_files: None,
+                check: None,
             },
             PlanOp::MoveNode {
                 id: "1.2".into(),
@@ -319,6 +322,7 @@ fn rebuild_reproduces_session_views() {
                 parent: "1".into(),
                 title: "late work".into(),
                 estimate_min: Some(10),
+                check: None,
             },
         ),
     )
@@ -1053,6 +1057,7 @@ fn rebuild_reproduces_import_init_wait_and_branch_views() {
         session_id: "owner".into(),
         actor: Actor::default(),
         dry_run: false,
+        track: None,
     };
     // Repo a: imported, then a big change (a replan).
     std::fs::write(plans.join("a.md"), plan(&["One", "Two", "Three"])).unwrap();
@@ -1138,9 +1143,9 @@ fn rebuild_reproduces_import_init_wait_and_branch_views() {
             .filter(|l| l.starts_with(&format!("{table}: ")))
             .count()
     };
-    // a.md in repos a and c (c's as a baseline), its tasks and steps, three waits.
+    // a.md in repos a and c (c as a baseline), its tasks (steps are not imported), three waits.
     assert_eq!(rows("plan_sources"), 2);
-    assert!(rows("plan_source_items") >= 12);
+    assert!(rows("plan_source_items") >= 4);
     assert_eq!(rows("waits"), 3);
     let one = |sql: &str| -> i64 { s.conn().query_row(sql, [], |r| r.get(0)).unwrap() };
     assert_eq!(
@@ -1168,4 +1173,151 @@ fn rebuild_reproduces_import_init_wait_and_branch_views() {
 
 fn ctx_for(repo: &str) -> EditContext {
     ctx(repo, false)
+}
+
+/// Every event kind and field this round added, replayed: each view, and what is read when
+/// asked (tracks, runs), comes back identical.
+#[test]
+#[allow(clippy::too_many_lines)] // one script with every new kind of event
+fn rebuild_reproduces_new_views() {
+    use bridge_screen_core::plan::{CheckKind, owner_remove_in, runs, start_track_in, track};
+    let mut s = Store::open_in_memory().unwrap();
+    let append = |s: &mut Store, repo: &str, session: &str, kind: &str, data: Value| {
+        let mut d = EventDraft::new(repo, session, kind, data.clone());
+        if let Some(t) = data["task_id"].as_str() {
+            d = d.task(t);
+        }
+        s.append(d).unwrap();
+    };
+    plan_edit(
+        &mut s,
+        &ctx("a", false),
+        &[
+            add(None, NodeKind::Goal, "goal"),
+            add(Some("G"), NodeKind::Milestone, "core"),
+            add(Some("1"), NodeKind::Task, "survey"),
+            add(Some("1"), NodeKind::Task, "build"),
+            add(Some("1"), NodeKind::Task, "extra"),
+        ],
+    )
+    .unwrap();
+    // A second track, with a milestone and a task.
+    s.write(|tx| start_track_in(tx, &ctx("a", false), "Docs", "docs are current"))
+        .unwrap();
+    plan_edit(
+        &mut s,
+        &ctx("a", false),
+        &[
+            add(Some("T2-G"), NodeKind::Milestone, "pages"),
+            add(Some("T2-1"), NodeKind::Task, "readme"),
+        ],
+    )
+    .unwrap();
+    // A task switched to review and saved with a real summary: reviewed.
+    plan_edit(
+        &mut s,
+        &ctx("a", false),
+        &[PlanOp::EditNode {
+            id: "1.1".into(),
+            title: None,
+            expected_files: None,
+            check: Some(CheckKind::Review),
+        }],
+    )
+    .unwrap();
+    append(
+        &mut s,
+        "a",
+        "s1",
+        "claimed_done",
+        json!({"task_id": "1.1", "evidence":
+            "Read the vendor reports and compared pricing, limits and support terms in one table."}),
+    );
+    // Nudges and a wait on a task the owner then removes for good.
+    append(
+        &mut s,
+        "a",
+        "s1",
+        "verify_nudged",
+        json!({"task_id": "1.3", "level": 0}),
+    );
+    append(
+        &mut s,
+        "a",
+        "s2",
+        "waiting_on",
+        json!({"wait_id": "W1", "target_repo_id": "a", "target_task": "1.3",
+               "target_text": "1.3 extra", "reason": "needs it"}),
+    );
+    s.write(|tx| owner_remove_in(tx, "a", "owner", "1.3", "removed by the owner").map(|_| ()))
+        .unwrap();
+    // Tracks finished and reopened, a run closed in track 2, a forecast for track 2.
+    append(&mut s, "a", "owner", "track_closed", json!({"track": 2}));
+    append(&mut s, "a", "owner", "track_reopened", json!({"track": 2}));
+    append(
+        &mut s,
+        "a",
+        "owner",
+        "run_closed",
+        json!({"at_milestone_next": 2, "closed_ids": ["T2-1"], "closed_at": "2026-11-14T00:00:00Z",
+               "track": 2}),
+    );
+    append(
+        &mut s,
+        "a",
+        "owner",
+        "forecast_ran",
+        json!({"p50_hours": 1.0, "p90_hours": 2.0, "remaining_min": 60, "unestimated": 0,
+               "points": 3, "track": 2}),
+    );
+    // Hiding.
+    append(
+        &mut s,
+        "a",
+        "owner",
+        "hidden",
+        json!({"subject": "track:a:2", "label": "Docs", "stamp": 5}),
+    );
+    append(
+        &mut s,
+        "a",
+        "owner",
+        "hidden",
+        json!({"subject": "project:a", "label": "a", "stamp": 9}),
+    );
+    append(
+        &mut s,
+        "a",
+        "owner",
+        "unhidden",
+        json!({"subject": "project:a"}),
+    );
+    // A plan file's task the owner removed stays recorded as removed.
+    append(
+        &mut s,
+        "a",
+        "owner",
+        "plan_imported",
+        json!({"path": "p.md", "hash": "h", "size": 1, "mtime": 1, "node_id": "1", "tasks": 1,
+               "changed_ratio": 0.0, "replan": false,
+               "items": [{"task": 1, "node_id": "1.3", "title": "extra", "owner_removed": true}]}),
+    );
+    let before = dump(&s);
+    let tracks_before = track::tracks(s.conn(), "a").unwrap();
+    let runs_before = runs::load_all(s.conn(), "a").unwrap();
+    assert!(
+        before.iter().any(|l| l.starts_with("hides: ")),
+        "the drawer has a row"
+    );
+    let reviewed = bridge_screen_core::plan::get_node(s.conn(), "a", "1.1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        reviewed.status,
+        bridge_screen_core::plan::NodeStatus::Reviewed
+    );
+    s.rebuild().unwrap();
+    assert_eq!(dump(&s), before);
+    assert_eq!(track::tracks(s.conn(), "a").unwrap(), tracks_before);
+    assert_eq!(runs::load_all(s.conn(), "a").unwrap(), runs_before);
 }

@@ -124,6 +124,9 @@ pub enum Command {
         /// How to split the totals.
         #[arg(long, value_enum, default_value_t = UsageBy::Task)]
         by: UsageBy,
+        /// Only this track's tasks (see `track list`).
+        #[arg(long)]
+        track: Option<u32>,
         /// Read every transcript of this repo's sessions to the end first and record
         /// what's new (hooks read at most 512 KiB at a time).
         #[arg(long)]
@@ -134,6 +137,9 @@ pub enum Command {
         /// Any directory inside the repo.
         #[arg(short = 'C', long = "dir", default_value = ".")]
         dir: PathBuf,
+        /// Only this track (each open track gets its own forecast when there are several).
+        #[arg(long)]
+        track: Option<u32>,
     },
     /// Import the repo's plan files (any *.md named plan, roadmap, todo or tasks, in any folder;
     /// docs/superpowers/plans is the usual place) into the plan.
@@ -144,6 +150,10 @@ pub enum Command {
         /// Link FILE to this existing goal or milestone (its tasks are matched by title).
         #[arg(long, requires = "file", value_name = "NODE")]
         into: Option<String>,
+        /// Place FILE in this track (needed when the folder has several open tracks and the
+        /// file's title matches none of their milestones).
+        #[arg(long, requires = "file", conflicts_with = "into", value_name = "N")]
+        track: Option<u32>,
         /// Show what would change; write nothing.
         #[arg(long)]
         dry_run: bool,
@@ -173,6 +183,52 @@ pub enum Command {
     Run {
         #[command(subcommand)]
         action: RunCommand,
+        /// Any directory inside the repo.
+        #[arg(short = 'C', long = "dir", default_value = ".", global = true)]
+        dir: PathBuf,
+    },
+    /// Hide something from the front screen until something new happens to it:
+    /// `hide project`, `hide track N` or `hide card <id>` (ids as `status` shows them).
+    /// Hiding never changes a number; `hidden` lists what is hidden, `unhide N` brings it back.
+    Hide {
+        /// `project`, `track N` or `card ID`.
+        #[arg(required = true, num_args = 1..)]
+        what: Vec<String>,
+        /// Any directory inside the repo.
+        #[arg(short = 'C', long = "dir", default_value = ".")]
+        dir: PathBuf,
+    },
+    /// Bring back something hidden: its number in `hidden`, or its full name.
+    Unhide {
+        what: String,
+        /// Any directory inside the repo.
+        #[arg(short = 'C', long = "dir", default_value = ".")]
+        dir: PathBuf,
+    },
+    /// What is hidden from the front screen, and for how long.
+    Hidden {
+        /// Any directory inside the repo.
+        #[arg(short = 'C', long = "dir", default_value = ".")]
+        dir: PathBuf,
+    },
+    /// Remove abandoned work for good: a task, a milestone or a whole track (`track` goal id,
+    /// e.g. `T2-G`). It leaves the bars, the queue and the forecast; the history keeps a
+    /// record. Asks first unless --yes.
+    Remove {
+        /// The plan id (`1.2`, `3`, `T2-1.1`, `T2-G`).
+        id: String,
+        /// Don't ask.
+        #[arg(long)]
+        yes: bool,
+        /// Any directory inside the repo.
+        #[arg(short = 'C', long = "dir", default_value = ".")]
+        dir: PathBuf,
+    },
+    /// Tracks: one folder can hold several unrelated pieces of work, each with its own goal,
+    /// bar and numbering. `track list | start "<goal>" [--intent T] | close N | reopen N`.
+    Track {
+        #[command(subcommand)]
+        action: TrackCommand,
         /// Any directory inside the repo.
         #[arg(short = 'C', long = "dir", default_value = ".", global = true)]
         dir: PathBuf,
@@ -254,6 +310,9 @@ pub enum PlanCommand {
         /// Include dropped nodes.
         #[arg(long)]
         all: bool,
+        /// Only this track (every open track is shown by default).
+        #[arg(long)]
+        track: Option<u32>,
     },
     /// Apply a JSON array of plan operations (from --file or stdin).
     Edit {
@@ -300,6 +359,8 @@ pub enum UsageBy {
     Task,
     Session,
     Agent,
+    /// One line per track.
+    Track,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -315,7 +376,29 @@ pub enum LabelArg {
 #[derive(Debug, Subcommand)]
 pub enum RunCommand {
     /// Close the finished run (owner only).
-    Close,
+    Close {
+        /// The track, when the folder has several open ones.
+        #[arg(long)]
+        track: Option<u32>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TrackCommand {
+    /// The folder's tracks: number, name, state and progress.
+    List,
+    /// Start a new track (you need no words; agents must ask you).
+    Start {
+        /// The track's goal, in your words.
+        goal: String,
+        /// Why it matters and what done looks like (defaults to the goal text).
+        #[arg(long)]
+        intent: Option<String>,
+    },
+    /// Finish a track: refused while a task is neither done nor removed.
+    Close { number: u32 },
+    /// Take a finished track back into the open list.
+    Reopen { number: u32 },
 }
 
 #[derive(Debug, Subcommand)]

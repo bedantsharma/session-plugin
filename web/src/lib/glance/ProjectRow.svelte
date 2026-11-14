@@ -8,9 +8,38 @@
   import ProgressBar from './ProgressBar.svelte'
   import type { ProjectRow } from '$lib/types'
   import Chip from '$lib/ui/Chip.svelte'
+  import RowMenu from '$lib/ui/RowMenu.svelte'
+  import TrackBar from './TrackBar.svelte'
+  import type { ActResult } from '$lib/api'
+  import type { OwnerAction } from '$lib/types'
   import { rollupWord } from '$lib/words'
 
-  let { project, onOpen }: { project: ProjectRow; onOpen?: (repo: string) => void } = $props()
+  let {
+    project,
+    onOpen,
+    act,
+  }: {
+    project: ProjectRow
+    onOpen?: (repo: string) => void
+    act?: (a: OwnerAction) => Promise<ActResult>
+  } = $props()
+
+  /** Two or more open tracks: one bar each, and no single big percentage. */
+  const several = $derived((project.tracks?.length ?? 0) > 1)
+  let message = $state<{ ok: boolean; text: string } | null>(null)
+
+  async function hideProject() {
+    if (!act) return
+    message = null
+    const res = await act({
+      kind: 'hide',
+      repo: project.repo_id,
+      subject: project.subject,
+      label: project.name,
+      stamp: project.stamp,
+    })
+    message = res.ok ? null : { ok: false, text: res.error }
+  }
 
   const complete = $derived(
     project.milestones.filter((m) => m.status === 'done' || m.done_pct >= 100).length,
@@ -28,7 +57,11 @@
         class="self-start text-left text-base font-semibold outline-none after:absolute after:inset-0 after:rounded-xl hover:underline focus-visible:after:ring-3 focus-visible:after:ring-ring/50"
         onclick={() => onOpen?.(project.repo_id)}>{project.name}</button
       >
-      {#if project.goal}
+      {#if several}
+        <span class="text-meta text-muted" data-testid="track-count"
+          >{project.tracks.length} tracks</span
+        >
+      {:else if project.goal}
         {@const goalDone = rollupWord(project.goal_status)}
         <span class="flex items-center gap-2 truncate text-meta text-muted"
           >{project.goal.title}{#if goalDone}<Chip
@@ -39,44 +72,81 @@
         >
       {/if}
     </div>
-    <div class="flex shrink-0 flex-col items-end" data-testid="progress-text">
-      <span class="text-[1.75rem] leading-8 font-semibold tabular-nums">
-        <span class="inline-block" use:changed={{ value: project.done_pct, cls: 'num' }}
-          >{project.done_pct}%</span
-        >
-      </span>
-      {#if project.claimed_pct > 0}
-        <span class="text-meta text-muted tabular-nums">+{project.claimed_pct}% claimed</span>
+    <div class="flex shrink-0 items-start gap-2">
+      {#if !several}
+        <div class="flex flex-col items-end" data-testid="progress-text">
+          <span class="text-[1.75rem] leading-8 font-semibold tabular-nums">
+            <span class="inline-block" use:changed={{ value: project.done_pct, cls: 'num' }}
+              >{project.done_pct}%</span
+            >
+          </span>
+          {#if project.claimed_pct > 0}
+            <span class="text-meta text-muted tabular-nums">+{project.claimed_pct}% claimed</span>
+          {/if}
+        </div>
+      {/if}
+      {#if act}
+        <RowMenu label="Project menu">
+          {#snippet children(close)}
+            <button
+              type="button"
+              role="menuitem"
+              class="rounded-md px-3 py-1.5 text-left text-sm hover:bg-hover"
+              onclick={() => {
+                close()
+                void hideProject()
+              }}>Hide this project</button
+            >
+          {/snippet}
+        </RowMenu>
       {/if}
     </div>
   </div>
-
-  {#if project.forecast}
-    <p class="-mt-3 self-end text-right text-meta" data-testid="forecast">
-      {#if project.forecast.compact}
-        <span title={project.forecast.help}>{project.forecast.text}</span>
-        <span class="sr-only">{` (${project.forecast.help})`}</span>
-      {:else}
-        <span class="text-muted">{project.forecast.text}</span>
-      {/if}
-    </p>
+  {#if message}
+    <p class="-mt-3 text-meta text-warn" role="status">{message.text}</p>
   {/if}
 
-  {#if project.run.finished}
-    <p class="-mt-2 text-row font-medium text-ok" data-testid="run-finished">
-      {project.run.finished.text}
-    </p>
+  {#if several}
+    <ul class="flex flex-col gap-3">
+      {#each project.tracks as t (t.track)}
+        <TrackBar track={t} repo={project.repo_id} sessions={project.sessions} {act} />
+      {/each}
+    </ul>
+    {#if project.run.finished}
+      <p class="text-row font-medium text-ok" data-testid="run-finished">
+        {project.run.finished.text}
+      </p>
+    {/if}
+  {:else}
+    {#if project.forecast}
+      <p class="-mt-3 self-end text-right text-meta" data-testid="forecast">
+        {#if project.forecast.compact}
+          <span title={project.forecast.help}>{project.forecast.text}</span>
+          <span class="sr-only">{` (${project.forecast.help})`}</span>
+        {:else}
+          <span class="text-muted">{project.forecast.text}</span>
+        {/if}
+      </p>
+    {/if}
+
+    {#if project.run.finished}
+      <p class="-mt-2 text-row font-medium text-ok" data-testid="run-finished">
+        {project.run.finished.text}
+      </p>
+    {/if}
+
+    <div class="flex flex-col gap-2">
+      <p class="text-meta text-muted tabular-nums" data-testid="progress-caption">
+        Done {project.done_pct}% · {complete} of {project.milestones.length}
+        {project.milestones.length === 1 ? 'milestone' : 'milestones'} complete{#if project.reviewed_tasks > 0}
+          · includes {project.reviewed_tasks}
+          {project.reviewed_tasks === 1 ? 'task' : 'tasks'} done without tests{/if}
+      </p>
+      <ProgressBar done={project.done_pct} claimed={project.claimed_pct} />
+    </div>
+
+    <MilestoneList {project} />
   {/if}
-
-  <div class="flex flex-col gap-2">
-    <p class="text-meta text-muted tabular-nums" data-testid="progress-caption">
-      Done {project.done_pct}% · {complete} of {project.milestones.length}
-      {project.milestones.length === 1 ? 'milestone' : 'milestones'} complete
-    </p>
-    <ProgressBar done={project.done_pct} claimed={project.claimed_pct} />
-  </div>
-
-  <MilestoneList {project} />
 
   {#if project.cost || project.leftovers.open > 0 || project.unestimated > 0}
     <div class="flex flex-wrap gap-x-4 border-t border-line pt-3 text-meta text-muted">

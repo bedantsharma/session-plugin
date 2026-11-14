@@ -730,16 +730,15 @@ fn dependency_ready(conn: &Connection, session: &Session) -> Result<Vec<Candidat
         .into_iter()
         .map(|d| (d.repo_id, Some(d.repo_name), d.id));
     for (repo, repo_name, dep) in local.chain(external) {
-        let Some(v) = crate::verify::top_verification(conn, &repo, &dep)?.filter(|v| v.level >= 2)
-        else {
+        let Some((by, sha)) = dependency_done(conn, &repo, &dep)? else {
             continue;
         };
-        if v.session_id == session.session_id {
+        if by == session.session_id {
             continue;
         }
-        let key = link_key(&session.repo_id, &repo, &dep, &v.sha);
+        let key = link_key(&session.repo_id, &repo, &dep, &sha);
         if note_was_sent(conn, &session.session_id, &key)?
-            || crate::waits::noted_by_wait(conn, session, &repo, &dep, &v.sha)?
+            || crate::waits::noted_by_wait(conn, session, &repo, &dep, &sha)?
         {
             continue;
         }
@@ -751,11 +750,33 @@ fn dependency_ready(conn: &Connection, session: &Session) -> Result<Vec<Candidat
         out.push(Candidate::new(
             NoteKind::DependencyReady,
             Channel::PromptSubmit,
-            done_text(conn, &shown, &title, &v.session_id, &v.sha)?,
+            done_text(conn, &shown, &title, &by, &sha)?,
             key,
         ));
     }
     wait_notes(conn, session, out)
+}
+
+/// Who finished a dependency and at which commit: its top verification at L2 or above, or
+/// (a task checked by review) its saved review, with the commit of the check that found its
+/// files (empty when there was none).
+fn dependency_done(conn: &Connection, repo: &str, dep: &str) -> Result<Option<(String, String)>> {
+    let top = crate::verify::top_verification(conn, repo, dep)?;
+    if let Some(v) = top.clone().filter(|v| v.level >= 2) {
+        return Ok(Some((v.session_id, v.sha)));
+    }
+    let reviewed = crate::plan::get_node(conn, repo, dep)?
+        .is_some_and(|n| n.status == crate::plan::NodeStatus::Reviewed);
+    if !reviewed {
+        return Ok(None);
+    }
+    let Some(claim) = crate::handoff::latest_claim(conn, repo, dep)? else {
+        return Ok(None);
+    };
+    Ok(Some((
+        claim.session_id,
+        top.map(|v| v.sha).unwrap_or_default(),
+    )))
 }
 
 /// The state key of a plan link's "done" note: `dep:<id>:<sha>` in this repo,
@@ -802,11 +823,16 @@ pub(crate) fn done_text(
 ) -> Result<String> {
     let branch = session::get(conn, by)?.and_then(|s| s.branch);
     let short: String = sha.chars().take(7).collect();
+    let at = if short.is_empty() {
+        String::new()
+    } else {
+        format!(" @{short}")
+    };
     let on = branch.map_or_else(String::new, |b| format!(" on `{b}`"));
-    Ok(format!(
-        "bridge-screen: {shown} {title} is done{on} @{short}. Merge or rebase to pick it up."
+    Ok(
+        format!("bridge-screen: {shown} {title} is done{on}{at}. Merge or rebase to pick it up.")
+            .replace("  ", " "),
     )
-    .replace("  ", " "))
 }
 
 #[cfg(test)]

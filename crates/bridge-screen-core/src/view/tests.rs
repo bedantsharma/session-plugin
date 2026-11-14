@@ -1016,7 +1016,7 @@ fn a_finished_run_reads_finished_and_sits_below_active_projects() {
 fn a_closed_run_leaves_the_numbers_and_stays_readable() {
     let mut s = store();
     pass_all(&mut s);
-    s.write(|tx| crate::plan::runs::close_in(tx, "r", "owner", &crate::store::Actor::default()))
+    s.write(|tx| crate::plan::runs::close_in(tx, "r", 1, "owner", &crate::store::Actor::default()))
         .unwrap();
     // Closed, nothing new yet: still "Run finished", 3 tasks.
     let g = glance_at(&s, 100);
@@ -1118,5 +1118,602 @@ fn history_rows_carry_a_sentence_the_task_and_the_kinds_present() {
         page.kinds
             .iter()
             .any(|k| k.kind == "verified" && k.label == "Checked and passed")
+    );
+}
+
+// ---- hiding from the front screen (spec 2026-11-14 §3) ----
+
+fn act_hide(s: &mut Store, repo: &str, subject: &str, stamp: i64) -> crate::error::Result<String> {
+    let home = crate::paths::Home::at(std::path::Path::new("/nonexistent"));
+    let cfg = Config::default();
+    let ctx = crate::owner::ActCtx {
+        home: &home,
+        cfg: &cfg,
+        now: at(10_000),
+        dir: None,
+    };
+    crate::owner::act(
+        s,
+        &ctx,
+        &crate::owner::OwnerAction::Hide {
+            repo: repo.into(),
+            subject: subject.into(),
+            label: "label".into(),
+            stamp,
+        },
+    )
+}
+
+fn act_unhide(s: &mut Store, repo: &str, subject: &str) -> crate::error::Result<String> {
+    let home = crate::paths::Home::at(std::path::Path::new("/nonexistent"));
+    let cfg = Config::default();
+    let ctx = crate::owner::ActCtx {
+        home: &home,
+        cfg: &cfg,
+        now: at(10_000),
+        dir: None,
+    };
+    crate::owner::act(
+        s,
+        &ctx,
+        &crate::owner::OwnerAction::Unhide {
+            repo: repo.into(),
+            subject: subject.into(),
+        },
+    )
+}
+
+/// Hide the first card on screen exactly as a click would.
+fn hide_first_card(s: &mut Store, secs: i64) -> String {
+    let g = glance_at(s, secs);
+    let card = g.needs_you[0].clone();
+    act_hide(s, &card.repo_id, &card.subject, card.stamp).unwrap();
+    card.id
+}
+
+fn hidden_subjects(g: &Glance) -> Vec<String> {
+    g.hidden.iter().map(|h| h.subject.clone()).collect()
+}
+
+#[test]
+fn hide_card_then_quiet_stays_hidden() {
+    let mut s = store();
+    start(&mut s, "verif0003", 0);
+    claim(&mut s, "verif0003", 1, "1.2");
+    overdue(&mut s, "verif0003", "1.2", 10);
+    assert_eq!(glance_at(&s, 100).needs_you_count, 1);
+    let id = hide_first_card(&mut s, 100);
+    let g = glance_at(&s, 100);
+    assert_eq!((g.needs_you_count, g.needs_you.len()), (0, 0));
+    assert_eq!(hidden_subjects(&g), vec![format!("card:{id}")]);
+    assert_eq!(g.projects[0].needs_you, 0);
+    // Quiet time (usage, prompts of another session, a day later): still hidden.
+    ev(&mut s, "verif0003", 500, "prompt", json!({}));
+    ev(&mut s, "verif0003", 600, "unit_stopped", json!({}));
+    let g = glance_at(&s, 3 * 86_400);
+    assert_eq!((g.needs_you_count, g.hidden.len()), (0, 1));
+    // Bringing it back is one click.
+    act_unhide(&mut s, "r", &format!("card:{id}")).unwrap();
+    let g = glance_at(&s, 3 * 86_400);
+    assert_eq!((g.needs_you_count, g.hidden.len()), (1, 0));
+}
+
+#[test]
+fn hidden_verify_card_returns_when_claimed_again_or_failed() {
+    let mut s = store();
+    start(&mut s, "verif0003", 0);
+    claim(&mut s, "verif0003", 1, "1.2");
+    overdue(&mut s, "verif0003", "1.2", 10);
+    hide_first_card(&mut s, 100);
+    assert_eq!(glance_at(&s, 200).needs_you_count, 0);
+    ev(
+        &mut s,
+        "verif0003",
+        300,
+        "claimed_done",
+        json!({"task_id": "1.2", "evidence": "tests pass again"}),
+    );
+    // Claimed again: the nudges start over, so the card is gone until it is overdue again.
+    for i in 1..=2 {
+        ev(
+            &mut s,
+            "verif0003",
+            301 + i,
+            "verify_nudged",
+            json!({"task_id": "1.2", "level": 0}),
+        );
+    }
+    ev(
+        &mut s,
+        "verif0003",
+        310,
+        "needs_owner",
+        json!({"kind": "verify", "task_id": "1.2"}),
+    );
+    let g = glance_at(&s, 400);
+    assert_eq!((g.needs_you_count, g.hidden.len()), (1, 0), "it returned");
+}
+
+#[test]
+fn hidden_card_returns_on_new_question() {
+    let mut s = store();
+    start(&mut s, "ask00001", 0);
+    ev(&mut s, "ask00001", 10, "prompt", json!({}));
+    ev(
+        &mut s,
+        "ask00001",
+        12,
+        "owner_question",
+        json!({"unit_no": 1, "source": "turn_end"}),
+    );
+    // A question card has no buttons but is a queue item (respond in the session); it hides.
+    hide_first_card(&mut s, 100);
+    assert_eq!(glance_at(&s, 200).needs_you_count, 0);
+    ev(&mut s, "ask00001", 300, "prompt", json!({}));
+    ev(
+        &mut s,
+        "ask00001",
+        310,
+        "owner_question",
+        json!({"unit_no": 2, "source": "turn_end"}),
+    );
+    assert_eq!(glance_at(&s, 400).needs_you_count, 1, "another question");
+}
+
+#[test]
+fn hidden_drift_card_returns_when_flagged_again() {
+    let mut s = store();
+    start(&mut s, "drift0001", 0);
+    claim(&mut s, "drift0001", 1, "1.1");
+    unit(&mut s, "drift0001", 2, 4000);
+    red(&mut s, "drift0001", 4000);
+    assert_eq!(glance_at(&s, 4100).needs_you_count, 1);
+    hide_first_card(&mut s, 4100);
+    assert_eq!(glance_at(&s, 4200).needs_you_count, 0);
+    ev(
+        &mut s,
+        "drift0001",
+        4300,
+        "drift_flagged",
+        json!({"unit_no": 2, "score": 0.9}),
+    );
+    assert_eq!(glance_at(&s, 4400).needs_you_count, 1);
+}
+
+#[test]
+fn hidden_permission_card_returns_when_another_prompt_waits() {
+    let mut s = store();
+    start(&mut s, "perm00002", 0);
+    ev(&mut s, "perm00002", 10, "prompt", json!({}));
+    ev(
+        &mut s,
+        "perm00002",
+        20,
+        "needs_owner",
+        json!({"kind": "permission_prompt"}),
+    );
+    hide_first_card(&mut s, 100);
+    assert_eq!(glance_at(&s, 200).needs_you_count, 0);
+    ev(
+        &mut s,
+        "perm00002",
+        300,
+        "needs_owner",
+        json!({"kind": "permission_prompt"}),
+    );
+    assert_eq!(glance_at(&s, 400).needs_you_count, 1);
+}
+
+#[test]
+fn hidden_leftover_stays_hidden_when_another_resolves() {
+    let mut s = store();
+    start(&mut s, "live0001", 0);
+    leftover(&mut s, "live0001", "la", "dead00004", "src/a.rs", 10);
+    let id = hide_first_card(&mut s, 100);
+    assert_eq!(glance_at(&s, 200).needs_you_count, 0);
+    // Another dead session's leftover resolves; ours is still hidden.
+    leftover(&mut s, "live0001", "lb", "dead00005", "src/b.rs", 300);
+    // A new leftover appeared: that card is new, but the hidden one comes back too, because
+    // the stamp is the repo's newest leftover: it is "something new" for leftovers.
+    let g = glance_at(&s, 400);
+    assert!(g.needs_you_count >= 1, "{:?}", g.needs_you);
+    let _ = id;
+    // Resolving one leaves the stamp alone.
+    let mut s2 = store();
+    start(&mut s2, "live0001", 0);
+    leftover(&mut s2, "live0001", "la", "dead00004", "src/a.rs", 10);
+    hide_first_card(&mut s2, 100);
+    ev(
+        &mut s2,
+        "live0001",
+        200,
+        "leftover_resolved",
+        json!({"leftover_id": "zz", "action": "undo", "by": "owner"}),
+    );
+    assert_eq!(glance_at(&s2, 300).hidden.len(), 1);
+}
+
+#[test]
+fn plan_scope_card_stamp_follows_plan_scope_asked() {
+    let mut s = store();
+    let before = crate::hide::stamp_of_card(s.conn(), "r", "plan_scope:r").unwrap();
+    ev(
+        &mut s,
+        "owner",
+        5,
+        "plan_scope_asked",
+        json!({"paths": ["a.md"]}),
+    );
+    let after = crate::hide::stamp_of_card(s.conn(), "r", "plan_scope:r").unwrap();
+    assert!(after > before);
+    ev(
+        &mut s,
+        "owner",
+        6,
+        "plan_file_seen",
+        json!({"path": "b.md", "hash": "h", "size": 1, "mtime": 1}),
+    );
+    assert_eq!(
+        crate::hide::stamp_of_card(s.conn(), "r", "plan_scope:r").unwrap(),
+        after
+    );
+}
+
+#[test]
+fn hidden_track_returns_on_claim_and_stays_through_usage_and_time() {
+    let mut s = store();
+    let stamp = crate::hide::stamp_of_track(s.conn(), "r", 1).unwrap();
+    act_hide(&mut s, "r", "track:r:1", stamp).unwrap();
+    assert_eq!(
+        hidden_subjects(&glance_at(&s, 100)),
+        vec!["track:r:1".to_string()]
+    );
+    // Usage, time and prompts do not bring it back.
+    start(&mut s, "s0000001", 20);
+    ev(&mut s, "s0000001", 30, "prompt", json!({}));
+    ev(
+        &mut s,
+        "s0000001",
+        40,
+        "usage",
+        json!({"path": "/t", "offset_after": 1, "replies": [
+            {"message_id": "a", "model": "claude-opus-5-5", "ts": at(35).to_string(), "output": 5}]}),
+    );
+    assert_eq!(glance_at(&s, 30 * 86_400).hidden.len(), 1);
+    // Someone claims a task on it: it comes back.
+    claim(&mut s, "s0000001", 50, "1.1");
+    assert_eq!(glance_at(&s, 100_000).hidden.len(), 0);
+}
+
+#[test]
+fn hidden_project_returns_on_new_session_or_new_card_inside() {
+    let mut s = store();
+    start(&mut s, "live0001", 0);
+    let stamp = crate::hide::stamp_of_project(s.conn(), "r").unwrap();
+    act_hide(&mut s, "r", "project:r", stamp).unwrap();
+    let g = glance_at(&s, 100);
+    assert_eq!((g.projects.len(), g.hidden.len()), (0, 1));
+    // The live session still counts.
+    assert_eq!(g.live_sessions, 1);
+    // A new session starts in it: it comes back.
+    start(&mut s, "live0002", 200);
+    let g = glance_at(&s, 300);
+    assert_eq!((g.projects.len(), g.hidden.len()), (1, 0));
+    // Hide again; a card raised inside brings it back too.
+    let stamp = crate::hide::stamp_of_project(s.conn(), "r").unwrap();
+    act_hide(&mut s, "r", "project:r", stamp).unwrap();
+    assert_eq!(glance_at(&s, 400).projects.len(), 0);
+    leftover(&mut s, "live0001", "la", "dead00004", "src/a.rs", 500);
+    assert_eq!(glance_at(&s, 600).projects.len(), 1);
+}
+
+#[test]
+fn hide_stale_when_something_new_arrived() {
+    let mut s = store();
+    start(&mut s, "verif0003", 0);
+    claim(&mut s, "verif0003", 1, "1.2");
+    overdue(&mut s, "verif0003", "1.2", 10);
+    let g = glance_at(&s, 100);
+    let card = g.needs_you[0].clone();
+    // The agent claims it done again while the owner looks.
+    ev(
+        &mut s,
+        "verif0003",
+        150,
+        "claimed_done",
+        json!({"task_id": "1.2", "evidence": "once more"}),
+    );
+    let err = act_hide(&mut s, &card.repo_id, &card.subject, card.stamp).unwrap_err();
+    assert!(matches!(err, crate::error::Error::Stale(_)), "{err}");
+    assert!(
+        err.to_string().contains("something new just happened"),
+        "{err}"
+    );
+    assert_eq!(glance_at(&s, 200).hidden.len(), 0);
+}
+
+#[test]
+fn unhide_stale_when_not_hidden() {
+    let mut s = store();
+    let err = act_unhide(&mut s, "r", "card:nothing").unwrap_err();
+    assert!(matches!(err, crate::error::Error::Stale(_)), "{err}");
+}
+
+#[test]
+fn hiding_never_changes_numbers() {
+    let mut s = store();
+    start(&mut s, "verif0003", 0);
+    claim(&mut s, "verif0003", 1, "1.2");
+    ev(&mut s, "verif0003", 5, "verified", l2_event("v1", "1.2"));
+    overdue(&mut s, "verif0003", "1.1", 10);
+    let before = glance_at(&s, 100);
+    let numbers = |g: &Glance| {
+        let p = &g.projects[0];
+        (
+            p.done_pct,
+            p.claimed_pct,
+            p.unestimated,
+            p.forecast.as_ref().map(|f| f.forecast.remaining_min),
+            p.cost.clone(),
+            p.milestones.len(),
+        )
+    };
+    let want = numbers(&before);
+    hide_first_card(&mut s, 100);
+    let stamp = crate::hide::stamp_of_track(s.conn(), "r", 1).unwrap();
+    act_hide(&mut s, "r", "track:r:1", stamp).unwrap();
+    let after = glance_at(&s, 100);
+    assert_eq!(numbers(&after), want);
+    let stamp = crate::hide::stamp_of_project(s.conn(), "r").unwrap();
+    act_hide(&mut s, "r", "project:r", stamp).unwrap();
+    let gone = glance_at(&s, 100);
+    assert_eq!(gone.projects.len(), 0);
+    act_unhide(&mut s, "r", "project:r").unwrap();
+    assert_eq!(numbers(&glance_at(&s, 100)), want);
+}
+
+fn l2_event(id: &str, task: &str) -> Value {
+    json!({"verif_id": id, "task_id": task, "level": 2, "sha": "a", "files": [],
+           "evidence": "ok", "by": "agent"})
+}
+
+#[test]
+fn count_and_escalation_follow_visible() {
+    let mut s = store();
+    for i in 0..6 {
+        let sid = format!("perm000{i}");
+        start(&mut s, &sid, i);
+        ev(&mut s, &sid, 10 + i, "prompt", json!({}));
+        ev(
+            &mut s,
+            &sid,
+            20 + i,
+            "needs_owner",
+            json!({"kind": "permission_prompt"}),
+        );
+    }
+    let g = glance_at(&s, 100);
+    assert_eq!((g.needs_you_count, g.escalated), (6, true));
+    hide_first_card(&mut s, 100);
+    hide_first_card(&mut s, 100);
+    let g = glance_at(&s, 100);
+    assert_eq!(
+        (g.needs_you_count, g.escalated, g.hidden.len()),
+        (4, false, 2)
+    );
+}
+
+#[test]
+fn hidden_ghost_ignored_when_subject_gone() {
+    let mut s = store();
+    // A card that resolved after it was hidden leaves nothing in the drawer.
+    start(&mut s, "verif0003", 0);
+    claim(&mut s, "verif0003", 1, "1.2");
+    overdue(&mut s, "verif0003", "1.2", 10);
+    hide_first_card(&mut s, 100);
+    ev(&mut s, "owner", 200, "verified", l2_event("v9", "1.2"));
+    assert_eq!(glance_at(&s, 300).hidden.len(), 0);
+    // A track removed after it was hidden: no ghost either.
+    let stamp = crate::hide::stamp_of_track(s.conn(), "r", 1).unwrap();
+    act_hide(&mut s, "r", "track:r:1", stamp).unwrap();
+    assert_eq!(glance_at(&s, 300).hidden.len(), 1);
+    ev(
+        &mut s,
+        "owner",
+        400,
+        "node_removed",
+        json!({"id": "G", "by_owner": true}),
+    );
+    assert_eq!(glance_at(&s, 500).hidden.len(), 0);
+    let n: i64 = s
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM hides WHERE subject = 'track:r:1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 0, "the projector dropped the row with the track");
+}
+
+#[test]
+fn rebuild_reproduces_hides() {
+    let mut s = store();
+    start(&mut s, "verif0003", 0);
+    claim(&mut s, "verif0003", 1, "1.2");
+    overdue(&mut s, "verif0003", "1.2", 10);
+    hide_first_card(&mut s, 100);
+    let stamp = crate::hide::stamp_of_track(s.conn(), "r", 1).unwrap();
+    act_hide(&mut s, "r", "track:r:1", stamp).unwrap();
+    act_unhide(&mut s, "r", "track:r:1").unwrap();
+    let rows = |s: &Store| crate::hide::rows(s.conn(), None).unwrap();
+    let before = rows(&s);
+    assert_eq!(before.len(), 1);
+    s.rebuild().unwrap();
+    assert_eq!(rows(&s), before);
+}
+
+// ---- one bar per track (spec 2026-11-14 §2, §3) ----
+
+/// `store()` plus a second track `T2-G` with a milestone `T2-1` and a task `T2-1.1`.
+fn two_tracks_store() -> Store {
+    let mut s = store();
+    for (id, parent, kind, est) in [
+        ("T2-G", None, "goal", None),
+        ("T2-1", Some("T2-G"), "milestone", None),
+        ("T2-1.1", Some("T2-1"), "task", Some(40)),
+    ] {
+        let mut n = node(id, parent, kind, est);
+        n["title"] = json!(format!("Docs {id}"));
+        ev(&mut s, "owner", 1, "node_added", n);
+    }
+    s
+}
+
+#[test]
+fn glance_one_track_equals_old_shape() {
+    let mut s = store();
+    start(&mut s, "live0001", 0);
+    claim(&mut s, "live0001", 1, "1.1");
+    ev(&mut s, "live0001", 5, "verified", l2_event("v1", "1.1"));
+    let g = glance_at(&s, 100);
+    let p = &g.projects[0];
+    assert_eq!(p.tracks.len(), 1);
+    let t = &p.tracks[0];
+    assert_eq!(t.track, 1);
+    assert_eq!(
+        (t.done_pct, t.claimed_pct, t.unestimated, t.milestones.len()),
+        (p.done_pct, p.claimed_pct, p.unestimated, p.milestones.len())
+    );
+    assert_eq!(t.run, p.run);
+    assert_eq!(t.forecast, p.forecast);
+    assert_eq!(p.goal.as_ref().map(|g| g.id.as_str()), Some("G"));
+    assert_eq!(p.hidden_tracks, 0);
+}
+
+#[test]
+fn glance_two_tracks_two_bars() {
+    let mut s = two_tracks_store();
+    start(&mut s, "live0001", 0);
+    ev(&mut s, "live0001", 5, "verified", l2_event("v1", "1.1"));
+    let g = glance_at(&s, 100);
+    let p = &g.projects[0];
+    assert_eq!(p.tracks.len(), 2);
+    let (one, two) = (&p.tracks[0], &p.tracks[1]);
+    assert_eq!((one.track, two.track), (1, 2));
+    assert_eq!((one.goal.id.as_str(), two.goal.id.as_str()), ("G", "T2-G"));
+    // 30 of 120 minutes in track 1; nothing in track 2.
+    assert_eq!((one.done_pct, two.done_pct), (25, 0));
+    // The pooled figure: 30 of 160.
+    assert_eq!(p.done_pct, 18);
+    assert_eq!(one.subject, "track:r:1");
+    assert!(one.stamp > 0);
+}
+
+#[test]
+#[allow(clippy::many_single_char_names)] // short names for the store and its rows
+fn finished_track_leaves_glance_and_lists_under_finished() {
+    let mut s = two_tracks_store();
+    start(&mut s, "live0001", 0);
+    ev(&mut s, "live0001", 5, "verified", l2_event("v1", "T2-1.1"));
+    ev(&mut s, "owner", 6, "track_closed", json!({"track": 2}));
+    let g = glance_at(&s, 100);
+    let p = &g.projects[0];
+    assert_eq!(
+        p.tracks.iter().map(|t| t.track).collect::<Vec<_>>(),
+        vec![1]
+    );
+    let d = drill::project(s.conn(), "r", at(100)).unwrap();
+    assert_eq!(d.tracks.len(), 1);
+    assert_eq!(d.finished_tracks.len(), 1);
+    let f = &d.finished_tracks[0];
+    assert_eq!(
+        (f.track, f.goal.title.as_str(), f.done_pct),
+        (2, "Docs T2-G", 100)
+    );
+    assert_eq!(
+        f.reopen.action,
+        crate::owner::OwnerAction::ReopenTrack {
+            repo: "r".into(),
+            track: 2
+        }
+    );
+}
+
+#[test]
+fn project_drill_sections_per_track() {
+    let mut s = two_tracks_store();
+    ev(
+        &mut s,
+        "owner",
+        5,
+        "claimed_done",
+        json!({"task_id": "T2-1.1", "evidence": "done"}),
+    );
+    let d = drill::project(s.conn(), "r", at(100)).unwrap();
+    assert_eq!(d.tracks.len(), 2);
+    let two = &d.tracks[1];
+    assert_eq!(two.goal.title, "Docs T2-G");
+    let ids: Vec<(&str, &str, u32)> = two
+        .tree
+        .iter()
+        .map(|n| (n.id.as_str(), n.shown.as_str(), n.track))
+        .collect();
+    // Raw ids stay for agents; the owner reads G, 1, 1.1 from 1 again.
+    assert_eq!(
+        ids,
+        vec![("T2-G", "G", 2), ("T2-1", "1", 2), ("T2-1.1", "1.1", 2)]
+    );
+    // The claimed task offers the owner's check; finishing is offered per track.
+    assert_eq!(two.tree[2].actions.len(), 2);
+    assert!(matches!(
+        two.finish.as_ref().map(|a| &a.action),
+        Some(crate::owner::OwnerAction::CloseTrack { track: 2, .. })
+    ));
+    // Every node can be removed for good, in plain words.
+    let r = two.tree[1].remove.as_ref().unwrap();
+    assert!(
+        r.text
+            .starts_with("Remove milestone 1 'Docs T2-1' for good? 1 task, 0 done."),
+        "{}",
+        r.text
+    );
+    // The fields from before tracks describe track 1.
+    assert_eq!(d.tree.first().map(|n| n.id.as_str()), Some("G"));
+}
+
+#[test]
+fn history_sentences_for_new_kinds() {
+    use super::history_text::{TaskLabel, summarize};
+    let t = TaskLabel {
+        shown: "1".into(),
+        title: "Docs".into(),
+    };
+    let goal = json!({"id": "T2-G", "kind": "goal", "title": "Docs refresh"});
+    assert_eq!(
+        summarize("node_added", &goal, "s1", Some(&t)),
+        "Track started: Docs refresh"
+    );
+    assert_eq!(
+        summarize("track_closed", &json!({"track": 2}), "s1", None),
+        "A track was finished"
+    );
+    assert_eq!(
+        summarize(
+            "hidden",
+            &json!({"subject": "x", "label": "on_task"}),
+            "s1",
+            None
+        ),
+        "You hid something from the front screen"
+    );
+    let removed = json!({"id": "1.2", "by_owner": true, "was": "claimed"});
+    let l = TaskLabel {
+        shown: "1.2".into(),
+        title: "Login form".into(),
+    };
+    assert_eq!(
+        summarize("node_removed", &removed, "s1", Some(&l)),
+        "You removed task 1.2 'Login form' for good (it was claimed, not checked)"
     );
 }

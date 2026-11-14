@@ -42,3 +42,9 @@
 - **Run:** one round of a goal's work. When every task in it passed its tests and a new plan arrives (or you close it), it is closed and the next plan starts a new run at 0% with numbers from 1. Closed runs stay readable under "Completed runs". See: decision #40.
 - **Baseline:** plan files noted as already finished or planned by hand: bridge-screen remembers them but does not count their tasks. "Some are done" baselines the files you name.
 - **Needs you:** the red list at the top of the dashboard of things only you can answer (a drift question, a check, unsaved files, or "which plan files are finished?").
+- **Track:** one piece of work in a folder, with its own goal, bar, numbering from 1 and runs. Track 1 is the plan every folder already had. Agents ask you before starting another. See: decision #44.
+- **Review task ("done — no tests"):** a task no test can check (research, planning, docs). It counts as done once its result is saved; you can still mark it broken. See: decision #43.
+- **Hide / Hidden drawer:** putting a card, a track's bar or a project out of the way until something new happens to it. Numbers never change. See: decision #46.
+- **Stamp ("what counts as new"):** the marker that says whether something new happened to a hidden thing since you hid it.
+- **Remove for good:** taking abandoned work out of the bars, the queue and the forecast, after a confirm step. The history keeps a record; a plan file can't bring it back. See: decision #47.
+

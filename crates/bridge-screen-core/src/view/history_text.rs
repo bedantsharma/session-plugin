@@ -112,8 +112,32 @@ fn owner_action_words(d: &Value) -> String {
             _ => "You said which plan files are already finished".to_string(),
         },
         "close_run" => "You closed the finished run".to_string(),
+        "start_track" => "You started a new track".to_string(),
+        "close_track" => "You finished a track".to_string(),
+        "reopen_track" => "You reopened a finished track".to_string(),
         "" => "You did something".to_string(),
         other => format!("You did this: {}", words(other)),
+    }
+}
+
+/// A review task's claim, as a sentence: "Review saved for Task 1.2 (Plan the API)". `None`
+/// when the summary is too short to be a review (the plain "says it is done" sentence stays).
+#[must_use]
+pub fn review_saved_sentence(d: &Value, task: Option<&TaskLabel>) -> Option<String> {
+    let files = d
+        .get("files")
+        .and_then(Value::as_array)
+        .is_some_and(|f| !f.is_empty());
+    let what = task_text(task).to_lowercase_first();
+    if files {
+        // Saved only once the files are committed; don't round up.
+        Some(format!(
+            "Review of {what} written to files (saved once they are committed)"
+        ))
+    } else if crate::verify::review_text_is_real(str_of(d, "evidence").unwrap_or("")) {
+        Some(format!("Review saved for {what}"))
+    } else {
+        None
     }
 }
 
@@ -187,6 +211,10 @@ pub fn summarize(kind: &str, d: &Value, session: &str, task: Option<&TaskLabel>)
             Some(n) => format!("{t} marked broken: {}", clip(n, 80)),
             None => format!("{t} marked broken"),
         },
+        "node_added" if str_of(d, "kind") == Some("goal") => match str_of(d, "title") {
+            Some(title) => format!("Track started: {}", clip(title, 80)),
+            None => "Track started".to_string(),
+        },
         "node_added" => {
             let what = match str_of(d, "kind") {
                 Some("goal") => "the goal",
@@ -199,8 +227,37 @@ pub fn summarize(kind: &str, d: &Value, session: &str, task: Option<&TaskLabel>)
                 None => format!("Added {what} to the plan"),
             }
         }
-        "node_edited" => format!("Edited {} in the plan", t.to_lowercase_first()),
+        "node_edited" => match str_of(d, "check") {
+            Some("review") => match str_of(d, "reason") {
+                Some(r) => format!("{t} changed to: no tests possible — {}", clip(r, 80)),
+                None => format!("{t} changed to: no tests possible"),
+            },
+            Some(_) => format!("{t} changed back to: checked by tests"),
+            None => format!("Edited {} in the plan", t.to_lowercase_first()),
+        },
         "node_moved" => format!("Moved {} in the plan", t.to_lowercase_first()),
+        "node_removed" if d.get("by_owner").and_then(Value::as_bool) == Some(true) => {
+            let was = str_of(d, "was")
+                .and_then(crate::plan::NodeStatus::parse)
+                .map(|s| format!(" (it was {})", crate::owner::state_phrase(s)))
+                .unwrap_or_default();
+            if str_of(d, "id").is_some_and(crate::plan::track::is_goal_id) {
+                match task {
+                    Some(l) if !l.title.is_empty() => {
+                        format!("You removed the track '{}' for good", l.title)
+                    }
+                    _ => "You removed a track for good".to_string(),
+                }
+            } else {
+                match task {
+                    Some(l) if !l.title.is_empty() => {
+                        format!("You removed task {} '{}' for good{was}", l.shown, l.title)
+                    }
+                    Some(l) => format!("You removed task {} for good{was}", l.shown),
+                    None => format!("You removed a task for good{was}"),
+                }
+            }
+        }
         "node_removed" => format!("Removed {} from the plan", t.to_lowercase_first()),
         "dep_added" => format!("{t} now waits for another task"),
         "dep_removed" => format!("{t} no longer waits for another task"),
@@ -246,6 +303,10 @@ pub fn summarize(kind: &str, d: &Value, session: &str, task: Option<&TaskLabel>)
             Some("fresh") => "You chose to count progress from now".to_string(),
             _ => "You said which plan files are already finished".to_string(),
         },
+        "hidden" => "You hid something from the front screen".to_string(),
+        "unhidden" => "You brought something back to the front screen".to_string(),
+        "track_closed" => "A track was finished".to_string(),
+        "track_reopened" => "A finished track was reopened".to_string(),
         "run_closed" => {
             let n = d
                 .get("closed_ids")
@@ -374,6 +435,10 @@ pub fn kind_label(kind: &str) -> String {
         "plan_scope_asked" => "Asked which plans are finished",
         "plan_scope_answered" => "Answered which plans are finished",
         "run_closed" => "Run closed",
+        "hidden" => "Hidden from the front screen",
+        "unhidden" => "Brought back",
+        "track_closed" => "Track finished",
+        "track_reopened" => "Track reopened",
         "detour_opened" => "Side trip started",
         "detour_closed" => "Side trip ended",
         "detour_promoted" => "Side trip became a task",

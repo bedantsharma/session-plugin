@@ -22,8 +22,8 @@ pub fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Install { dev, no_plugin } => install(dev, no_plugin),
         Command::Plan {
-            action: PlanCommand::Show { dir, all },
-        } => plan_show(&dir, all),
+            action: PlanCommand::Show { dir, all, track },
+        } => plan_show(&dir, all, track),
         Command::Plan {
             action:
                 PlanCommand::Edit {
@@ -61,12 +61,21 @@ pub fn run(cli: Cli) -> Result<()> {
             session,
             task,
             by,
+            track,
             catch_up,
-        } => crate::usage::run(&dir, session.as_deref(), task.as_deref(), by, catch_up),
-        Command::Forecast { dir } => crate::usage::forecast(&dir),
+        } => crate::usage::run(
+            &dir,
+            session.as_deref(),
+            task.as_deref(),
+            by,
+            track,
+            catch_up,
+        ),
+        Command::Forecast { dir, track } => crate::usage::forecast(&dir, track),
         Command::Import {
             file,
             into,
+            track,
             dry_run,
             fresh,
             done,
@@ -75,14 +84,19 @@ pub fn run(cli: Cli) -> Result<()> {
             if fresh || !done.is_empty() {
                 crate::onboard::import_scope(&dir, fresh, &done)
             } else {
-                crate::onboard::import(&dir, file.as_deref(), into.as_deref(), dry_run)
+                crate::onboard::import(&dir, file.as_deref(), into.as_deref(), track, dry_run)
             }
         }
         Command::Init { goal, dir } => crate::onboard::init(&dir, goal.as_deref()),
         Command::Run {
-            action: crate::cli::RunCommand::Close,
+            action: crate::cli::RunCommand::Close { track },
             dir,
-        } => crate::onboard::run_close(&dir),
+        } => crate::onboard::run_close(&dir, track),
+        Command::Track { action, dir } => crate::onboard::track(&dir, action),
+        Command::Remove { id, yes, dir } => crate::onboard::remove(&dir, &id, yes),
+        Command::Hide { what, dir } => crate::onboard::hide(&dir, &what),
+        Command::Unhide { what, dir } => crate::onboard::unhide(&dir, &what),
+        Command::Hidden { dir } => crate::onboard::hidden(&dir),
         Command::Wait { action, dir } => crate::onboard::wait(&dir, action),
         Command::Pages { action, dir } => crate::onboard::pages(&dir, &action),
         Command::Rebuild => rebuild(),
@@ -158,12 +172,15 @@ fn install(dev: bool, no_plugin: bool) -> Result<()> {
     crate::install::register_plugin(dev)
 }
 
-fn plan_show(dir: &Path, all: bool) -> Result<()> {
+fn plan_show(dir: &Path, all: bool, track: Option<u32>) -> Result<()> {
     let repo = repo::identify(dir)?;
     let home = Home::resolve()?;
     let store = open_store(&home)?;
     store.register_repo(&repo)?;
-    let nodes = load_tree(store.conn(), &repo.id, all)?;
+    let nodes: Vec<_> = load_tree(store.conn(), &repo.id, all)?
+        .into_iter()
+        .filter(|n| track.is_none_or(|t| bridge_screen_core::plan::track::track_of(&n.id) == t))
+        .collect();
     if nodes.is_empty() {
         println!(
             "No plan yet for {}. Add a goal with `bridge-screen plan edit`.",

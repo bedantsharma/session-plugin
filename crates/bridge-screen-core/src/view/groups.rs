@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use super::{ProjectRow, leaves, pct};
 use crate::error::Result;
-use crate::plan::{NodeStatus, PlanNode, load_tree};
+use crate::plan::{PlanNode, load_tree};
 
 /// One repo in a branch group.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -80,10 +80,10 @@ fn minutes_on(tree: &[PlanNode], branch: &str) -> Minutes {
         let min = u64::from(leaf.estimate_min.unwrap_or(0));
         m.leaves += 1;
         m.total += min;
-        match leaf.status {
-            NodeStatus::L2 | NodeStatus::L3 | NodeStatus::L4 => m.done += min,
-            NodeStatus::Claimed | NodeStatus::L1 => m.claimed += min,
-            _ => {}
+        if leaf.status.counts_as_done() {
+            m.done += min;
+        } else if leaf.status.is_claimed_not_done() {
+            m.claimed += min;
         }
     }
     m

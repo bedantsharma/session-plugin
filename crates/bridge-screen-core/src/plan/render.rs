@@ -63,6 +63,7 @@ mod tests {
             intent: None,
             estimate_min: None,
             status: NodeStatus::Todo,
+            check: crate::plan::CheckKind::Tests,
             hill: None,
             expected_files: vec![],
             depends_on: vec![],

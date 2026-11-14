@@ -12,6 +12,7 @@ pub mod error;
 pub mod forecast;
 pub mod git;
 pub mod handoff;
+pub mod hide;
 pub mod import;
 pub mod init;
 pub mod navigator;

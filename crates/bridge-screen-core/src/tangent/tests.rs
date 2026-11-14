@@ -381,6 +381,7 @@ mod tolerance {
             intent: kind.requires_intent().then(|| "why".to_string()),
             estimate_min: est,
             expected_files: vec![],
+            check: None,
         };
         plan_edit(
             &mut s,

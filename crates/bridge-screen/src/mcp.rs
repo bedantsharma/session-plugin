@@ -24,7 +24,7 @@ use bridge_screen_core::handoff::{self, LeftoverAction};
 use bridge_screen_core::init::InitDraft;
 use bridge_screen_core::owner::{self, OwnerAction};
 use bridge_screen_core::paths::Home;
-use bridge_screen_core::plan::{EditContext, NodeKind, NodeStatus, PlanOp, get_node};
+use bridge_screen_core::plan::{CheckKind, EditContext, NodeKind, NodeStatus, PlanOp, get_node};
 use bridge_screen_core::recovery::{self, Caller};
 use bridge_screen_core::session::{self, Session, SessionState};
 use bridge_screen_core::store::{Actor, Store};
@@ -50,9 +50,11 @@ use serde_json::Value;
 
 mod onboard;
 mod pages;
+mod tracks;
 mod waits;
 
 pub use pages::{LeadPageReadInput, LeadPageWriteInput, LeadPagesInput};
+pub use tracks::StartTrackInput;
 pub use waits::{WaitIdInput, WaitingOnInput};
 
 const NO_SESSION: &str =
@@ -104,6 +106,10 @@ pub struct NewTask {
     /// Your estimate in agent-minutes.
     #[serde(default)]
     pub estimate_min: Option<u32>,
+    /// `review` for research, planning, docs and similar work no test can check: it counts
+    /// as done once its result is saved. Default `tests`.
+    #[serde(default)]
+    pub check: Option<CheckKind>,
 }
 
 /// Claim the task this session is working on. Give exactly one of `id` or `new_task`.
@@ -421,7 +427,7 @@ impl Bridge {
     }
 
     #[tool(
-        description = "Claim the plan task this session is working on. Call it before starting work: with mode \"auto\" when the request clearly matches a task, or \"confirmed\" after the owner confirmed it. Use new_task to create and claim a task (or subtask) when nothing in the plan fits."
+        description = "Claim the plan task this session is working on. Call it before starting work: with mode \"auto\" when the request clearly matches a task, or \"confirmed\" after the owner confirmed it. Use new_task to create and claim a task (or subtask) when nothing in the plan fits; give it check \"review\" for research, planning, docs and similar work no test can check."
     )]
     async fn claim_task(
         &self,
@@ -494,17 +500,27 @@ impl Bridge {
     }
 
     #[tool(
-        description = "Change the plan: add, edit, move or remove nodes; set intents, estimates (agent-minutes), dependencies and milestone hill state. A dependency can be on a task in another repo: give `repo` (its folder name) for a task in another repo. Give a reason. All ops apply together or none do."
+        description = "Change the plan: add, edit, move or remove nodes; set intents, estimates (agent-minutes), dependencies and milestone hill state. A dependency can be on a task in another repo: give `repo` (its folder name) for a task in another repo. Give a reason. All ops apply together or none do. Tasks have a check: \"tests\" (default) or \"review\" for research, planning, docs and similar work no test can check; a review task counts as done once its result is saved. Switching a task to review needs a reason, and is refused after the owner marked it broken."
     )]
     async fn plan_edit(&self, Parameters(args): Parameters<Args<PlanEditInput>>) -> CallToolResult {
         text(self.do_plan_edit(&args))
     }
 
     #[tool(
-        description = "Create the plan for a repo that has work but no plan (after `bridge-screen init`): the goal, milestones and tasks you drafted from the repo's evidence, with the tasks that look done and the files that show it. Show the draft to the owner first and pass their confirming words in owner_said. Done tasks are recorded as claimed and checked at HEAD (L1), never more."
+        description = "Create the plan for a repo that has work but no plan (after `bridge-screen init`): the goal, milestones and tasks you drafted from the repo's evidence, with the tasks that look done and the files that show it. Show the draft to the owner first and pass their confirming words in owner_said. Done tasks are recorded as claimed and checked at HEAD (L1), never more. A task no test can check (research, planning, docs) takes check \"review\"."
     )]
     async fn init_plan(&self, Parameters(args): Parameters<Args<InitDraft>>) -> CallToolResult {
         text(self.do_init_plan(&args))
+    }
+
+    #[tool(
+        description = "Start a new track: a separate piece of work in this folder, with its own goal, progress bar and numbering from 1 (its ids read T2-1.3 …). When the folder already has an open track, ask the owner first (\"continue track X or start a new one?\") and pass what they said in owner_said; never start one on your own. Then add its milestones and tasks with plan_edit under the new goal."
+    )]
+    async fn start_track(
+        &self,
+        Parameters(args): Parameters<Args<StartTrackInput>>,
+    ) -> CallToolResult {
+        text(self.do_start_track(&args))
     }
 
     #[tool(
@@ -687,6 +703,7 @@ impl Bridge {
                 parent: t.parent.clone(),
                 title: t.title.clone(),
                 estimate_min: t.estimate_min,
+                check: t.check,
             },
             _ => return Err("give exactly one of id or new_task".into()),
         };
@@ -740,7 +757,21 @@ impl Bridge {
                     verify::l1_draft(&session.repo_id, &session.session_id, &task, &outcome)
                         .map_err(msg)?
                 {
-                    store.append(draft).map_err(msg)?;
+                    let sha = match &outcome {
+                        L1Outcome::Passed { sha, .. } => sha.clone(),
+                        _ => String::new(),
+                    };
+                    store
+                        .write(|tx| {
+                            bridge_screen_core::store::append_in(tx, draft)?;
+                            bridge_screen_core::waits::clear_if_reviewed(
+                                tx,
+                                &session.repo_id,
+                                &task,
+                                &sha,
+                            )
+                        })
+                        .map_err(msg)?;
                 }
                 if let L1Outcome::Passed { sha, .. } = &outcome {
                     let _ = write!(reply, " L1: the code exists at {}.", short(sha));
@@ -767,6 +798,9 @@ impl Bridge {
                 );
             }
             Err(_) => {}
+        }
+        if let Some(note) = review_note(store.conn(), &session.repo_id, &task) {
+            let _ = write!(reply, " {note}");
         }
         reply.push_str(
             " Commit a checkpoint before you stop, then leave a handoff_note if work remains in flight.",
@@ -1175,6 +1209,12 @@ impl Bridge {
                     .into(),
             );
         }
+        if !input.action.allowed_on_card() {
+            return Err(
+                "refused: the card can't finish or start tracks, hide or remove things; use the dashboard or the bridge-screen command; nothing was recorded"
+                    .into(),
+            );
+        }
         if !self.nonce_valid(&input.nonce) {
             return Err(
                 "refused: owner_action answers clicks on the progress card only (its nonce is missing, wrong or expired); nothing was recorded"
@@ -1362,6 +1402,21 @@ fn handoff_status(
     Ok(())
 }
 
+/// For a task checked by review: does its result count as saved, or what is missing.
+fn review_note(conn: &rusqlite::Connection, repo: &str, task: &str) -> Option<String> {
+    if !verify::is_review(conn, repo, task).ok()? {
+        return None;
+    }
+    Some(if verify::review_saved(conn, repo, task).ok()? {
+        "This task is checked by review, not tests: its result is saved, so it counts as done."
+            .to_string()
+    } else {
+        "This task is checked by review, not tests: it counts as done once its result is saved. \
+         Commit the files you named, or add a fuller summary (at least 10 words) with claim_done."
+            .to_string()
+    })
+}
+
 /// Where a task stands on the verification ladder and the next step (spec §8.5).
 fn ladder_step(status: NodeStatus) -> Option<&'static str> {
     Some(match status {
@@ -1372,6 +1427,9 @@ fn ladder_step(status: NodeStatus) -> Option<&'static str> {
         NodeStatus::L2 => "L2 (tests pass) — next: drive it end to end, verify level 3",
         NodeStatus::L3 => "L3 (end-to-end) — next: ask the owner, verify level 4 with their words",
         NodeStatus::L4 => "L4 (the owner confirmed)",
+        NodeStatus::Reviewed => {
+            "done, checked by review (no tests); the owner can still mark it broken"
+        }
         NodeStatus::Failed => "failed — fix it, commit, claim_done again",
         _ => return None,
     })
@@ -1469,58 +1527,78 @@ fn agent_status(
     Ok(out)
 }
 
-/// The goal with its rolled-up status, the milestones, the forecast and what's next.
+/// The goal with its rolled-up status, the milestones, the forecast and what's next —
+/// for each open track (named when there are several).
 fn plan_status(
     conn: &rusqlite::Connection,
     s: &Session,
     out: &mut String,
 ) -> bridge_screen_core::error::Result<()> {
-    match get_node(conn, &s.repo_id, "G")?.filter(|g| g.status != NodeStatus::Dropped) {
-        Some(goal) => {
-            let tree = bridge_screen_core::plan::runs::run_tree(conn, &s.repo_id)?;
-            let rolled = bridge_screen_core::plan::rollups(&tree);
-            let _ = writeln!(
-                out,
-                "Goal: {} ({})",
-                goal.title,
-                crate::words::status(bridge_screen_core::plan::shown_status(&goal, &rolled))
-            );
-            let milestones: Vec<String> = tree
-                .iter()
-                .filter(|n| n.kind == NodeKind::Milestone)
-                .map(|n| {
-                    format!(
-                        "{} {}",
-                        n.id,
-                        crate::words::status(bridge_screen_core::plan::shown_status(n, &rolled))
-                    )
-                })
-                .collect();
-            if !milestones.is_empty() {
-                let _ = writeln!(out, "Milestones: {}", milestones.join(" · "));
-            }
-            let f = view::forecast_row(conn, &s.repo_id, jiff::Timestamp::now())?;
-            if f.compact.is_some() {
-                let _ = writeln!(out, "Forecast: {} ({})", f.text, f.basis);
-            } else {
-                let _ = writeln!(out, "Forecast: {}", f.text);
-            }
-            let next: Vec<String> = tree
-                .into_iter()
-                .filter(|n| {
-                    matches!(n.kind, NodeKind::Task | NodeKind::Subtask)
-                        && n.status == NodeStatus::Todo
-                })
-                .take(3)
-                .map(|n| format!("{} {}", n.id, n.title))
-                .collect();
-            if next.is_empty() {
-                out.push_str("Next: nothing left to do in the plan.");
-            } else {
-                let _ = write!(out, "Next: {}", next.join(" · "));
-            }
+    let open = bridge_screen_core::plan::track::open_tracks(conn, &s.repo_id)?;
+    if open.is_empty() {
+        out.push_str(bridge_screen_core::handoff::briefing::NO_PLAN);
+        return Ok(());
+    }
+    let several = open.len() > 1;
+    for (i, t) in open.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
         }
-        None => out.push_str(bridge_screen_core::handoff::briefing::NO_PLAN),
+        let Some(goal) =
+            get_node(conn, &s.repo_id, &t.goal_id)?.filter(|g| g.status != NodeStatus::Dropped)
+        else {
+            continue;
+        };
+        let tree = bridge_screen_core::plan::runs::run_tree(conn, &s.repo_id, t.no)?;
+        let rolled = bridge_screen_core::plan::rollups(&tree);
+        let head = if several {
+            format!("Track {} — Goal", t.no)
+        } else {
+            "Goal".to_string()
+        };
+        let _ = writeln!(
+            out,
+            "{head}: {} ({})",
+            goal.title,
+            crate::words::status(bridge_screen_core::plan::shown_status(&goal, &rolled))
+        );
+        let milestones: Vec<String> = tree
+            .iter()
+            .filter(|n| n.kind == NodeKind::Milestone)
+            .map(|n| {
+                format!(
+                    "{} {}",
+                    n.id,
+                    crate::words::status(bridge_screen_core::plan::shown_status(n, &rolled))
+                )
+            })
+            .collect();
+        if !milestones.is_empty() {
+            let _ = writeln!(out, "Milestones: {}", milestones.join(" · "));
+        }
+        let f = if several {
+            view::forecast_row_track(conn, &s.repo_id, t.no, jiff::Timestamp::now())?
+        } else {
+            view::forecast_row(conn, &s.repo_id, jiff::Timestamp::now())?
+        };
+        if f.compact.is_some() {
+            let _ = writeln!(out, "Forecast: {} ({})", f.text, f.basis);
+        } else {
+            let _ = writeln!(out, "Forecast: {}", f.text);
+        }
+        let next: Vec<String> = tree
+            .into_iter()
+            .filter(|n| {
+                matches!(n.kind, NodeKind::Task | NodeKind::Subtask) && n.status == NodeStatus::Todo
+            })
+            .take(3)
+            .map(|n| format!("{} {}", n.id, n.title))
+            .collect();
+        if next.is_empty() {
+            out.push_str("Next: nothing left to do in the plan.");
+        } else {
+            let _ = write!(out, "Next: {}", next.join(" · "));
+        }
     }
     Ok(())
 }

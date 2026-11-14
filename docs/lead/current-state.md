@@ -1,41 +1,19 @@
-# Current state — 2026-10-26
+# Current state — 2026-11-14
 
-**Bottom line:** The first release (v0.1.0) is live and installable, and the project pages and the bundled reporting skill are now merged into main (pull request #18). npm is the one install route still unfinished, and the new work reaches other people only with the next release. — Amber: npm unfinished; the new work never tried in a real Claude session or a browser.
+**Bottom line:** The tracks, hiding, removing, no-test tasks and Back work are all built on the branch `feat/tracks-hide-review` (not merged, not released, not tried in a real Claude session or a browser by a person). — Amber: everything below is checked by the automated tests; nothing was tried by hand.
 
-**What works today (on main):**
-- Sessions are tracked automatically: active task, time, and whether each piece of work was on task, a detour, drift, or **asked for** by you. Work cut short by one of your messages is checked for drift too.
-- Crashed or abandoned sessions are detected; their half-finished changes are offered back, and every new session gets a short briefing.
-- "Done" means verified: claimed → code exists → tests pass → end-to-end → you signed it off; you can take a sign-off back.
-- Milestones and the goal show done / in progress / needs attention from their tasks.
-- Decisions are recorded with their reasons; cost per task, session and project; a finish range per project.
-- Plan files are read by themselves; agents can say what they wait on; plan links reach other repos; three readable screens in plain words.
-- **Project pages:** a repo with none gets one offer in the session briefing (up to three sessions, also in a brand-new repo with no plan yet); your yes (or `bridge-screen pages set-up`) creates five pages outside the repo, shared by every worktree. Agents read and update them with three tools; your intent page changes only with your words; the decision log only grows. The dashboard shows them read-only under a project's "Project pages".
-- **The reporting skill** (`lead-briefing`) is part of the plugin, unchanged, under the repo's licence with a credit line. The bridge-screen skill says when to use it and how to keep the pages current.
-- **Release tooling:** a crates.io publish workflow (core first, then the program), a plain Windows message from the plugin launcher, and a first-release checklist in `docs/RELEASING.md`.
+**What is new on the branch:**
+- **No-test tasks:** a task can be checked by review instead of tests; it counts as done once its result is saved ("done — no tests") and you can still mark it broken. You can press ✓ Works / ✗ Broken on any task said done.
+- **Tracks:** one folder can hold several tracks, each with its own goal, bar and numbering from 1; agents ask you before starting another; you finish or reopen them.
+- **Hiding:** hide a card, a track's bar or a project; it sits in a Hidden drawer and comes back only when something new happens to it. Numbers never change.
+- **Remove for good:** remove abandoned tasks, milestones or tracks after a plain question; a plan file can't bring them back.
+- **Back works:** the browser's Back button and the swipe move between dashboard screens.
+- **Plan import:** step checkboxes are no longer tasks; the old step noise is dropped by the next import.
 
-**Released (v0.1.0, from the code before project pages):**
-- **GitHub release:** programs for Mac (Apple and Intel), Linux and Windows, the shell and PowerShell installers, with checksums. The plugin downloads from here.
-- **Homebrew:** the formula is in your tap (`bedantsharma/homebrew-tap`).
-- **PyPI:** `bridge-screen` 0.1.0 with five wheels is live.
-- **npm:** not live. The automatic publish keeps failing on a one-time-code request, even with a new token that has the two-factor bypass switch on. The cause is not confirmed.
-- **crates.io:** not published; it ships with the next version.
+**Checked by running:** the full Rust test suite, clippy, formatting, the web tests (lint, type check, unit tests, build). See the final report for counts.
 
-**In flight:** the fixes for friends' first runs (branch `fix/user-reported-bugs`, not yet merged): plans found in any folder; one question when nothing says what is finished; a finished plan closes and the next one starts a fresh run at 0%; the History panel in plain sentences. See decisions #38–#41.
+**Believed from reading, not run:** the Playwright browser tests (written; they need a browser download), `bridge-screen rebuild` against a copy of a real old database, and any hand use of the new screens.
 
-**Open problems:**
-- **npm:** the first version has to be published by hand (steps given). Your passkey can't produce the one-time code npm asks for, so an authenticator app (for example Apple's Passwords app or 1Password) has to be added to the npm account first. After the package exists, a bypass token should be able to publish later versions.
-- **Project pages aren't in any release yet.** They reach other people with v0.1.1; this laptop needs a reinstall to get them.
-- **"The owner said yes" is the agent's word.** The tool cannot tell a real answer from an invented one; the command you run yourself is the reliable route (decision #30).
-- **Windows plugin launcher is not supported** (decision #34); the program is released for Windows but nobody has run it there.
-- Earlier items still open: fast-mode work shows "cost unknown".
+**Open problems (unchanged):** npm install route unfinished; "the owner said yes" is the agent's word (decision #30); Windows launcher unsupported (#34); fast-mode work shows "cost unknown".
 
-**Decided today:** keep #25 (link, don't duplicate) and #29 (size cap); the offer also shows in a brand-new repo (#35); the bundled skill stays under the repo's licence with a credit line (#36).
-
-**Needs your decision:**
-- Confirm the provisional choices: offer repeats up to three sessions (#31), crates.io skips prerelease tags (#33), launcher message on Windows (#34). Recommended: keep all three.
-- Confirm or correct the intent page (`docs/lead/intent.md`).
-- Next: sub-project 9 (archive) or the next release (v0.1.1, with the pages and crates.io)?
-
-**Next:** publish npm by hand, reinstall here and try the offer in a real session; then release v0.1.1.
-
-**How sure:** Checked by running: the merged pull request's four GitHub checks (Rust on macOS and Linux, web, browser smoke test) pass; before merging, the Rust suite (579 passed, 0 failed) and clippy ran clean on the branch; the v0.1.0 release (every build step passed, the Mac program's checksum matched and it reports 0.1.0); the Homebrew formula file exists in the tap; PyPI lists 0.1.0 with its wheels. Relayed from the reviewing agent, not re-run: the speed checks and the smoke test in a temporary home. Not checked: `brew install` and `npx` on a real machine, the crates.io workflow (never run), a real Claude session seeing the offer, the new dashboard screen in a browser, anything on Windows.
+**Not part of this round:** starting a track from the dashboard, un-removing from the dashboard, renaming or merging tracks, tracks across repos.

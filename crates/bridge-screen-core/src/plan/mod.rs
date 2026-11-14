@@ -7,13 +7,16 @@ pub mod query;
 pub mod render;
 pub mod rollup;
 pub mod runs;
+pub mod track;
 
-pub use model::{ExternalDep, Hill, NodeKind, NodeSource, NodeStatus, PlanNode};
+pub use model::{CheckKind, ExternalDep, Hill, NodeKind, NodeSource, NodeStatus, PlanNode};
 pub use ops::{
-    EditContext, EditOutcome, PlanError, PlanOp, plan_edit, plan_edit_in, plan_edit_in_sourced,
-    resolve_repo,
+    EditContext, EditOutcome, PlanError, PlanOp, owner_remove_in, plan_edit, plan_edit_in,
+    plan_edit_in_sourced, resolve_repo, start_track_in,
 };
-pub use query::{get_node, is_in_subtree, load_tree, next_child, would_cycle, would_cycle_across};
+pub use query::{
+    get_node, is_in_subtree, load_tree, next_child, subtree_ids, would_cycle, would_cycle_across,
+};
 pub use render::{render_annotated, render_text};
 pub use rollup::{Rollup, is_done, rollup_of, rollups, shown_status};
 

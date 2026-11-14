@@ -430,6 +430,47 @@ pub fn clear_for(
         .collect()
 }
 
+/// Every open wait on a task of `removed` (in `repo_id`) ends as `target_removed`: what it
+/// waited on is no longer in the plan.
+pub fn clear_for_removed(tx: &Transaction, repo_id: &str, removed: &[String]) -> Result<()> {
+    let mut stmt = tx.prepare_cached(&format!(
+        "SELECT {COLUMNS} FROM waits
+         WHERE target_repo_id = ?1 AND target_task IS NOT NULL AND cleared_at IS NULL
+         ORDER BY wait_id"
+    ))?;
+    let open: Vec<Wait> = stmt
+        .query_map(params![repo_id], read)?
+        .collect::<rusqlite::Result<_>>()?;
+    for w in open
+        .iter()
+        .filter(|w| w.target_task.as_ref().is_some_and(|t| removed.contains(t)))
+    {
+        append_in(
+            tx,
+            cleared_draft(
+                w,
+                ClearedWhy::TargetRemoved,
+                None,
+                &w.session_id,
+                &Actor::default(),
+            )?,
+        )?;
+    }
+    Ok(())
+}
+
+/// A review-checked task that just became `reviewed` is done like a tested one: clear the
+/// waits on it at `sha` (`""` when the commit is unknown). Does nothing for any other
+/// status, so callers may call it after every event that could make a task reviewed.
+pub fn clear_if_reviewed(tx: &Transaction, repo_id: &str, task: &str, sha: &str) -> Result<()> {
+    let reviewed = crate::plan::get_node(tx, repo_id, task)?
+        .is_some_and(|n| n.status == crate::plan::NodeStatus::Reviewed);
+    if reviewed {
+        clear_for_in(tx, repo_id, task, sha)?;
+    }
+    Ok(())
+}
+
 /// Append [`clear_for`]'s events inside `tx`.
 pub fn clear_for_in(tx: &Transaction, repo_id: &str, task: &str, sha: &str) -> Result<()> {
     for draft in clear_for(tx, repo_id, task, sha)? {

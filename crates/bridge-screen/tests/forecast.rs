@@ -22,6 +22,7 @@ fn seeded(env: &Env, done: usize) -> String {
         intent: Some("why".into()),
         estimate_min: Some(30),
         expected_files: vec![],
+        check: None,
     };
     plan_edit(
         &mut store,

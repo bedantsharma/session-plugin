@@ -89,7 +89,7 @@ pub fn pending_claims(
     let mut stmt = conn.prepare_cached(
         "SELECT c.repo_id, c.task_id, c.ts FROM claims_done c
          JOIN plan_nodes n ON n.repo_id = c.repo_id AND n.id = c.task_id
-         WHERE c.session_id = ?1 AND n.status IN ('claimed', 'l1')
+         WHERE c.session_id = ?1 AND n.status IN ('claimed', 'l1') AND n.check_kind != 'review'
          ORDER BY c.task_id",
     )?;
     let rows = stmt.query_map([session_id], |r| {

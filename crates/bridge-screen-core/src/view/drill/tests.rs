@@ -131,6 +131,67 @@ fn project_tree_scope_line_and_replans() {
 }
 
 #[test]
+fn scope_line_counts_a_saved_review_as_done() {
+    let mut s = store();
+    ev(
+        &mut s,
+        "owner",
+        10,
+        "node_edited",
+        json!({"id": "1.1", "check": "review"}),
+    );
+    // A one-liner is not a saved review.
+    ev(
+        &mut s,
+        "s1",
+        20,
+        "claimed_done",
+        json!({"task_id": "1.1", "evidence": "done"}),
+    );
+    ev(
+        &mut s,
+        "s1",
+        30,
+        "claimed_done",
+        json!({"task_id": "1.1", "evidence": "Reviewed the login flow end to end and wrote down every finding, with the fixes proposed for each one of them."}),
+    );
+    let p = project(s.conn(), "r", at(200)).unwrap();
+    let last = p.scope.last().unwrap();
+    assert_eq!((last.total_min, last.done_min), (60, 30));
+    // Matches the live status the rest of the screens use.
+    let status: String = s
+        .conn()
+        .query_row("SELECT status FROM plan_nodes WHERE id = '1.1'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(status, "reviewed");
+    let h = history(
+        s.conn(),
+        "r",
+        &HistoryFilter {
+            limit: 50,
+            ..HistoryFilter::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        h.events
+            .iter()
+            .any(|e| e.summary.starts_with("Review saved for Task 1.1")),
+        "{:?}",
+        h.events.iter().map(|e| &e.summary).collect::<Vec<_>>()
+    );
+    assert!(
+        h.events
+            .iter()
+            .any(|e| e.summary.contains("not checked yet"))
+    );
+    let before: Vec<u64> = p.scope.iter().map(|p| p.done_min).collect();
+    assert_eq!(before.iter().filter(|d| **d == 30).count(), 1, "{before:?}");
+}
+
+#[test]
 fn scope_lines_are_downsampled_evenly() {
     let pts: Vec<usize> = (0..1000).collect();
     let d = downsample(pts, SCOPE_MAX_POINTS);
@@ -744,4 +805,76 @@ fn where_a_task_came_from_reads_in_words() {
         super::source_text(&file(Some(2))).as_deref(),
         Some("from sp7-telemetry plan, task 3, step 2")
     );
+}
+
+// ---- the owner can check any task that was said done (spec 2026-11-14 §1) ----
+
+fn kinds_of(actions: &[super::ActionSpec]) -> Vec<&str> {
+    actions.iter().map(|a| a.label.as_str()).collect()
+}
+
+#[test]
+fn task_drill_offers_verify_actions_for_claimed() {
+    let mut s = store();
+    let cfg = crate::config::Config::default();
+    // Not said done yet: nothing to check.
+    let t = task(s.conn(), "r", "1.1", &cfg).unwrap();
+    assert_eq!(t.actions.len(), 0);
+    ev(
+        &mut s,
+        "s1",
+        10,
+        "claimed_done",
+        json!({"task_id": "1.1", "evidence": "done"}),
+    );
+    let t = task(s.conn(), "r", "1.1", &cfg).unwrap();
+    assert_eq!(kinds_of(&t.actions), vec!["✓ Works", "✗ Broken"]);
+    assert!(
+        t.actions[1]
+            .inputs
+            .iter()
+            .any(|i| i.name == "note" && i.required)
+    );
+    // The same actions sit on the task's row in the project page.
+    let p = project(s.conn(), "r", at(20)).unwrap();
+    let row = p.tree.iter().find(|n| n.id == "1.1").unwrap();
+    assert_eq!(kinds_of(&row.actions), vec!["✓ Works", "✗ Broken"]);
+    let todo = p.tree.iter().find(|n| n.id == "1.2").unwrap();
+    assert_eq!(todo.actions.len(), 0);
+    // L2 and L3 are offered too.
+    ev(&mut s, "s1", 11, "verified", verified("v1", "1.1", 2, "a"));
+    assert_eq!(task(s.conn(), "r", "1.1", &cfg).unwrap().actions.len(), 2);
+}
+
+#[test]
+fn no_verify_actions_for_todo_or_owner_l4() {
+    let mut s = store();
+    let cfg = crate::config::Config::default();
+    ev(
+        &mut s,
+        "s1",
+        10,
+        "claimed_done",
+        json!({"task_id": "1.1", "evidence": "done"}),
+    );
+    let mut v = verified("v9", "1.1", 4, "a");
+    v["by"] = json!("owner");
+    ev(&mut s, "owner", 11, "verified", v);
+    assert_eq!(task(s.conn(), "r", "1.1", &cfg).unwrap().actions.len(), 0);
+    // A failed task is not offered either.
+    ev(
+        &mut s,
+        "s1",
+        12,
+        "claimed_done",
+        json!({"task_id": "1.2", "evidence": "done"}),
+    );
+    ev(
+        &mut s,
+        "owner",
+        13,
+        "verification_failed",
+        json!({"task_id": "1.2", "level": 4, "evidence": "no", "by": "owner"}),
+    );
+    assert_eq!(task(s.conn(), "r", "1.2", &cfg).unwrap().actions.len(), 0);
 }

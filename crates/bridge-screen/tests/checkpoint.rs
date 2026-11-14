@@ -338,3 +338,98 @@ fn no_pending_checkpoint_means_no_git() {
     env.hook("stop", "s1");
     assert_eq!(env.log(), "");
 }
+
+/// A second session waiting on task 1.1, which is checked by review.
+fn wait_on_review_task(env: &Env) {
+    let out = env.run(
+        &["plan", "edit", "--reason", "it is research"],
+        r#"[{"op":"edit_node","id":"1.1","check":"review"}]"#,
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    env.hook("session-start", "s2");
+    let me = sess(env, "s2");
+    store(env)
+        .write(|tx| {
+            bridge_screen_core::waits::open(tx, &me, "1.1", "need it first", &Actor::default())
+                .map(|_| ())
+        })
+        .unwrap();
+}
+
+fn wait_state(env: &Env) -> (Option<String>, Option<String>) {
+    let w = bridge_screen_core::waits::get(store(env).conn(), "W1")
+        .unwrap()
+        .unwrap();
+    (w.cleared_why.map(|w| format!("{w:?}")), w.cleared_sha)
+}
+
+#[test]
+fn a_wait_on_a_review_task_clears_when_its_files_are_committed() {
+    let env = setup();
+    wait_on_review_task(&env);
+    work(&env, "s1", &["src/login.rs"]);
+    checkpoint::claim_done(
+        &mut store(&env),
+        &ClaimDoneRequest {
+            session_id: "s1".into(),
+            task_id: None,
+            evidence: "notes written".into(),
+            files: vec!["src/login.rs".into()],
+            symbols: Vec::new(),
+            actor: Actor::default(),
+        },
+    )
+    .unwrap();
+    // Named but not committed yet: still waiting.
+    assert_eq!(wait_state(&env), (None, None));
+    git(env.repo.path(), &["add", "-A"]);
+    git(
+        env.repo.path(),
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "wip(bridge): 1.1 Login form validation",
+            "-m",
+            "Bridge-Task: 1.1\nBridge-Next: nothing\nBridge-Session: s1",
+        ],
+    );
+    bash(
+        &env,
+        "s1",
+        "git add -A && git commit -m 'wip(bridge): 1.1 …'",
+    );
+    assert_eq!(
+        wait_state(&env),
+        (Some("TargetDone".into()), Some(head(&env)))
+    );
+}
+
+#[test]
+fn a_wait_on_a_review_task_clears_at_claim_done_with_a_real_summary() {
+    let env = setup();
+    wait_on_review_task(&env);
+    git(
+        env.repo.path(),
+        &["commit", "-q", "--allow-empty", "-m", "base"],
+    );
+    checkpoint::claim_done(
+        &mut store(&env),
+        &ClaimDoneRequest {
+            session_id: "s1".into(),
+            task_id: None,
+            evidence: "Surveyed the three vendors, compared price and support, and wrote the recommendation with the reasons for each rejection.".into(),
+            files: Vec::new(),
+            symbols: Vec::new(),
+            actor: Actor::default(),
+        },
+    )
+    .unwrap();
+    let (why, sha) = wait_state(&env);
+    assert_eq!(why.as_deref(), Some("TargetDone"));
+    assert_eq!(sha, Some(head(&env)));
+}

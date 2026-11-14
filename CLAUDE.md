@@ -48,6 +48,11 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
     `~/.bridge-screen/lead/<repo-id>/` (`mod.rs` storage, owner-only intent, append-only log under a
     file lock, offer and pointer note `briefing_note`; `templates.rs` + `templates/*.md` from the
     lead-briefing skill; `view.rs` the dashboard read model); marker files, no events, no schema
+  - `plan/track.rs` — tracks (spec 2026-11-14): the id grammar (`T2-1.3`; track 1 has no prefix),
+    the track list (open or finished), start/finish/reopen; runs and forecasts are per track
+  - `hide/` — hiding cards, track bars and projects until something new happens (a stamp per
+    subject; `hidden`/`unhidden` events → `hides` view); `owner::remove_impact` and `Remove` — the
+    owner's "remove for good"
   - `plan/runs.rs` — runs (§10.1): `run_closed` boundary events read when asked (no view table),
     `run_tree` (current run only: progress, glance, forecast of what is left), `Runs::shown` (the one
     helper for the numbers the owner reads), `close_in` (refused with unverified tasks), automatic
@@ -78,6 +83,9 @@ Local, private tracker for Claude Code projects: progress toward the goal, tange
     `src/mcp/`: `init_plan` (`onboard.rs`), `waiting_on`, `clear_wait`, `promote_wait`
     (`waits.rs`), `lead_pages`, `lead_page_read`, `lead_page_write` (`pages.rs`))
   - `tests/fixtures/hooks/` — one recorded-style hook payload per event
+- Tracks, hiding, removing, no-test tasks and Back: spec `docs/superpowers/specs/2026-11-14-tracks-hide-review-design.md`
+  (CLI: `track list|start|close|reopen`, `hide`, `unhide`, `hidden`, `remove <id>`, `import --track N`,
+  `forecast --track N`, `usage --by track`, `plan show --track N`; MCP `start_track`; web `route.ts`)
 - `plugin/` — the Claude Code plugin: `.claude-plugin/plugin.json`, `hooks/hooks.json`,
   `.mcp.json`, `skills/bridge-screen/SKILL.md`, `skills/lead-briefing/` (the owner's reporting
   skill, copied unchanged), `commands/bridge-screen.md`, and the

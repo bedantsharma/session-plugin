@@ -92,6 +92,19 @@
     await run(item, spec, extra)
   }
 
+  /** Hide the card until something new happens to it; a stale click says why in words. */
+  async function hide(item: NeedsYou) {
+    delete messages[item.id]
+    const res = await act({
+      kind: 'hide',
+      repo: item.repo_id,
+      subject: item.subject,
+      label: item.title,
+      stamp: item.stamp,
+    })
+    if (!res.ok) messages[item.id] = { ok: false, text: res.error }
+  }
+
   function copy(text: string) {
     void navigator.clipboard?.writeText(text)
   }
@@ -144,6 +157,14 @@
               </div>
               <span class="shrink-0 text-meta text-muted tabular-nums"
                 >{item.repo_name} · {age(item.age_s)}</span
+              >
+              <button
+                type="button"
+                class="shrink-0 rounded-md px-2 py-0.5 text-meta text-muted transition-colors duration-150 hover:bg-hover hover:text-fg disabled:opacity-50"
+                aria-label={`Hide: ${item.title}`}
+                title="Hide it until something new happens"
+                {disabled}
+                onclick={() => void hide(item)}>Hide</button
               >
             </div>
             <p class="line-clamp-2 text-meta text-muted">{item.detail}</p>

@@ -2,7 +2,8 @@
 //!
 //! Accepts the superpowers template (`### Task N: name`, a `**Files:**` list,
 //! `- [ ] **Step k: text**`) and this repo's own style (plain `- [ ] text` steps, no Files
-//! list). Anything inside fenced code blocks is ignored.
+//! list). Anything inside fenced code blocks is ignored. Steps are read only for their ticks:
+//! they are never plan nodes (spec 2026-11-14 §6).
 
 use std::collections::HashSet;
 
@@ -32,6 +33,29 @@ pub struct ParsedTask {
     pub title: String,
     pub files: Vec<String>,
     pub steps: Vec<ParsedStep>,
+}
+
+/// How many of a task's step checkboxes are ticked. Steps are never plan nodes; the ticks
+/// still say whether the task was done.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum Ticks {
+    None,
+    Some,
+    All,
+}
+
+impl ParsedTask {
+    /// `All` when there is at least one step and every one is ticked.
+    pub fn ticks(&self) -> Ticks {
+        let ticked = self.steps.iter().filter(|s| s.checked).count();
+        if ticked == 0 {
+            Ticks::None
+        } else if ticked == self.steps.len() {
+            Ticks::All
+        } else {
+            Ticks::Some
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

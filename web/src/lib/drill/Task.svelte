@@ -7,6 +7,7 @@
   import { hhmm } from '$lib/format'
   import type { TaskDrill } from '$lib/types'
   import ActionButton from '$lib/glance/ActionButton.svelte'
+  import OwnerButtons from '$lib/ui/OwnerButtons.svelte'
   import { statusWord, verificationWord } from '$lib/words'
   import { useModel } from './useModel.svelte'
 
@@ -45,6 +46,12 @@
     >
       <dt class="text-meta text-muted">Status</dt>
       <dd class="text-row">{t.status ? statusWord(t.status).word : '—'}</dd>
+      {#if t.check === 'review'}
+        <dt class="text-meta text-muted">Checked by</dt>
+        <dd class="text-row" data-testid="check-kind">
+          Review, not tests: done once its result is saved
+        </dd>
+      {/if}
       <dt class="text-meta text-muted">Time</dt>
       <dd class="text-row tabular-nums" data-testid="task-time">
         {t.actual_min} of {t.estimate_min ?? '?'} min{#if t.ratio !== null}<span class="text-muted"
@@ -139,6 +146,9 @@
   <section class="flex flex-col gap-3">
     <div class="flex flex-wrap items-center gap-3">
       <h3 class="text-base font-semibold">Verification</h3>
+      {#if t.actions?.length}
+        <OwnerButtons actions={t.actions} act={(a) => client.act(a)} />
+      {/if}
       {#if t.withdraw}
         <ActionButton
           label={t.withdraw.label}

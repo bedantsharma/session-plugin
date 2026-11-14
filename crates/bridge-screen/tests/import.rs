@@ -58,23 +58,11 @@ fn session_start_imports_a_plan_file() {
     let text = context(&env.hook("session-start", "s1"));
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines[1], "Goal: Login — People can sign in.");
-    assert_eq!(
-        lines[2],
-        "Imported 2026-10-21-login: added 5 tasks and steps; 1 ticked step recorded as claimed (not checked)"
-    );
-    assert_eq!(
-        titles(&env),
-        vec![
-            "G Login",
-            "1 Endpoint",
-            "1.1 Write the test",
-            "1.2 Implement",
-            "2 Form",
-            "2.1 Render"
-        ]
-    );
+    assert_eq!(lines[2], "Imported 2026-10-21-login: added 2 tasks");
+    assert_eq!(titles(&env), vec!["G Login", "1 Endpoint", "2 Form",]);
     let k = kinds(&env);
-    assert!(k.contains(&"claimed_done".to_string()));
+    // Only some of Endpoint's steps are ticked: nothing is claimed.
+    assert!(!k.contains(&"claimed_done".to_string()));
     assert!(!k.contains(&"verified".to_string()));
     assert!(!k.contains(&"checkpoint_due".to_string()));
     // A second session: nothing new to import, and the line is gone.
@@ -100,7 +88,7 @@ fn session_start_survives_bad_plans() {
     let text = context(&env.hook("session-start", "s1"));
     assert!(text.starts_with("bridge-screen briefing"), "{text}");
     // Only dup.md had a task.
-    assert_eq!(titles(&env), vec!["G dup", "1 A", "1.1 s"]);
+    assert_eq!(titles(&env), vec!["G dup", "1 A"]);
 
     // An unreadable folder: the briefing still goes out, the problem goes to the log.
     #[cfg(unix)]
@@ -132,10 +120,7 @@ fn cli_import_dry_run_then_for_real() {
 
     let out = env.run(&["import"], "");
     let text = String::from_utf8(out.stdout).unwrap();
-    assert_eq!(
-        text,
-        "Imported login: added 5 tasks and steps; 1 ticked step recorded as claimed (not checked)\n"
-    );
+    assert_eq!(text, "Imported login: added 2 tasks\n");
     let out = env.run(&["import"], "");
     assert_eq!(
         String::from_utf8(out.stdout).unwrap(),
@@ -242,7 +227,7 @@ fn unticked_plans_ask_the_owner_and_import_nothing_until_answered() {
         "{said}"
     );
     assert!(titles(&env).iter().any(|t| t.contains("Index")));
-    assert_eq!(titles(&env).len(), 3, "{:?}", titles(&env));
+    assert_eq!(titles(&env).len(), 2, "{:?}", titles(&env));
     // A second answer is refused and records nothing more.
     let again = env.run(&["import", "--fresh"], "");
     assert!(!again.status.success());

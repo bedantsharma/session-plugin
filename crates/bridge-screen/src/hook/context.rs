@@ -1,8 +1,10 @@
 //! Text injected into the agent's context by hooks. Short and fixed-format.
 
+use std::fmt::Write as _;
+
 use anyhow::Result;
 use bridge_screen_core::claim::{Candidate, candidates};
-use bridge_screen_core::plan::{NodeStatus, get_node};
+use bridge_screen_core::plan::track::{Track, open_tracks};
 use bridge_screen_core::session::Session;
 use rusqlite::Connection;
 
@@ -12,15 +14,9 @@ const REMINDER_CANDIDATES: usize = 3;
 /// A reminder goes out on the 1st, 4th, 7th, … prompt of a session without a task.
 const REMINDER_EVERY: i64 = 3;
 
-/// The plan's goal title, if the repo has a plan.
-fn goal_title(conn: &Connection, repo_id: &str) -> Result<Option<String>> {
-    Ok(get_node(conn, repo_id, "G")?
-        .filter(|g| g.status != NodeStatus::Dropped)
-        .map(|g| g.title))
-}
-
 /// UserPromptSubmit: while the session has no task, every third prompt lists the tasks the
-/// prompt most likely belongs to. `unit_no` is the unit this prompt opened.
+/// prompt most likely belongs to, across the open tracks (with the track's name when there
+/// are two or more). `unit_no` is the unit this prompt opened.
 pub fn claim_reminder(
     conn: &Connection,
     session: &Session,
@@ -30,35 +26,53 @@ pub fn claim_reminder(
     if session.active_task.is_some() || (unit_no - 1) % REMINDER_EVERY != 0 {
         return Ok(None);
     }
-    if goal_title(conn, &session.repo_id)?.is_none() {
+    let open = open_tracks(conn, &session.repo_id)?;
+    if open.is_empty() {
         return Ok(None);
     }
     let found = candidates(conn, &session.repo_id, prompt, REMINDER_CANDIDATES)?;
+    let several = open.len() > 1;
     let mut text = String::from("bridge-screen: no active task yet. ");
     if found.is_empty() {
         text.push_str("No plan task matches this request by keyword.\n");
     } else {
         text.push_str("Likely matches for this request:\n  ");
-        text.push_str(&candidate_line(&found));
+        text.push_str(&candidate_line(&found, several.then_some(open.as_slice())));
         text.push('\n');
     }
     text.push_str(
         "If one clearly fits, call claim_task with mode \"auto\". If unsure where the work stands, ask the owner. If none fits, claim a new task under the right parent.",
     );
+    if several && found.is_empty() {
+        let _ = write!(
+            text,
+            " This folder has {} open tracks ({}): if this is a new piece of work, ask the owner whether to continue a track or start a new one (start_track).",
+            open.len(),
+            open.iter()
+                .map(|t| format!("{} {}", t.no, t.title))
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+    }
     Ok(Some(text))
 }
 
-/// `1.2 Login form (score .62)  ·  1.3 Session store (.31)`
-fn candidate_line(found: &[Candidate]) -> String {
+/// `1.2 Login form (score .62)  ·  1.3 Session store (.31)`; with `tracks` (two or more are
+/// open) each match also names its track: `T2-1.1 Readme [Docs refresh] (.31)`.
+fn candidate_line(found: &[Candidate], tracks: Option<&[Track]>) -> String {
     found
         .iter()
         .enumerate()
         .map(|(i, c)| {
             let score = short_score(c.score);
+            let name = tracks
+                .and_then(|ts| ts.iter().find(|t| t.no == c.track))
+                .map(|t| format!(" [{}]", t.title))
+                .unwrap_or_default();
             if i == 0 {
-                format!("{} {} (score {score})", c.task_id, c.title)
+                format!("{} {}{name} (score {score})", c.task_id, c.title)
             } else {
-                format!("{} {} ({score})", c.task_id, c.title)
+                format!("{} {}{name} ({score})", c.task_id, c.title)
             }
         })
         .collect::<Vec<_>>()
@@ -91,13 +105,17 @@ mod tests {
             title: title.into(),
             score,
             status: NodeStatus::Todo,
+            track: 1,
         };
         assert_eq!(
-            candidate_line(&[
-                c("1.2", "Login form", 0.62),
-                c("1.3", "Session store", 0.31),
-                c("2.1", "Schema", 0.1)
-            ]),
+            candidate_line(
+                &[
+                    c("1.2", "Login form", 0.62),
+                    c("1.3", "Session store", 0.31),
+                    c("2.1", "Schema", 0.1)
+                ],
+                None
+            ),
             "1.2 Login form (score .62)  ·  1.3 Session store (.31)  ·  2.1 Schema (.10)"
         );
     }

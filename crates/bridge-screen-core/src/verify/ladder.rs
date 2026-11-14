@@ -13,7 +13,7 @@ use rusqlite::Connection;
 use super::rerun::{self, RerunOutcome};
 use super::{
     By, L1Outcome, Rerun, VerificationFailed, check_l1, current_level, depended_files, l1_draft,
-    missing_text, progress, settings, uncommitted, verified_draft,
+    missing_text, progress_all, settings, uncommitted, verified_draft,
 };
 use crate::error::{Error, Result};
 use crate::git;
@@ -84,7 +84,7 @@ fn short(sha: &str) -> String {
 fn project_line(conn: &Connection, repo_id: &str) -> Result<String> {
     Ok(format!(
         " Project {}% done.",
-        progress(conn, repo_id)?.done_pct
+        progress_all(conn, repo_id)?.done_pct
     ))
 }
 
@@ -175,13 +175,16 @@ pub fn verify(
         .or_else(|| s.active_task.clone())
         .ok_or_else(|| refuse("no active task; give the id of the task to verify"))?;
     let node = leaf(conn, &s.repo_id, &task)?;
-    if !matches!(
-        node.status,
-        NodeStatus::Claimed | NodeStatus::L1 | NodeStatus::L2 | NodeStatus::L3 | NodeStatus::L4
-    ) {
+    if !node.status.claimed_or_better() {
         return Err(refuse(format!(
             "{task} isn't claimed done ({}); call claim_done first",
             node.status.as_str()
+        )));
+    }
+    if super::is_review(conn, &s.repo_id, &task)? {
+        return Err(refuse(format!(
+            "{task} is checked by review, not tests: it counts as done once its result is \
+             saved (commit the files you named, or give a fuller summary with claim_done)"
         )));
     }
     let evidence = clip(&req.evidence, super::MAX_EVIDENCE);

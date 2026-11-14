@@ -34,6 +34,11 @@ bridge-screen is one program on the owner's computer that sits next to Claude Co
 - **Does:** all the rules: the plan tree (and each milestone's and the goal's status, worked out from its tasks), sessions and active time, drift scoring (work you asked for never counts), checkpoints and recovery, the verification ladder (including taking a sign-off back), decisions, and the read models the screens show.
 - **Lives in:** `crates/bridge-screen-core/`
 
+### Tracks, hiding and removing (2026-11-14)
+- **Does:** `plan/track.rs` reads which track an id belongs to and lists the tracks (open or finished); runs and forecasts are per track. `hide/` decides what is hidden from the front screen and when it comes back (a stamp per card, bar and project). The owner's Remove, Hide, Finish and Reopen go through the same owner-action path as every other click.
+- **Screens:** `web/src/lib/glance/TrackBar.svelte` (one bar per open track), `HiddenDrawer.svelte` (what is hidden), `web/src/lib/ui/ConfirmRemove.svelte`, and `web/src/lib/route.ts` (the dashboard's Back button).
+- **Lives in:** `crates/bridge-screen-core/src/plan/track.rs`, `crates/bridge-screen-core/src/hide/`, `web/src/lib/`
+
 ### Telemetry (cost tracking)
 - **Does:** at each stop, reads only the new lines of the agent's transcript and records each model reply's token counts once (never the text), against the task, detour and agent at that moment; prices them when a screen asks.
 - **Talks to:** Claude Code's transcript files (read-only), the database, the price table in `config.toml`.

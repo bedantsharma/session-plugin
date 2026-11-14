@@ -45,6 +45,9 @@ pub struct ImportCtx {
     pub actor: Actor,
     /// Work out the changes and roll them back.
     pub dry_run: bool,
+    /// Place new files in this track (`import --track N`); otherwise the importer chooses
+    /// (never guessing between several open tracks).
+    pub track: Option<u32>,
 }
 
 /// How much one scan may read.
@@ -79,6 +82,8 @@ pub enum ImportOutcome {
         removed: usize,
         kept: usize,
         claimed: usize,
+        /// Step subtasks from older imports that were dropped (steps are no longer tasks).
+        steps_removed: usize,
         replan: bool,
         /// Plain-words lines for each change (shown by `--dry-run`).
         changes: Vec<String>,
@@ -98,6 +103,13 @@ pub enum ImportOutcome {
     /// waits for `bridge-screen import --into <milestone> <file>`.
     NeedsLink {
         path: String,
+    },
+    /// The folder has several open tracks and nothing says which one this file belongs
+    /// to: nothing was created (never a guess). It waits for
+    /// `bridge-screen import --track N <file>` (or `--into <id>`).
+    NeedsTrack {
+        path: String,
+        tracks: String,
     },
     /// A finished run was closed because this file's plan arrived; its progress starts
     /// from 0% (spec §10.1).
@@ -125,6 +137,7 @@ impl ImportOutcome {
             | Self::Baseline { path }
             | Self::Skipped { path, .. }
             | Self::NeedsLink { path }
+            | Self::NeedsTrack { path, .. }
             | Self::Failed { path, .. } => path,
             Self::NeedsScope { paths } => paths.first().map_or("", String::as_str),
             Self::RunClosed { .. } => "",
@@ -141,6 +154,7 @@ impl ImportOutcome {
                 removed,
                 kept,
                 claimed,
+                steps_removed,
                 ..
             } => {
                 let mut parts = Vec::new();
@@ -161,17 +175,20 @@ impl ImportOutcome {
                 let mut line = if parts.is_empty() {
                     format!("Imported {}: nothing changed", short_name(path))
                 } else {
-                    format!(
-                        "Imported {}: {} tasks and steps",
-                        short_name(path),
-                        parts.join(", ")
-                    )
+                    format!("Imported {}: {} tasks", short_name(path), parts.join(", "))
                 };
                 if *claimed > 0 {
                     let _ = write!(
                         line,
-                        "; {claimed} ticked step{} recorded as claimed (not checked)",
+                        "; {claimed} finished task{} recorded as claimed (not checked)",
                         if *claimed == 1 { "" } else { "s" }
+                    );
+                }
+                if *steps_removed > 0 {
+                    let _ = write!(
+                        line,
+                        "; dropped {steps_removed} step item{} (steps are not tasks)",
+                        if *steps_removed == 1 { "" } else { "s" }
                     );
                 }
                 Some(line)
@@ -182,6 +199,7 @@ impl ImportOutcome {
             )),
             Self::Skipped { path, why } => Some(format!("Skipped {}: {why}", short_name(path))),
             Self::NeedsLink { path } => Some(needs_link_line(path)),
+            Self::NeedsTrack { path, tracks } => Some(needs_track_line(path, tracks)),
             Self::NeedsScope { paths } => Some(scope::question_text(paths)),
             Self::RunClosed { number, tasks } => Some(format!(
                 "Run {number} is finished ({tasks} task{}, all passed their tests) and was closed; \
@@ -201,6 +219,15 @@ pub fn needs_link_line(path: &str) -> String {
     format!(
         "{} changed but isn't linked to a milestone, so nothing was imported; run \
          `bridge-screen import --into <milestone> {path}` to link it.",
+        short_name(path)
+    )
+}
+
+/// What to tell the owner about a plan file that could belong to any of several tracks.
+pub fn needs_track_line(path: &str, tracks: &str) -> String {
+    format!(
+        "{} could belong to more than one track ({tracks}), so nothing was imported; run \
+         `bridge-screen import --track <number> {path}` to place it.",
         short_name(path)
     )
 }
@@ -252,11 +279,36 @@ fn source(conn: &Connection, repo_id: &str, path: &str) -> Result<Option<PlanSou
     Ok(sources(conn, repo_id)?.into_iter().find(|s| s.path == path))
 }
 
+/// Did the owner remove this node for good?
+fn removed_by_owner(conn: &Connection, repo_id: &str, id: &str) -> Result<bool> {
+    let n: i64 = conn
+        .prepare_cached(
+            "SELECT count(*) FROM events
+             WHERE repo_id = ?1 AND kind = 'node_removed'
+               AND json_extract(data, '$.id') = ?2 AND json_extract(data, '$.by_owner') = 1",
+        )?
+        .query_row(params![repo_id, id], |r| r.get(0))?;
+    Ok(n > 0)
+}
+
+/// Does the file's last import still hold step subtasks (older versions imported every
+/// step checkbox as a task)? Such a file is imported once more to drop them.
+fn has_step_items(conn: &Connection, repo_id: &str, path: &str) -> Result<bool> {
+    let n: i64 = conn
+        .prepare_cached(
+            "SELECT count(*) FROM plan_source_items i
+             JOIN plan_nodes n ON n.repo_id = i.repo_id AND n.id = i.node_id
+             WHERE i.repo_id = ?1 AND i.path = ?2 AND i.step_no != 0 AND n.status != 'dropped'",
+        )?
+        .query_row(params![repo_id, path], |r| r.get(0))?;
+    Ok(n > 0)
+}
+
 /// A file's `plan_source_items` with their nodes' state.
 pub fn source_items(conn: &Connection, repo_id: &str, path: &str) -> Result<Vec<SourceItem>> {
     let mut stmt = conn.prepare_cached(
         "SELECT i.task_no, i.step_no, i.node_id, i.title, n.status, n.expected_files,
-                n.next_child
+                n.next_child, i.owner_removed
          FROM plan_source_items i JOIN plan_nodes n ON n.repo_id = i.repo_id AND n.id = i.node_id
          WHERE i.repo_id = ?1 AND i.path = ?2 ORDER BY i.task_no, i.step_no",
     )?;
@@ -272,6 +324,7 @@ pub fn source_items(conn: &Connection, repo_id: &str, path: &str) -> Result<Vec<
             status: NodeStatus::parse(&status).unwrap_or(NodeStatus::Todo),
             files: serde_json::from_str(&files).unwrap_or_default(),
             next_child: r.get(6)?,
+            owner_removed: r.get(7)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -326,11 +379,6 @@ fn seen_draft(repo_id: &str, ctx: &ImportCtx, d: &PlanFileSeen) -> Result<EventD
     .actor(ctx.actor.clone()))
 }
 
-/// The goal, if the repo has a live one.
-fn live_goal(conn: &Connection, repo_id: &str) -> Result<Option<crate::plan::PlanNode>> {
-    Ok(get_node(conn, repo_id, "G")?.filter(|g| g.status != NodeStatus::Dropped))
-}
-
 /// Does the repo have any live plan node?
 fn has_plan(conn: &Connection, repo_id: &str) -> Result<bool> {
     let n: i64 = conn
@@ -348,7 +396,7 @@ fn file_stem(rel: &str) -> String {
 /// A live goal or milestone of the current run whose title is `title` (case-insensitive);
 /// a closed run is never reopened by a new file.
 fn container_titled(conn: &Connection, repo_id: &str, title: &str) -> Result<Option<String>> {
-    Ok(crate::plan::runs::run_tree(conn, repo_id)?
+    Ok(crate::plan::runs::open_run_tree(conn, repo_id)?
         .into_iter()
         .find(|n| {
             matches!(n.kind, NodeKind::Goal | NodeKind::Milestone)
@@ -358,7 +406,7 @@ fn container_titled(conn: &Connection, repo_id: &str, title: &str) -> Result<Opt
 }
 
 /// Link a file to an existing goal or milestone by hand (`--into`): its children are
-/// matched to the file's tasks by title (case-insensitive), their children to the steps.
+/// matched to the file's tasks by title (case-insensitive). Steps are not tasks.
 fn items_by_title(
     conn: &Connection,
     repo_id: &str,
@@ -386,30 +434,24 @@ fn items_by_title(
             status: node.status,
             files: node.expected_files.clone(),
             next_child: next,
+            owner_removed: false,
         });
-        for s in &t.steps {
-            if let Some(sub) = tree.iter().find(|n| {
-                n.parent_id.as_deref() == Some(node.id.as_str())
-                    && !used.contains(&n.id)
-                    && n.title.trim().eq_ignore_ascii_case(&s.text)
-            }) {
-                used.push(sub.id.clone());
-                out.push(SourceItem {
-                    task_no: t.number,
-                    step_no: Some(s.number),
-                    node_id: sub.id.clone(),
-                    title: s.text.clone(),
-                    status: sub.status,
-                    files: sub.expected_files.clone(),
-                    next_child: next_child(conn, repo_id, &sub.id)?,
-                });
-            }
-        }
     }
     Ok(out)
 }
 
-/// Where the file's tasks go, and what its last import produced.
+/// Where a file goes.
+enum Placement {
+    /// Here, with what its last import produced.
+    Target(ImportTarget, Vec<SourceItem>),
+    /// Several open tracks and nothing says which: parked, nothing created.
+    Parked { tracks: String },
+}
+
+/// Where the file's tasks go, and what its last import produced. In order: the container the
+/// file was imported into before; the track named by `--track`; a goal or milestone with the
+/// file's title in an open track's current run; the only open track; a new track when none
+/// is open. Several open tracks and no hint park the file — never a guess.
 fn target_for(
     tx: &Transaction,
     repo_id: &str,
@@ -417,7 +459,8 @@ fn target_for(
     parsed: &ParsedPlan,
     linked: Option<&str>,
     into: Option<&str>,
-) -> Result<(ImportTarget, Vec<SourceItem>)> {
+    track: Option<u32>,
+) -> Result<Placement> {
     let title = parsed.title.clone().unwrap_or_else(|| file_stem(rel));
     let intent = parsed
         .goal
@@ -442,28 +485,54 @@ fn target_for(
     };
     if let Some(into) = into {
         let items = items_by_title(tx, repo_id, into, parsed)?;
-        return Ok((existing(into, false)?, items));
+        return Ok(Placement::Target(existing(into, false)?, items));
     }
     if let Some(id) = linked
         && get_node(tx, repo_id, id)?.is_some_and(|n| n.status != NodeStatus::Dropped)
     {
-        return Ok((existing(id, true)?, source_items(tx, repo_id, rel)?));
+        return Ok(Placement::Target(
+            existing(id, true)?,
+            source_items(tx, repo_id, rel)?,
+        ));
     }
-    let Some(goal) = live_goal(tx, repo_id)? else {
-        return Ok((ImportTarget::NewGoal { title, intent }, Vec::new()));
-    };
+    let open = crate::plan::track::open_tracks(tx, repo_id)?;
+    if open.is_empty() {
+        let id = crate::plan::track::goal_id(crate::plan::track::next_track_no(tx, repo_id)?);
+        return Ok(Placement::Target(
+            ImportTarget::NewGoal { id, title, intent },
+            Vec::new(),
+        ));
+    }
     // A file seen before as already planned by hand, now changed: when a goal or
     // milestone has the file's title, the file belongs to it (matched by title, like
     // `--into`) instead of becoming a duplicate milestone.
-    if let Some(id) = container_titled(tx, repo_id, &title)? {
+    if track.is_none()
+        && let Some(id) = container_titled(tx, repo_id, &title)?
+    {
         let items = items_by_title(tx, repo_id, &id, parsed)?;
-        return Ok((existing(&id, false)?, items));
+        return Ok(Placement::Target(existing(&id, false)?, items));
     }
-    let id = next_child(tx, repo_id, &goal.id)?.to_string();
-    Ok((
+    let chosen = match (track, open.as_slice()) {
+        (Some(n), _) => open.iter().find(|t| t.no == n).ok_or_else(|| {
+            Error::Invalid(format!(
+                "track {n} isn't open; open tracks: {}",
+                crate::plan::track::open_list_text(&open)
+            ))
+        })?,
+        (None, [only]) => only,
+        (None, _) => {
+            return Ok(Placement::Parked {
+                tracks: crate::plan::track::open_list_text(&open),
+            });
+        }
+    };
+    let goal = get_node(tx, repo_id, &chosen.goal_id)?
+        .ok_or_else(|| Error::NotFound(format!("no plan node {}", chosen.goal_id)))?;
+    let n = next_child(tx, repo_id, &goal.id)?.to_string();
+    Ok(Placement::Target(
         ImportTarget::NewMilestone {
+            id: crate::plan::track::raw(chosen.no, &n),
             goal_id: goal.id,
-            id,
             title,
             intent,
         },
@@ -517,9 +586,12 @@ fn import_in(
         needs_link: false,
     };
     if into.is_none()
+        && ctx.track.is_none()
         && let Some(p) = &prev
     {
-        if p.hash == hash {
+        // A parked file (waiting for a track) is looked at again when asked by hand.
+        let parked = p.needs_link && !p.baseline;
+        if p.hash == hash && !parked && !has_step_items(tx, repo_id, &rel)? {
             // Same content (perhaps a new mtime): nothing is written.
             return Ok(ImportOutcome::Unchanged { path: rel });
         }
@@ -561,6 +633,18 @@ fn import_in(
         return Ok(ImportOutcome::NeedsLink { path: rel });
     }
     let linked = prev.as_ref().and_then(|p| p.node_id.clone());
+    // What the file was imported into was removed for good by the owner: the file stays out.
+    if into.is_none()
+        && ctx.track.is_none()
+        && let Some(container) = &linked
+        && removed_by_owner(tx, repo_id, container)?
+    {
+        append_in(tx, seen_draft(repo_id, ctx, &seen(false, &hash))?)?;
+        return Ok(ImportOutcome::Skipped {
+            path: rel,
+            why: "you removed what it was imported into, so it stays out".into(),
+        });
+    }
     let file = ReadFile {
         rel,
         hash,
@@ -590,11 +674,24 @@ fn apply_import(
     into: Option<&str>,
 ) -> Result<ImportOutcome> {
     let rel = file.rel.clone();
-    let (target, items) = target_for(tx, repo_id, &rel, parsed, linked, into)?;
+    let (target, items) = match target_for(tx, repo_id, &rel, parsed, linked, into, ctx.track)? {
+        Placement::Target(target, items) => (target, items),
+        Placement::Parked { tracks } => {
+            let d = PlanFileSeen {
+                path: rel.clone(),
+                hash: file.hash.clone(),
+                size: file.size,
+                mtime: file.mtime,
+                baseline: false,
+                needs_link: true,
+            };
+            append_in(tx, seen_draft(repo_id, ctx, &d)?)?;
+            return Ok(ImportOutcome::NeedsTrack { path: rel, tracks });
+        }
+    };
     let d = diff::diff(&items, parsed, &target, &rel);
     let node_id = match &target {
-        ImportTarget::NewGoal { .. } => "G".to_string(),
-        ImportTarget::NewMilestone { id, .. } => id.clone(),
+        ImportTarget::NewGoal { id, .. } | ImportTarget::NewMilestone { id, .. } => id.clone(),
         ImportTarget::Existing { node_id, .. } => node_id.clone(),
     };
     let mut changes: Vec<String> = d.ops.iter().map(describe).collect();
@@ -613,31 +710,8 @@ fn apply_import(
             )));
         }
     }
-    for (id, reason) in &d.keeps {
-        if let Some(node) = get_node(tx, repo_id, id)? {
-            let data = NodeEdited {
-                id: id.clone(),
-                title: None,
-                expected_files: Some(node.expected_files),
-                meta: EditMeta {
-                    reason: Some(reason.clone()),
-                    replan_id: None,
-                },
-            };
-            append_in(
-                tx,
-                EventDraft::new(
-                    repo_id,
-                    &ctx.session_id,
-                    "node_edited",
-                    serde_json::to_value(data)?,
-                )
-                .actor(ctx.actor.clone())
-                .task(id),
-            )?;
-            changes.push(format!("keep {id}: {reason}, and work was done on it"));
-        }
-    }
+    record_keeps(tx, repo_id, ctx, &d.keeps, &mut changes)?;
+    changes.extend(d.step_notes.iter().cloned());
     record_claims(tx, repo_id, ctx, &rel, &d.claims, &mut changes)?;
     let data = PlanImported {
         path: rel.clone(),
@@ -656,6 +730,7 @@ fn apply_import(
                 step: i.step_no,
                 node_id: i.node_id.clone(),
                 title: i.title.clone(),
+                owner_removed: i.owner_removed,
             })
             .collect(),
     };
@@ -670,6 +745,7 @@ fn apply_import(
         .actor(ctx.actor.clone()),
     )?;
     let count = |p: fn(&PlanOp) -> bool| d.ops.iter().filter(|o| p(o)).count();
+    let steps_removed = d.steps_removed;
     Ok(ImportOutcome::Imported {
         path: rel,
         node_id,
@@ -683,12 +759,50 @@ fn apply_import(
             )
         }),
         edited: count(|o| matches!(o, PlanOp::EditNode { .. })),
-        removed: count(|o| matches!(o, PlanOp::RemoveNode { .. })),
-        kept: d.keeps.len(),
+        removed: count(|o| matches!(o, PlanOp::RemoveNode { .. })).saturating_sub(steps_removed),
+        kept: d.keeps.len() - d.step_notes.len(),
         claimed: d.claims.len(),
+        steps_removed,
         replan: d.replan,
         changes,
     })
+}
+
+/// Note on each node that is no longer in the file but kept because work was done on it.
+fn record_keeps(
+    tx: &Transaction,
+    repo_id: &str,
+    ctx: &ImportCtx,
+    keeps: &[(String, String)],
+    changes: &mut Vec<String>,
+) -> Result<()> {
+    for (id, reason) in keeps {
+        if let Some(node) = get_node(tx, repo_id, id)? {
+            let data = NodeEdited {
+                id: id.clone(),
+                title: None,
+                expected_files: Some(node.expected_files),
+                meta: EditMeta {
+                    reason: Some(reason.clone()),
+                    replan_id: None,
+                },
+                check: None,
+            };
+            append_in(
+                tx,
+                EventDraft::new(
+                    repo_id,
+                    &ctx.session_id,
+                    "node_edited",
+                    serde_json::to_value(data)?,
+                )
+                .actor(ctx.actor.clone())
+                .task(id),
+            )?;
+            changes.push(format!("keep {id}: {reason}, and work was done on it"));
+        }
+    }
+    Ok(())
 }
 
 /// Record each ticked step as claimed done: inferred, so no decision ask, no checkpoint
@@ -798,7 +912,8 @@ pub fn scan(
         };
         if known.iter().any(|k| {
             k.path == f.rel && k.size == f.size && k.mtime == f.mtime && !k.hash.is_empty()
-        }) {
+        }) && !has_step_items(store.conn(), repo_id, &f.rel)?
+        {
             continue;
         }
         let cost = f.size.min(MAX_FILE_BYTES);
@@ -849,7 +964,9 @@ pub fn scan(
 }
 
 fn closed_count(conn: &Connection, repo_id: &str) -> Result<usize> {
-    Ok(crate::plan::runs::load(conn, repo_id)?.closed.len())
+    Ok(crate::plan::runs::load_all(conn, repo_id)?
+        .closed_in_order()
+        .len())
 }
 
 /// A note when the import just closed the finished run.
@@ -858,16 +975,16 @@ fn run_closed_note(
     repo_id: &str,
     before: usize,
 ) -> Result<Option<ImportOutcome>> {
-    let runs = crate::plan::runs::load(conn, repo_id)?;
-    if runs.closed.len() <= before {
+    let runs = crate::plan::runs::load_all(conn, repo_id)?;
+    if runs.closed_in_order().len() <= before {
         return Ok(None);
     }
-    let Some(last) = runs.closed.last() else {
+    let Some((track, last)) = runs.closed_in_order().last() else {
         return Ok(None);
     };
     Ok(Some(ImportOutcome::RunClosed {
         number: last.number,
-        tasks: crate::plan::runs::tasks_in(conn, repo_id, last)?,
+        tasks: crate::plan::runs::tasks_in(conn, repo_id, *track, last)?,
     }))
 }
 

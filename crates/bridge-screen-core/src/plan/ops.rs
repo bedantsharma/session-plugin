@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::model::{Hill, NodeKind, NodeSource, NodeStatus, PlanNode};
+use super::model::{CheckKind, Hill, NodeKind, NodeSource, NodeStatus, PlanNode};
 use super::project::{
     DepChange, EditMeta, EstimateSet, HillMoved, IntentSet, NodeAdded, NodeEdited, NodeMoved,
     NodeRef,
@@ -38,14 +38,21 @@ pub enum PlanOp {
         /// Files this work is expected to touch, relative to the repo root.
         #[serde(default)]
         expected_files: Vec<String>,
+        /// `tests` (default), or `review` for research, planning, docs and similar work no
+        /// test can check: done once its result is saved.
+        #[serde(default)]
+        check: Option<CheckKind>,
     },
-    /// Change a node's title and/or expected files.
+    /// Change a node's title, expected files and/or how it is checked. Switching a task
+    /// to `review` needs a reason (the batch's `reason`).
     EditNode {
         id: String,
         #[serde(default)]
         title: Option<String>,
         #[serde(default)]
         expected_files: Option<Vec<String>>,
+        #[serde(default)]
+        check: Option<CheckKind>,
     },
     /// Move a node (and its children) under another parent.
     MoveNode { id: String, new_parent: String },
@@ -87,8 +94,19 @@ pub enum PlanError {
         parent: String,
         child: String,
     },
-    #[error("op {index}: the plan already has a goal ({id})")]
-    GoalExists { index: usize, id: String },
+    #[error(
+        "op {index}: this folder already has {tracks} (goal {id}); to start another track, \
+         ask the owner and use start_track"
+    )]
+    GoalExists {
+        index: usize,
+        id: String,
+        tracks: String,
+    },
+    #[error(
+        "op {index}: track '{title}' is finished, so nothing can be added to it; ask the owner to reopen it"
+    )]
+    TrackClosed { index: usize, title: String },
     #[error("op {index}: a {kind} needs an intent (its purpose and end state)")]
     MissingIntent { index: usize, kind: String },
     #[error("op {index}: title must be 1 to 200 characters on a single line")]
@@ -145,17 +163,25 @@ pub fn plan_edit_in_sourced(
     if ops.is_empty() {
         return Err(PlanError::Empty.into());
     }
-    // A new milestone after a finished round starts a new run (spec §10.1).
-    if ops.iter().any(|op| {
-        matches!(
-            op,
+    // A new milestone after a finished round starts a new run of its track (spec §10.1).
+    let mut closing: Vec<u32> = ops
+        .iter()
+        .filter_map(|op| match op {
             PlanOp::AddNode {
                 kind: NodeKind::Milestone,
+                parent: Some(p),
                 ..
-            }
-        )
-    }) {
-        super::runs::close_if_finished(tx, &ctx.repo_id, &ctx.session_id, &ctx.actor)?;
+            } => Some(super::track::track_of(p)),
+            _ => None,
+        })
+        .collect();
+    closing.sort_unstable();
+    closing.dedup();
+    for track in closing {
+        // A finished track takes no new work (the add is refused below, with the reason).
+        if !super::track::is_closed(tx, &ctx.repo_id, track)? {
+            super::runs::close_if_finished(tx, &ctx.repo_id, track, &ctx.session_id, &ctx.actor)?;
+        }
     }
     {
         let mut events = Vec::new();
@@ -190,10 +216,132 @@ pub fn plan_edit_in_sourced(
                     data["source"] = serde_json::to_value(source)?;
                 }
             }
-            events.push(append_in(tx, draft(ctx, kind, data, Some(task)))?);
+            events.push(append_in(tx, draft(ctx, kind, data, Some(task.clone())))?);
+            if kind == "node_removed" {
+                after_removal(tx, ctx, &task)?;
+            }
         }
         Ok(EditOutcome { events, added_ids })
     }
+}
+
+/// What removing a node leaves to clean up, for everyone who removes (an agent, the
+/// importer, the owner): sessions holding a task in the removed subtree let go of it, and
+/// waits on it end. Nudges, links and hides are dropped by the projector.
+fn after_removal(tx: &Transaction, ctx: &EditContext, id: &str) -> Result<()> {
+    let subtree = super::query::subtree_ids(tx, &ctx.repo_id, id)?;
+    let mut stmt = tx.prepare_cached(
+        "SELECT session_id, active_task FROM sessions
+         WHERE repo_id = ?1 AND state != 'ended' AND active_task IS NOT NULL",
+    )?;
+    let holding: Vec<(String, String)> = stmt
+        .query_map([&ctx.repo_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (session, task) in holding.into_iter().filter(|(_, t)| subtree.contains(t)) {
+        let data = crate::session::TaskReleased {
+            task_id: task.clone(),
+            reason: "removed".into(),
+        };
+        append_in(
+            tx,
+            EventDraft::new(
+                &ctx.repo_id,
+                &session,
+                "task_released",
+                serde_json::to_value(data)?,
+            )
+            .actor(ctx.actor.clone())
+            .task(task),
+        )?;
+    }
+    crate::waits::clear_for_removed(tx, &ctx.repo_id, &subtree)?;
+    Ok(())
+}
+
+/// Remove a node (a task, a milestone, or a whole track by its goal) for good on the
+/// owner's say-so: the same `node_removed` an agent's `remove_node` writes, marked
+/// `by_owner`, with the same clean-up. Returns the node as it was.
+pub fn owner_remove_in(
+    tx: &Transaction,
+    repo_id: &str,
+    session_id: &str,
+    id: &str,
+    reason: &str,
+) -> Result<PlanNode> {
+    let node = live(tx, repo_id, 0, id)?;
+    let ctx = EditContext {
+        repo_id: repo_id.to_string(),
+        session_id: session_id.to_string(),
+        actor: Actor::default(),
+        reason: Some(reason.to_string()),
+        replan: false,
+    };
+    let data = NodeRef {
+        id: id.to_string(),
+        by_owner: true,
+        was: Some(node.status.as_str().to_string()),
+        meta: EditMeta {
+            reason: ctx.reason.clone(),
+            replan_id: None,
+        },
+    };
+    append_in(
+        tx,
+        draft(
+            &ctx,
+            "node_removed",
+            serde_json::to_value(data)?,
+            Some(id.to_string()),
+        ),
+    )?;
+    after_removal(tx, &ctx, id)?;
+    Ok(node)
+}
+
+/// Start a new track: its goal, with the next track number (`G` for the first, then `T2-G`,
+/// …). Not a [`PlanOp`], so an agent cannot start a track through `plan_edit`; callers
+/// (the owner's CLI, `start_track` with the owner's words, setup, import) check who may.
+pub fn start_track_in(
+    tx: &Transaction,
+    ctx: &EditContext,
+    title: &str,
+    intent: &str,
+) -> Result<String> {
+    let title = check_title(0, title)?;
+    let intent = intent.trim();
+    if intent.is_empty() {
+        return Err(PlanError::MissingIntent {
+            index: 0,
+            kind: "goal".into(),
+        }
+        .into());
+    }
+    let id = super::track::goal_id(super::track::next_track_no(tx, &ctx.repo_id)?);
+    let data = NodeAdded {
+        id: id.clone(),
+        parent_id: None,
+        kind: NodeKind::Goal,
+        title,
+        intent: Some(intent.to_string()),
+        estimate_min: None,
+        expected_files: Vec::new(),
+        source: None,
+        check: None,
+        meta: EditMeta {
+            reason: ctx.reason.clone(),
+            replan_id: None,
+        },
+    };
+    append_in(
+        tx,
+        draft(
+            ctx,
+            "node_added",
+            serde_json::to_value(data)?,
+            Some(id.clone()),
+        ),
+    )?;
+    Ok(id)
 }
 
 fn draft(ctx: &EditContext, kind: &str, data: Value, task: Option<String>) -> EventDraft {
@@ -304,8 +452,14 @@ fn validate(
             intent,
             estimate_min,
             expected_files,
+            check,
         } => {
             let title = check_title(index, title)?;
+            if check == &Some(CheckKind::Review)
+                && !matches!(kind, NodeKind::Task | NodeKind::Subtask)
+            {
+                return Err(invalid(index, "only tasks can be checked by review"));
+            }
             let intent = intent.as_deref().map(str::trim).filter(|i| !i.is_empty());
             if kind.requires_intent() && intent.is_none() {
                 return Err(PlanError::MissingIntent {
@@ -327,6 +481,7 @@ fn validate(
                 estimate_min: *estimate_min,
                 expected_files: expected_files.clone(),
                 source: None,
+                check: *check,
                 meta,
             };
             Ok(("node_added", serde_json::to_value(data)?, id))
@@ -335,7 +490,8 @@ fn validate(
             id,
             title,
             expected_files,
-        } => c.edit_node(id, title.as_deref(), expected_files.as_ref(), meta),
+            check,
+        } => c.edit_node(id, title.as_deref(), expected_files.as_ref(), *check, meta),
         PlanOp::MoveNode { id, new_parent } => c.move_node(id, new_parent, meta),
         PlanOp::RemoveNode { id } => c.remove_node(id, meta),
         PlanOp::AddDep {
@@ -368,20 +524,39 @@ impl Check<'_> {
         .into()
     }
 
+    /// Refuse adding work under a finished track.
+    fn open_track(self, under: &str) -> Result<()> {
+        let no = super::track::track_of(under);
+        if super::track::is_closed(self.conn, self.repo, no)? {
+            let title = super::track::track(self.conn, self.repo, no)?
+                .map(|t| t.title)
+                .unwrap_or_default();
+            return Err(PlanError::TrackClosed {
+                index: self.index,
+                title,
+            }
+            .into());
+        }
+        Ok(())
+    }
+
     /// The id a new node of `kind` under `parent` gets, plus its parent id.
     fn assign_id(self, kind: NodeKind, parent: Option<&str>) -> Result<(String, Option<String>)> {
         match (kind, parent) {
             (NodeKind::Goal, None) => {
-                if let Some(g) = get_node(self.conn, self.repo, "G")?
-                    && g.status != NodeStatus::Dropped
-                {
+                // The first goal ever is `G`; a second one is a new track, which only the
+                // owner starts (`start_track`), so an open track refuses it.
+                let open = super::track::open_tracks(self.conn, self.repo)?;
+                if let Some(first) = open.first() {
                     return Err(PlanError::GoalExists {
                         index: self.index,
-                        id: g.id,
+                        id: first.goal_id.clone(),
+                        tracks: super::track::open_list_text(&open),
                     }
                     .into());
                 }
-                Ok(("G".to_string(), None))
+                let no = super::track::next_track_no(self.conn, self.repo)?;
+                Ok((super::track::goal_id(no), None))
             }
             (_, None) => Err(self.bad_parent("nothing", kind)),
             (_, Some(pid)) => {
@@ -389,9 +564,10 @@ impl Check<'_> {
                 if !p.kind.allows_child(kind) {
                     return Err(self.bad_parent(p.kind.as_str(), kind));
                 }
+                self.open_track(&p.id)?;
                 let n = next_child(self.conn, self.repo, &p.id)?;
                 let id = if p.kind == NodeKind::Goal {
-                    n.to_string()
+                    super::track::raw(super::track::track_of(&p.id), &n.to_string())
                 } else {
                     format!("{}.{n}", p.id)
                 };
@@ -405,23 +581,65 @@ impl Check<'_> {
         id: &str,
         title: Option<&str>,
         expected_files: Option<&Vec<String>>,
+        check: Option<CheckKind>,
         meta: EditMeta,
     ) -> Result<Validated> {
-        self.live(id)?;
+        let node = self.live(id)?;
         let title = title.map(|t| check_title(self.index, t)).transpose()?;
-        if title.is_none() && expected_files.is_none() {
+        if title.is_none() && expected_files.is_none() && check.is_none() {
             return Err(invalid(
                 self.index,
-                "edit_node needs a title or expected_files",
+                "edit_node needs a title, expected_files or check",
             ));
+        }
+        let check = check.filter(|k| *k != node.check);
+        if check == Some(CheckKind::Review) {
+            self.guard_switch_to_review(&node, &meta)?;
+        }
+        if check.is_some() && !matches!(node.kind, NodeKind::Task | NodeKind::Subtask) {
+            return Err(invalid(self.index, "only tasks can be checked by review"));
         }
         let data = NodeEdited {
             id: id.to_string(),
             title,
             expected_files: expected_files.cloned(),
+            check,
             meta,
         };
         Ok(("node_edited", serde_json::to_value(data)?, id.to_string()))
+    }
+
+    /// Switching a task to review is how an agent could dodge a failing test, so it needs a
+    /// reason, and is refused once the owner said "broken" or tests already passed.
+    fn guard_switch_to_review(self, node: &PlanNode, meta: &EditMeta) -> Result<()> {
+        if meta.reason.as_deref().is_none_or(|r| r.trim().is_empty()) {
+            return Err(invalid(
+                self.index,
+                "switching a task to review needs a reason: say why no test can check it",
+            ));
+        }
+        if crate::verify::withdraw::withdrawable(self.conn, self.repo, &node.id)?
+            .is_some_and(|w| !w.signoff)
+        {
+            return Err(invalid(
+                self.index,
+                format!(
+                    "{} was marked broken by the owner, so it can't be switched to review; \
+                     fix it and claim it done again",
+                    node.id
+                ),
+            ));
+        }
+        if node.status.counts_as_done() {
+            return Err(invalid(
+                self.index,
+                format!(
+                    "{} already passed tests, so it stays checked by tests",
+                    node.id
+                ),
+            ));
+        }
+        Ok(())
     }
 
     fn move_node(self, id: &str, new_parent: &str, meta: EditMeta) -> Result<Validated> {
@@ -430,6 +648,7 @@ impl Check<'_> {
             return Err(invalid(self.index, "the goal cannot be moved"));
         }
         let parent = self.live(new_parent)?;
+        self.open_track(&parent.id)?;
         if is_in_subtree(self.conn, self.repo, id, new_parent)? {
             return Err(invalid(
                 self.index,
@@ -454,6 +673,8 @@ impl Check<'_> {
         }
         let data = NodeRef {
             id: id.to_string(),
+            by_owner: false,
+            was: None,
             meta,
         };
         Ok(("node_removed", serde_json::to_value(data)?, id.to_string()))
@@ -619,6 +840,7 @@ mod tests {
             intent: Some("Owner sees progress".into()),
             estimate_min: None,
             expected_files: vec![],
+            check: None,
         }
     }
 
@@ -630,6 +852,7 @@ mod tests {
             intent: kind.requires_intent().then(|| "why".to_string()),
             estimate_min: None,
             expected_files: vec![],
+            check: None,
         }
     }
 
@@ -728,7 +951,8 @@ mod tests {
             plan_error(plan_edit(&mut s, &ctx(), &[goal()])),
             PlanError::GoalExists {
                 index: 0,
-                id: "G".into()
+                id: "G".into(),
+                tracks: "track 1 'Ship'".into()
             }
         );
         assert_eq!(
@@ -745,6 +969,7 @@ mod tests {
             intent: Some("   ".into()),
             estimate_min: None,
             expected_files: vec![],
+            check: None,
         };
         assert_eq!(
             plan_error(plan_edit(&mut s, &ctx(), &[no_intent])),
@@ -803,6 +1028,7 @@ mod tests {
             intent: None,
             estimate_min: None,
             expected_files: vec![],
+            check: None,
         };
         assert_eq!(
             plan_error(plan_edit(&mut s, &ctx(), &[orphan])),
@@ -943,7 +1169,8 @@ mod tests {
                 &[PlanOp::EditNode {
                     id: "1.1".into(),
                     title: Some("x".into()),
-                    expected_files: None
+                    expected_files: None,
+                    check: None,
                 }]
             )),
             PlanError::Dropped {

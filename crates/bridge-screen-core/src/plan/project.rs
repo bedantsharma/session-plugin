@@ -3,7 +3,7 @@
 use rusqlite::{Transaction, params};
 use serde::{Deserialize, Serialize};
 
-use super::model::{Hill, NodeKind, NodeSource};
+use super::model::{CheckKind, Hill, NodeKind, NodeSource};
 use crate::error::Result;
 use crate::store::Event;
 
@@ -44,6 +44,9 @@ pub struct NodeAdded {
     /// Where the node came from; events from before imports read as manual.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<NodeSource>,
+    /// How the task is checked; events from before read as `tests`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<CheckKind>,
     #[serde(flatten)]
     pub meta: EditMeta,
 }
@@ -55,6 +58,9 @@ pub struct NodeEdited {
     pub title: Option<String>,
     #[serde(default)]
     pub expected_files: Option<Vec<String>>,
+    /// Change how the task is checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<CheckKind>,
     #[serde(flatten)]
     pub meta: EditMeta,
 }
@@ -70,6 +76,12 @@ pub struct NodeMoved {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeRef {
     pub id: String,
+    /// Removed for good by the owner (not an agent's `remove_node`, not the importer).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub by_owner: bool,
+    /// What it was when the owner removed it (a status code), for the History sentence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub was: Option<String>,
     #[serde(flatten)]
     pub meta: EditMeta,
 }
@@ -125,8 +137,8 @@ fn project_node_added(tx: &Transaction, repo: &str, d: &NodeAdded) -> Result<()>
     let position = next_position(tx, repo, d.parent_id.as_deref())?;
     tx.execute(
         "INSERT INTO plan_nodes (repo_id, id, parent_id, kind, title, intent, estimate_min,
-                                 expected_files, position, source)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                                 expected_files, position, source, check_kind)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             repo,
             d.id,
@@ -137,7 +149,8 @@ fn project_node_added(tx: &Transaction, repo: &str, d: &NodeAdded) -> Result<()>
             d.estimate_min,
             serde_json::to_string(&d.expected_files)?,
             position,
-            d.source.clone().unwrap_or_default().to_column()
+            d.source.clone().unwrap_or_default().to_column(),
+            d.check.unwrap_or_default().as_str()
         ],
     )?;
     if let Some(parent) = &d.parent_id {
@@ -163,6 +176,34 @@ fn project_node_removed(tx: &Transaction, repo: &str, d: &NodeRef) -> Result<()>
         ),
         params![repo, d.id],
     )?;
+    // Work that is gone leaves no reminder behind.
+    tx.execute(
+        &format!(
+            "{subtree} DELETE FROM verify_nudges
+             WHERE repo_id = ?1 AND task_id IN (SELECT id FROM sub)"
+        ),
+        params![repo, d.id],
+    )?;
+    if d.by_owner {
+        // A plan file can't bring owner-removed work back.
+        tx.execute(
+            &format!(
+                "{subtree} UPDATE plan_source_items SET owner_removed = 1
+                 WHERE repo_id = ?1 AND node_id IN (SELECT id FROM sub)"
+            ),
+            params![repo, d.id],
+        )?;
+    }
+    if super::track::is_goal_id(&d.id) {
+        // A removed track leaves the hidden drawer too.
+        tx.execute(
+            "DELETE FROM hides WHERE repo_id = ?1 AND subject = ?2",
+            params![
+                repo,
+                format!("track:{repo}:{}", super::track::track_of(&d.id))
+            ],
+        )?;
+    }
     tx.execute(
         &format!(
             "{subtree} DELETE FROM plan_deps
@@ -229,10 +270,15 @@ pub fn project(tx: &Transaction, event: &Event) -> Result<()> {
                 .transpose()?;
             tx.execute(
                 "UPDATE plan_nodes SET title = COALESCE(?3, title),
-                                       expected_files = COALESCE(?4, expected_files)
+                                       expected_files = COALESCE(?4, expected_files),
+                                       check_kind = COALESCE(?5, check_kind)
                  WHERE repo_id = ?1 AND id = ?2",
-                params![repo, d.id, d.title, files],
+                params![repo, d.id, d.title, files, d.check.map(CheckKind::as_str)],
             )?;
+            if d.check.is_some() {
+                // How it is checked decides whether it is done: derive the status again.
+                crate::verify::refresh_after_check_switch(tx, repo, &d.id)?;
+            }
         }
         "node_moved" => {
             let d: NodeMoved = payload(event)?;

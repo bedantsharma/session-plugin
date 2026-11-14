@@ -101,6 +101,14 @@ pub fn render(g: &Glance, opts: &Options) -> String {
             )
         );
     }
+    if !g.hidden.is_empty() {
+        let _ = writeln!(
+            out,
+            "{} need you · {} hidden (`bridge-screen hidden` lists them)",
+            g.needs_you_count,
+            g.hidden.len()
+        );
+    }
     let shown: Vec<&ProjectRow> = g
         .projects
         .iter()
@@ -133,6 +141,39 @@ pub fn render(g: &Glance, opts: &Options) -> String {
     out
 }
 
+/// From two open tracks up, one line per track (the pooled figure above is for the tab).
+fn track_lines(out: &mut String, p: &ProjectRow, c: bool) {
+    if p.tracks.len() > 1 {
+        for t in &p.tracks {
+            let mut line = format!(
+                "  track {} {}  · {} · claimed {}%",
+                t.track,
+                t.goal.title,
+                paint(c, Role::Clay, &format!("done {}%", t.done_pct)),
+                t.claimed_pct
+            );
+            if t.reviewed_tasks > 0 {
+                let _ = write!(
+                    line,
+                    " · includes {} done without tests",
+                    plural(t.reviewed_tasks, "task", "tasks")
+                );
+            }
+            if let Some(f) = &t.forecast {
+                let _ = write!(line, " · {}", f.short);
+            }
+            let _ = writeln!(out, "{line}");
+        }
+    }
+    if p.hidden_tracks > 0 {
+        let _ = writeln!(
+            out,
+            "  {} hidden (`bridge-screen hidden` lists them)",
+            plural(p.hidden_tracks, "track", "tracks")
+        );
+    }
+}
+
 fn project(out: &mut String, g: &Glance, p: &ProjectRow, c: bool) {
     if let Some(goal) = &p.goal {
         let mut progress = format!(
@@ -142,6 +183,13 @@ fn project(out: &mut String, g: &Glance, p: &ProjectRow, c: bool) {
         );
         if let Some(f) = &p.run.finished {
             let _ = write!(progress, " · {}", f.text);
+        }
+        if p.reviewed_tasks > 0 {
+            let _ = write!(
+                progress,
+                " · includes {} done without tests",
+                plural(p.reviewed_tasks, "task", "tasks")
+            );
         }
         if p.unestimated > 0 {
             let _ = write!(
@@ -170,6 +218,7 @@ fn project(out: &mut String, g: &Glance, p: &ProjectRow, c: bool) {
             .unwrap_or_default();
         let _ = writeln!(out, "{}  no plan yet{cost}", p.name);
     }
+    track_lines(out, p, c);
     for model in p.cost.iter().flat_map(|c| &c.unpriced_models) {
         let _ = writeln!(
             out,

@@ -521,7 +521,24 @@ fn project_lines(app: &App, row: usize, width: usize, narrow: bool) -> Vec<Line<
             ));
         }
     }
-    vec![line(spans, width)]
+    let mut lines = vec![line(spans, width)];
+    // From two open tracks up, one line per track.
+    if p.tracks.len() > 1 {
+        for t in &p.tracks {
+            let (d, cl, rest) = bar(t.done_pct, t.claimed_pct, 12);
+            lines.push(line(
+                vec![
+                    (format!("  track {:<8} ", t.track), sel),
+                    (d, role(c, CLAY)),
+                    (cl, role(c, CLAY)),
+                    (rest, Style::default()),
+                    (format!(" {}% · {}", t.done_pct, t.goal.title), sel),
+                ],
+                width,
+            ));
+        }
+    }
+    lines
 }
 
 fn session_line(

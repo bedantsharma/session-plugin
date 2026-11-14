@@ -283,6 +283,7 @@ fn ctx() -> ImportCtx {
         session_id: "owner".into(),
         actor: Actor::default(),
         dry_run: false,
+        track: None,
     }
 }
 
@@ -316,7 +317,7 @@ fn first_import_creates_goal_then_milestones() {
     let a = r.write("a.md", &a_text);
     let out = r.scan();
     assert!(
-        matches!(out[0], ImportOutcome::Imported { added: 4, .. }),
+        matches!(out[0], ImportOutcome::Imported { added: 2, .. }),
         "{out:?}"
     );
     let g = get_node(r.store.conn(), "r", "G").unwrap().unwrap();
@@ -381,7 +382,7 @@ fn edits_become_plan_events() {
     let text = plan_text(
         "Login",
         &[
-            ("Endpoint API", &[("test", true), ("docs", false)]),
+            ("Endpoint API", &[("test", true), ("docs", true)]),
             ("Form", &[]),
             ("Logout", &[]),
         ],
@@ -403,7 +404,7 @@ fn edits_become_plan_events() {
     assert!(new.contains(&"node_edited".to_string()), "{new:?}");
     assert_eq!(
         new.iter().filter(|k| *k == "node_added").count(),
-        2,
+        1,
         "{new:?}"
     );
     assert!(new.contains(&"claimed_done".to_string()));
@@ -415,16 +416,10 @@ fn edits_become_plan_events() {
         "Endpoint API"
     );
     assert_eq!(
-        get_node(r.store.conn(), "r", "1.1")
-            .unwrap()
-            .unwrap()
-            .status,
+        get_node(r.store.conn(), "r", "1").unwrap().unwrap().status,
         NodeStatus::Claimed
     );
-    assert_eq!(
-        get_node(r.store.conn(), "r", "1.2").unwrap().unwrap().title,
-        "docs"
-    );
+    assert!(get_node(r.store.conn(), "r", "1.1").unwrap().is_none());
     assert_eq!(
         get_node(r.store.conn(), "r", "3").unwrap().unwrap().title,
         "Logout"
@@ -617,6 +612,7 @@ fn existing_plan_gets_a_baseline() {
                 intent: Some("why".into()),
                 estimate_min: None,
                 expected_files: vec![],
+                check: None,
             },
             PlanOp::AddNode {
                 parent: Some("G".into()),
@@ -625,6 +621,7 @@ fn existing_plan_gets_a_baseline() {
                 intent: Some("why".into()),
                 estimate_min: None,
                 expected_files: vec![],
+                check: None,
             },
         ],
     )
@@ -677,6 +674,7 @@ fn changed_baseline_file_without_a_match_needs_a_link() {
                 intent: Some("why".into()),
                 estimate_min: None,
                 expected_files: vec![],
+                check: None,
             },
             PlanOp::AddNode {
                 parent: Some("G".into()),
@@ -685,6 +683,7 @@ fn changed_baseline_file_without_a_match_needs_a_link() {
                 intent: Some("why".into()),
                 estimate_min: None,
                 expected_files: vec![],
+                check: None,
             },
         ],
     )
@@ -769,6 +768,7 @@ fn into_links_a_file_to_a_milestone() {
                 intent: Some("why".into()),
                 estimate_min: None,
                 expected_files: vec![],
+                check: None,
             },
             PlanOp::AddNode {
                 parent: Some("G".into()),
@@ -777,6 +777,7 @@ fn into_links_a_file_to_a_milestone() {
                 intent: Some("why".into()),
                 estimate_min: None,
                 expected_files: vec![],
+                check: None,
             },
             PlanOp::AddNode {
                 parent: Some("1".into()),
@@ -785,6 +786,7 @@ fn into_links_a_file_to_a_milestone() {
                 intent: None,
                 estimate_min: None,
                 expected_files: vec![],
+                check: None,
             },
         ],
     )
@@ -1104,7 +1106,7 @@ fn a_new_plan_file_closes_a_finished_run_and_says_so() {
             .task("1"),
         )
         .unwrap();
-    assert!(crate::plan::runs::finished(r.store.conn(), "r").unwrap());
+    assert!(crate::plan::runs::finished(r.store.conn(), "r", 1).unwrap());
     r.write("b.md", &plan_text("Search", &[("Index", &[])]));
     let out = r.scan();
     assert!(
@@ -1123,10 +1125,565 @@ fn a_new_plan_file_closes_a_finished_run_and_says_so() {
         .flatten()
         .unwrap();
     assert!(line.starts_with("Run 1 is finished (1 task"), "{line}");
-    let now = crate::plan::runs::state(r.store.conn(), "r").unwrap();
+    let now = crate::plan::runs::state(r.store.conn(), "r", 1).unwrap();
     assert_eq!(
         (now.tasks, now.unverified),
         (1, 1),
         "the new run starts at 0"
     );
+}
+
+// ---- steps are not tasks (spec 2026-11-14 §6) ----
+
+fn count_nodes(r: &Repo, kind: NodeKind) -> usize {
+    load_tree(r.store.conn(), "r", false)
+        .unwrap()
+        .iter()
+        .filter(|n| n.kind == kind)
+        .count()
+}
+
+#[test]
+fn steps_are_not_nodes() {
+    let mut r = Repo::new();
+    r.write("a.md", SUPERPOWERS);
+    let out = r.scan();
+    assert!(
+        matches!(out[0], ImportOutcome::Imported { added: 2, .. }),
+        "{out:?}"
+    );
+    assert_eq!(count_nodes(&r, NodeKind::Task), 2);
+    assert_eq!(count_nodes(&r, NodeKind::Subtask), 0);
+}
+
+#[test]
+fn all_steps_ticked_claims_task() {
+    let mut r = Repo::new();
+    r.write(
+        "a.md",
+        &plan_text(
+            "Login",
+            &[
+                ("Done", &[("a", true), ("b", true)]),
+                ("Open", &[("a", false)]),
+            ],
+        ),
+    );
+    let out = r.scan();
+    assert!(
+        matches!(out[0], ImportOutcome::Imported { claimed: 1, .. }),
+        "{out:?}"
+    );
+    let t = |id: &str| get_node(r.store.conn(), "r", id).unwrap().unwrap().status;
+    assert_eq!((t("1"), t("2")), (NodeStatus::Claimed, NodeStatus::Todo));
+}
+
+#[test]
+fn some_steps_ticked_changes_nothing() {
+    let mut r = Repo::new();
+    r.write(
+        "a.md",
+        &plan_text("Login", &[("Half", &[("a", true), ("b", false)])]),
+    );
+    let out = r.scan();
+    assert!(
+        matches!(out[0], ImportOutcome::Imported { claimed: 0, .. }),
+        "{out:?}"
+    );
+    assert_eq!(
+        get_node(r.store.conn(), "r", "1").unwrap().unwrap().status,
+        NodeStatus::Todo
+    );
+    assert!(!r.kinds().contains(&"claimed_done".to_string()));
+}
+
+/// The shape of milestone 12: nine tasks, five step subtasks each, some claimed, as the
+/// older importer made them (events written by hand, as that version wrote them).
+fn old_import(r: &mut Repo, name: &str) -> PathBuf {
+    let rel = format!("{}/{name}", super::PLANS_DIR);
+    let tasks: Vec<(String, Vec<(&str, bool)>)> = (1..=9)
+        .map(|i| {
+            (
+                format!("Task {i}"),
+                vec![
+                    ("w", i % 2 == 0),
+                    ("r", i % 2 == 0),
+                    ("i", false),
+                    ("r2", false),
+                    ("c", false),
+                ],
+            )
+        })
+        .collect();
+    let refs: Vec<(&str, &[(&str, bool)])> = tasks
+        .iter()
+        .map(|(n, s)| (n.as_str(), s.as_slice()))
+        .collect();
+    let text = plan_text("Pages", &refs);
+    let path = r.write(name, &text);
+    let parsed = parse(&text);
+    r.store
+        .write(|tx| {
+            let ev = |kind: &str, data: serde_json::Value| {
+                crate::store::append_in(tx, EventDraft::new("r", "owner", kind, data))
+            };
+            ev("node_added", serde_json::json!({"id":"G","parent_id":null,"kind":"goal","title":"Pages","intent":"x"}))?;
+            let mut items = Vec::new();
+            for t in &parsed.tasks {
+                let tid = t.number.to_string();
+                ev("node_added", serde_json::json!({"id":tid,"parent_id":"G","kind":"task","title":t.title,
+                    "source":{"file":rel,"task":t.number}}))?;
+                items.push(serde_json::json!({"task":t.number,"node_id":tid,"title":t.title}));
+                for (k, s) in t.steps.iter().enumerate() {
+                    let sid = format!("{tid}.{}", k + 1);
+                    ev("node_added", serde_json::json!({"id":sid,"parent_id":tid,"kind":"subtask","title":s.text,
+                        "source":{"file":rel,"task":t.number,"step":s.number}}))?;
+                    items.push(serde_json::json!({"task":t.number,"step":s.number,"node_id":sid,"title":s.text}));
+                    if s.checked {
+                        ev("claimed_done", serde_json::json!({"task_id":sid,"evidence":"ticked","files":[],"symbols":[],"inferred":true}))?;
+                    }
+                }
+            }
+            ev("plan_imported", serde_json::json!({"path":rel,"hash":"old","size":1,"mtime":1,"node_id":"G",
+                "tasks":9,"changed_ratio":0.0,"replan":false,"items":items}))?;
+            Ok(())
+        })
+        .unwrap();
+    path
+}
+
+#[test]
+fn old_step_nodes_dropped_on_next_import() {
+    let mut r = Repo::new();
+    let path = old_import(&mut r, "twelve.md");
+    assert_eq!(count_nodes(&r, NodeKind::Subtask), 45);
+    let out = r.import(&path, None);
+    let ImportOutcome::Imported {
+        steps_removed,
+        removed,
+        replan,
+        ..
+    } = &out
+    else {
+        panic!("{out:?}")
+    };
+    assert_eq!(
+        (*steps_removed, *removed, *replan),
+        (45, 0, false),
+        "{out:?}"
+    );
+    assert_eq!(count_nodes(&r, NodeKind::Subtask), 0);
+    assert_eq!(count_nodes(&r, NodeKind::Task), 9);
+    assert!(out.summary().unwrap().contains("dropped 45 step items"));
+    // The old ticks were folded into the parents: tasks whose steps are not all ticked
+    // stay unclaimed.
+    let t = |id: &str| get_node(r.store.conn(), "r", id).unwrap().unwrap().status;
+    assert_eq!(t("2"), NodeStatus::Todo);
+}
+
+#[test]
+fn step_removal_does_not_trigger_replan() {
+    let mut r = Repo::new();
+    let path = old_import(&mut r, "twelve.md");
+    r.import(&path, None);
+    assert!(!r.kinds().contains(&"replan".to_string()));
+}
+
+#[test]
+fn reimport_twice_is_quiet() {
+    let mut r = Repo::new();
+    let path = old_import(&mut r, "twelve.md");
+    r.import(&path, None);
+    let before = r.kinds().len();
+    assert!(matches!(
+        r.import(&path, None),
+        ImportOutcome::Unchanged { .. }
+    ));
+    assert_eq!(r.scan(), vec![]);
+    assert_eq!(r.kinds().len(), before);
+}
+
+#[test]
+fn unchanged_file_with_steps_reimported_once() {
+    let mut r = Repo::new();
+    let _ = old_import(&mut r, "twelve.md");
+    // The recorded hash is not the file's, but make it so: a scan that stats an unchanged
+    // file must still pick it up because its items include steps.
+    let out = r.scan();
+    assert!(
+        matches!(
+            &out[..],
+            [ImportOutcome::Imported {
+                steps_removed: 45,
+                ..
+            }]
+        ),
+        "{out:?}"
+    );
+    assert_eq!(r.scan(), vec![]);
+}
+
+#[test]
+fn verified_step_is_kept_and_named() {
+    let mut r = Repo::new();
+    let path = old_import(&mut r, "twelve.md");
+    r.store
+        .write(|tx| {
+            tx.execute(
+                "UPDATE plan_nodes SET status = 'l2' WHERE repo_id = 'r' AND id = '3.2'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let out = r.import(&path, None);
+    let ImportOutcome::Imported {
+        steps_removed,
+        changes,
+        ..
+    } = &out
+    else {
+        panic!("{out:?}")
+    };
+    assert_eq!(*steps_removed, 44);
+    assert!(
+        changes.iter().any(|c| c.contains("kept step 3.2")),
+        "{changes:?}"
+    );
+    assert!(
+        get_node(r.store.conn(), "r", "3.2")
+            .unwrap()
+            .is_some_and(|n| n.status == NodeStatus::L2)
+    );
+    // Quiet afterwards.
+    assert!(matches!(
+        r.import(&path, None),
+        ImportOutcome::Unchanged { .. }
+    ));
+}
+
+#[test]
+fn scope_question_still_sees_ticks() {
+    let mut r = Repo::undecided();
+    r.write("a.md", &plan_text("Login", &[("Endpoint", &[("t", true)])]));
+    r.write("b.md", &plan_text("Search", &[("Index", &[("t", false)])]));
+    assert!(!matches!(&r.scan()[..], [ImportOutcome::NeedsScope { .. }]));
+}
+
+/// Every plan file of this repo imports as tasks only.
+#[test]
+fn this_repos_plans_have_no_step_subtasks() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/superpowers/plans");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(dir).unwrap().flatten() {
+        let text = std::fs::read_to_string(entry.path()).unwrap();
+        let mut r = Repo::new();
+        r.write("p.md", &text);
+        r.scan();
+        assert_eq!(count_nodes(&r, NodeKind::Subtask), 0, "{:?}", entry.path());
+        checked += 1;
+    }
+    assert!(checked > 0);
+}
+
+// ---- tracks (spec 2026-11-14 §2) ----
+
+fn start_second_track(r: &mut Repo) {
+    r.store
+        .write(|tx| {
+            let ctx = crate::plan::EditContext {
+                repo_id: "r".into(),
+                session_id: "owner".into(),
+                actor: Actor::default(),
+                reason: None,
+                replan: false,
+            };
+            crate::plan::start_track_in(tx, &ctx, "Docs refresh", "Docs are current")?;
+            Ok(())
+        })
+        .unwrap();
+}
+
+fn track_ctx(track: u32) -> ImportCtx {
+    ImportCtx {
+        track: Some(track),
+        ..ctx()
+    }
+}
+
+#[test]
+fn import_single_track_goes_there() {
+    let mut r = Repo::new();
+    r.write("a.md", &plan_text("Login", &[("Endpoint", &[])]));
+    r.scan();
+    // Track 1 is finished; track 2 is the only open one.
+    r.store
+        .append(EventDraft::new(
+            "r",
+            "owner",
+            "track_closed",
+            serde_json::json!({"track": 1}),
+        ))
+        .unwrap();
+    start_second_track(&mut r);
+    r.write("b.md", &plan_text("Search", &[("Index", &[])]));
+    let out = r.scan();
+    assert!(
+        matches!(&out[..], [ImportOutcome::Imported { node_id, .. }] if node_id == "T2-1"),
+        "{out:?}"
+    );
+    let m = get_node(r.store.conn(), "r", "T2-1").unwrap().unwrap();
+    assert_eq!((m.kind, m.title.as_str()), (NodeKind::Milestone, "Search"));
+    assert_eq!(
+        get_node(r.store.conn(), "r", "T2-1.1")
+            .unwrap()
+            .unwrap()
+            .title,
+        "Index"
+    );
+}
+
+#[test]
+fn import_two_tracks_parks_file() {
+    let mut r = Repo::new();
+    r.write("a.md", &plan_text("Login", &[("Endpoint", &[])]));
+    r.scan();
+    start_second_track(&mut r);
+    let before = r.tree().len();
+    r.write("b.md", &plan_text("Search", &[("Index", &[])]));
+    let out = r.scan();
+    assert!(
+        matches!(&out[..], [ImportOutcome::NeedsTrack { tracks, .. }]
+            if tracks.contains("track 1 'Login'") && tracks.contains("track 2 'Docs refresh'")),
+        "{out:?}"
+    );
+    assert!(
+        out[0]
+            .summary()
+            .unwrap()
+            .contains("import --track <number>")
+    );
+    assert_eq!(r.tree().len(), before, "nothing was created");
+    // Said once: the next scan is quiet.
+    assert_eq!(r.scan(), vec![]);
+    // The owner places it.
+    let p = r.root.join(super::PLANS_DIR).join("b.md");
+    let out = import_path(&mut r.store, "r", &r.root, &p, &track_ctx(2), None).unwrap();
+    assert!(
+        matches!(out, ImportOutcome::Imported { ref node_id, .. } if node_id == "T2-1"),
+        "{out:?}"
+    );
+    assert_eq!(
+        get_node(r.store.conn(), "r", "T2-1.1")
+            .unwrap()
+            .unwrap()
+            .title,
+        "Index"
+    );
+    // And it is linked now: a re-import is quiet.
+    assert!(matches!(
+        r.import(&p, None),
+        ImportOutcome::Unchanged { .. }
+    ));
+}
+
+#[test]
+fn import_track_flag_places_file() {
+    let mut r = Repo::new();
+    r.write("a.md", &plan_text("Login", &[("Endpoint", &[])]));
+    r.scan();
+    start_second_track(&mut r);
+    let p = r.write("b.md", &plan_text("Search", &[("Index", &[])]));
+    let out = import_path(&mut r.store, "r", &r.root, &p, &track_ctx(1), None).unwrap();
+    assert!(
+        matches!(out, ImportOutcome::Imported { ref node_id, .. } if node_id == "2"),
+        "{out:?}"
+    );
+    // A track that isn't open is refused in words.
+    let q = r.write("c.md", &plan_text("Other", &[("Thing", &[])]));
+    let err = import_path(&mut r.store, "r", &r.root, &q, &track_ctx(7), None)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("track 7 isn't open"), "{err}");
+}
+
+#[test]
+fn import_title_match_picks_track() {
+    let mut r = Repo::new();
+    r.write("a.md", &plan_text("Login", &[("Endpoint", &[])]));
+    r.scan();
+    start_second_track(&mut r);
+    // Track 2 already has a milestone with the file's title.
+    crate::plan::plan_edit(
+        &mut r.store,
+        &crate::plan::EditContext {
+            repo_id: "r".into(),
+            session_id: "owner".into(),
+            actor: Actor::default(),
+            reason: None,
+            replan: false,
+        },
+        &[
+            PlanOp::AddNode {
+                parent: Some("T2-G".into()),
+                kind: NodeKind::Milestone,
+                title: "Search".into(),
+                intent: Some("find things".into()),
+                estimate_min: None,
+                expected_files: vec![],
+                check: None,
+            },
+            PlanOp::AddNode {
+                parent: Some("T2-1".into()),
+                kind: NodeKind::Task,
+                title: "Index".into(),
+                intent: None,
+                estimate_min: None,
+                expected_files: vec![],
+                check: None,
+            },
+        ],
+    )
+    .unwrap();
+    r.write(
+        "b.md",
+        &plan_text("Search", &[("Index", &[]), ("Query", &[])]),
+    );
+    let out = r.scan();
+    assert!(
+        matches!(&out[..], [ImportOutcome::Imported { node_id, added: 1, .. }] if node_id == "T2-1"),
+        "{out:?}"
+    );
+    assert_eq!(
+        get_node(r.store.conn(), "r", "T2-1.2")
+            .unwrap()
+            .unwrap()
+            .title,
+        "Query"
+    );
+}
+
+// ---- removed for good (spec 2026-11-14 §4) ----
+
+fn owner_remove(r: &mut Repo, id: &str) {
+    r.store
+        .write(|tx| {
+            crate::plan::owner_remove_in(tx, "r", "owner", id, "removed by the owner")?;
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn plan_file_does_not_resurrect_owner_removed_task() {
+    let mut r = Repo::new();
+    let a = r.write(
+        "a.md",
+        &plan_text("Login", &[("Endpoint", &[]), ("Form", &[])]),
+    );
+    r.scan();
+    owner_remove(&mut r, "2");
+    assert_eq!(
+        get_node(r.store.conn(), "r", "2").unwrap().unwrap().status,
+        NodeStatus::Dropped
+    );
+    // The file changes (a third task) and lists the removed one again.
+    std::fs::write(
+        &a,
+        plan_text(
+            "Login",
+            &[("Endpoint", &[]), ("Form", &[]), ("Logout", &[])],
+        ),
+    )
+    .unwrap();
+    let out = r.scan();
+    assert!(
+        matches!(&out[..], [ImportOutcome::Imported { added: 1, .. }]),
+        "{out:?}"
+    );
+    let live: Vec<String> = r
+        .tree()
+        .into_iter()
+        .filter(|(_, _, s)| *s != NodeStatus::Dropped)
+        .map(|(_, t, _)| t)
+        .collect();
+    assert!(!live.contains(&"Form".to_string()), "{live:?}");
+    assert!(live.contains(&"Logout".to_string()), "{live:?}");
+    // It stays out through another change, and a rebuild agrees.
+    std::fs::write(
+        &a,
+        plan_text(
+            "Login",
+            &[
+                ("Endpoint", &[]),
+                ("Form", &[]),
+                ("Logout", &[]),
+                ("Reset", &[]),
+            ],
+        ),
+    )
+    .unwrap();
+    r.scan();
+    assert!(
+        !r.tree()
+            .iter()
+            .any(|(_, t, s)| t == "Form" && *s != NodeStatus::Dropped)
+    );
+    r.store.rebuild().unwrap();
+    assert_eq!(
+        get_node(r.store.conn(), "r", "2").unwrap().unwrap().status,
+        NodeStatus::Dropped
+    );
+}
+
+#[test]
+fn importer_retired_task_returns_when_relisted() {
+    let mut r = Repo::new();
+    let a = r.write(
+        "a.md",
+        &plan_text("Login", &[("Endpoint", &[]), ("Form", &[])]),
+    );
+    r.scan();
+    // The file drops Form: the importer retires it (nothing was done on it).
+    std::fs::write(&a, plan_text("Login", &[("Endpoint", &[])])).unwrap();
+    r.scan();
+    assert_eq!(
+        get_node(r.store.conn(), "r", "2").unwrap().unwrap().status,
+        NodeStatus::Dropped
+    );
+    // The file lists it again: it comes back (as a new node).
+    std::fs::write(&a, plan_text("Login", &[("Endpoint", &[]), ("Form", &[])])).unwrap();
+    r.scan();
+    assert!(
+        r.tree()
+            .iter()
+            .any(|(_, t, s)| t == "Form" && *s != NodeStatus::Dropped),
+        "{:?}",
+        r.tree()
+    );
+}
+
+#[test]
+fn plan_file_of_removed_track_is_skipped_once() {
+    let mut r = Repo::new();
+    let a = r.write("a.md", &plan_text("Login", &[("Endpoint", &[])]));
+    r.scan();
+    // A second milestone from another file; the owner removes it.
+    let b = r.write("b.md", &plan_text("Search", &[("Index", &[])]));
+    r.scan();
+    owner_remove(&mut r, "2");
+    // The file changes: nothing comes back, and it is said once.
+    std::fs::write(&b, plan_text("Search", &[("Index", &[]), ("Query", &[])])).unwrap();
+    let out = r.scan();
+    assert!(
+        matches!(&out[..], [ImportOutcome::Skipped { why, .. }] if why.contains("you removed")),
+        "{out:?}"
+    );
+    assert!(
+        !r.tree()
+            .iter()
+            .any(|(_, t, s)| t == "Query" && *s != NodeStatus::Dropped)
+    );
+    assert_eq!(r.scan(), vec![]);
+    let _ = a;
 }

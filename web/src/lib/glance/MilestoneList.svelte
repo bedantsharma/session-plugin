@@ -8,9 +8,12 @@
   import Chip from '$lib/ui/Chip.svelte'
   import { changed } from '$lib/changed'
   import { milestoneHill, rollupWord } from '$lib/words'
-  import type { ProjectRow } from '$lib/types'
+  import type { MilestoneRow, SessionRow } from '$lib/types'
 
-  let { project, limit = 6 }: { project: ProjectRow; limit?: number } = $props()
+  let {
+    project,
+    limit = 6,
+  }: { project: { milestones: MilestoneRow[]; sessions: SessionRow[] }; limit?: number } = $props()
 
   let all = $state(false)
   const milestones = $derived(all ? project.milestones : project.milestones.slice(0, limit))

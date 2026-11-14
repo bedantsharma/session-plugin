@@ -1,6 +1,6 @@
 //! SQL schema. Version 1 is the first released schema; later versions append migrations.
 
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 pub const V1: &str = r"
 CREATE TABLE meta (
@@ -473,4 +473,25 @@ CREATE TABLE waits (
 
 CREATE INDEX waits_target ON waits (target_repo_id, target_task, cleared_at);
 CREATE INDEX waits_session ON waits (session_id);
+";
+
+/// Version 11: tracks, hiding, removing and no-test tasks (spec 2026-11-14) — how a task is
+/// checked (`check_kind`: `tests` or `review`); plan-file items the owner removed for good
+/// (`owner_removed`); the track a forecast was for (`track`; every older forecast is track
+/// 1); and the things the owner hid from the front screen (`hides`).
+pub const V11: &str = r"
+ALTER TABLE plan_nodes ADD COLUMN check_kind TEXT NOT NULL DEFAULT 'tests';
+ALTER TABLE plan_source_items ADD COLUMN owner_removed INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE forecast_history ADD COLUMN track INTEGER NOT NULL DEFAULT 1;
+
+CREATE TABLE hides (
+    repo_id    TEXT NOT NULL,
+    subject    TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    label      TEXT NOT NULL,
+    stamp      INTEGER NOT NULL,
+    hidden_pos INTEGER NOT NULL,
+    hidden_at  TEXT NOT NULL,
+    PRIMARY KEY (repo_id, subject)
+);
 ";

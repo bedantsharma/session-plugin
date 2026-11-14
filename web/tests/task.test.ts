@@ -10,6 +10,8 @@ const drill: TaskDrill = {
   id: '1.1',
   title: 'Login form',
   status: 'l2',
+  check: 'tests',
+  actions: [],
   estimate_min: 30,
   actual_min: 54,
   decisions: [],
@@ -84,5 +86,31 @@ describe('Task drill', () => {
     btn.click()
     expect(await screen.findByRole('status')).toHaveTextContent('nothing to withdraw on 1.1')
     expect(sent).toEqual([{ kind: 'withdraw', repo: 'r1', task: '1.1' }])
+  })
+})
+
+describe('Task for a review task and the owner check', () => {
+  it('says it is checked by review and offers the owner buttons', async () => {
+    const reviewed: TaskDrill = {
+      ...drill,
+      status: 'reviewed',
+      check: 'review',
+      actions: [
+        {
+          label: '✓ Works',
+          action: { kind: 'verify', repo: 'r1', task: '1.1', level: 4 },
+          inputs: [],
+          tone: 'primary',
+        },
+      ],
+    }
+    const c: Client = {
+      get: async <T>() => reviewed as T,
+      act: async () => ({ ok: true, reply: '' }),
+    }
+    render(Task, { client: c, repo: 'r1', id: '1.1', version: 1 })
+    expect(await screen.findByTestId('check-kind')).toHaveTextContent('Review, not tests')
+    expect(screen.getByText('done — no tests')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '✓ Works' })).toBeInTheDocument()
   })
 })

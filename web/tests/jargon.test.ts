@@ -50,6 +50,8 @@ describe('no jargon on screens', () => {
       id: '1.1',
       title: 'Login form',
       status: 'l4',
+      check: 'tests',
+      actions: [],
       estimate_min: 30,
       actual_min: 20,
       decisions: [],

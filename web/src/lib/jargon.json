@@ -30,6 +30,15 @@
     "init_plan",
     "target_done",
     "clear_wait",
-    "promote_wait"
+    "promote_wait",
+    "reviewed",
+    "track_closed",
+    "track_reopened",
+    "target_removed",
+    "owner_removed",
+    "check_kind",
+    "needs_link",
+    "close_track",
+    "reopen_track"
   ]
 }

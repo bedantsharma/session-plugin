@@ -16,27 +16,28 @@
   import TuningView from '$lib/drill/Tuning.svelte'
   import CalibrationView from '$lib/drill/Calibration.svelte'
   import PagesView from '$lib/drill/Pages.svelte'
+  import HiddenDrawer from '$lib/glance/HiddenDrawer.svelte'
+  import { makeNav, type Screen } from '$lib/route'
   import type { Glance, OwnerAction } from '$lib/types'
-
-  type Screen =
-    | { kind: 'glance' }
-    | { kind: 'project'; repo: string }
-    | { kind: 'session'; id: string }
-    | { kind: 'task'; repo: string; id: string }
-    | { kind: 'history'; repo: string }
-    | { kind: 'tuning'; repo: string }
-    | { kind: 'calibration'; repo: string }
-    | { kind: 'pages'; repo: string }
 
   const MAX_PROJECTS = 5
   const MAX_SESSIONS = 8
 
   const token = takeToken()
   const client = makeClient(token)
+  // Every screen change is a history entry, so Back and the swipe come back to the screen
+  // before (spec 2026-11-14 §5).
+  const nav = makeNav()
   let glance = $state<Glance | null>(null)
   let conn = $state<ConnState>({ connected: true, unauthorized: false, lastOk: null })
   let version = $state(0)
-  let screen = $state<Screen>({ kind: 'glance' })
+  let screen = $state<Screen>(nav.current())
+  let showHidden = $state(false)
+  /** Open a screen: one history entry, never two for the same screen. */
+  function go(next: Screen) {
+    nav.go(next)
+    screen = next
+  }
   let showAll = $state(false)
   let allProjects = $state(false)
   let allSessions = $state(false)
@@ -46,6 +47,22 @@
   const shownProjects = $derived(
     allProjects ? (glance?.projects ?? []) : (glance?.projects ?? []).slice(0, MAX_PROJECTS),
   )
+
+  /** The page asked for is gone (a removed project, a bad link): said in words. */
+  const gone = $derived(
+    screen.kind === 'project' &&
+      glance !== null &&
+      !glance.projects.some((p) => p.repo_id === (screen as { repo: string }).repo) &&
+      !(glance.hidden ?? []).some((h) => h.repo_id === (screen as { repo: string }).repo),
+  )
+  let goneNote = $state(false)
+  $effect(() => {
+    if (gone) {
+      nav.replaceWithGlance()
+      screen = { kind: 'glance' }
+      goneNote = true
+    }
+  })
 
   const projectRow = $derived(
     screen.kind === 'project'
@@ -70,6 +87,8 @@
     },
     onState: (s) => (conn = s),
   })
+
+  onMount(() => nav.listen((s) => (screen = s)))
 
   onMount(() => {
     if (!token) {
@@ -98,7 +117,19 @@
   })
 </script>
 
-<Header {glance} {conn} {version} onShowAll={() => (showAll = true)} />
+<Header
+  {glance}
+  {conn}
+  {version}
+  onShowAll={() => (showAll = true)}
+  onShowHidden={() => (showHidden = true)}
+/>
+<HiddenDrawer
+  items={glance?.hidden ?? []}
+  open={showHidden && (glance?.hidden?.length ?? 0) > 0}
+  onClose={() => (showHidden = false)}
+  {act}
+/>
 <main class="mx-auto flex w-full max-w-[1280px] flex-col gap-8 px-4 py-8 lg:px-6 xl:px-8">
   {#if conn.unauthorized}
     <section class="rounded-xl border border-warn bg-surface p-5 text-row" role="alert">
@@ -114,7 +145,9 @@
       <button
         type="button"
         class="-ml-2 inline-flex h-9 items-center rounded-lg px-2 text-sm font-medium text-muted hover:bg-hover hover:text-fg"
-        onclick={() => (screen = { kind: 'glance' })}>← Glance</button
+        onclick={() => {
+          if (!nav.toGlance()) screen = { kind: 'glance' }
+        }}>← Glance</button
       >
     </nav>
     <div class="flex flex-col gap-8">
@@ -124,11 +157,11 @@
           repo={screen.repo}
           {version}
           row={projectRow}
-          onOpenTask={(repo, id) => (screen = { kind: 'task', repo, id })}
-          onOpenHistory={(repo) => (screen = { kind: 'history', repo })}
-          onOpenTuning={(repo) => (screen = { kind: 'tuning', repo })}
-          onOpenCalibration={(repo) => (screen = { kind: 'calibration', repo })}
-          onOpenPages={(repo) => (screen = { kind: 'pages', repo })}
+          onOpenTask={(repo, id) => go({ kind: 'task', repo, id })}
+          onOpenHistory={(repo) => go({ kind: 'history', repo })}
+          onOpenTuning={(repo) => go({ kind: 'tuning', repo })}
+          onOpenCalibration={(repo) => go({ kind: 'calibration', repo })}
+          onOpenPages={(repo) => go({ kind: 'pages', repo })}
         />
       {:else if screen.kind === 'session'}
         <SessionView {client} id={screen.id} {version} />
@@ -145,19 +178,33 @@
       {/if}
     </div>
   {:else if glance}
+    {#if goneNote}
+      <p
+        class="flex items-center gap-3 rounded-xl border border-line bg-surface p-4 text-row"
+        role="status"
+        data-testid="page-gone"
+      >
+        That page is gone.
+        <button
+          type="button"
+          class="rounded-lg px-2 py-1 text-sm font-medium text-muted hover:bg-hover hover:text-fg"
+          onclick={() => (goneNote = false)}>OK</button
+        >
+      </p>
+    {/if}
     <NeedsYouQueue
       items={glance.needs_you}
       {act}
       disabled={!conn.connected}
       bind:showAll
-      onOpenSession={(id) => (screen = { kind: 'session', id })}
+      onOpenSession={(id) => go({ kind: 'session', id })}
     />
     <div class="grid grid-cols-1 gap-8 xl:grid-cols-[minmax(0,1fr)_400px]">
       <section aria-label="Projects" class="flex flex-col gap-3">
         <h2 class="text-base font-semibold">Projects</h2>
         <ul class="flex flex-col gap-4">
           {#each shownProjects as p (p.repo_id)}
-            <ProjectRowView project={p} onOpen={(repo) => (screen = { kind: 'project', repo })} />
+            <ProjectRowView project={p} {act} onOpen={(repo) => go({ kind: 'project', repo })} />
           {/each}
         </ul>
         {#if glance.projects.length === 0}
@@ -183,7 +230,7 @@
         <div class="rounded-xl border border-line bg-surface p-2">
           <ul class="flex flex-col gap-1">
             {#each shownSessions as s (s.session_id)}
-              <SessionRowView session={s} onOpen={(id) => (screen = { kind: 'session', id })} />
+              <SessionRowView session={s} onOpen={(id) => go({ kind: 'session', id })} />
             {/each}
           </ul>
           {#if sessions.length > MAX_SESSIONS && !allSessions}

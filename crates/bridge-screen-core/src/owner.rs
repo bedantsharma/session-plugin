@@ -6,6 +6,7 @@
 //! still open; a stale or double click is refused with [`Error::Stale`] and records
 //! nothing.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
@@ -119,9 +120,51 @@ pub enum OwnerAction {
     ClearWait { wait_id: String },
     /// Turn a session's wait on a task into a plan link of its active task.
     PromoteWait { wait_id: String },
-    /// Close the repo's finished run (spec §10.1): refused unless every task of the run
-    /// passed its tests.
-    CloseRun { repo: String },
+    /// Close a track's finished run (spec §10.1): refused unless every task of the run
+    /// passed its tests. `track` may be left out when the repo has exactly one open track.
+    CloseRun {
+        repo: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        track: Option<u32>,
+    },
+    /// Finish a track (spec 2026-11-14 §2): refused while a task is neither done nor removed.
+    CloseTrack { repo: String, track: u32 },
+    /// Take a finished track back into the open list.
+    ReopenTrack { repo: String, track: u32 },
+    /// Remove a task, a milestone or a whole track for good (spec 2026-11-14 §4): abandoned
+    /// work leaves the bars, the queue and the forecast; the history keeps a record. Refused
+    /// without `confirm`, and stale when the node is gone or its title changed since the
+    /// screen showed it.
+    Remove {
+        repo: String,
+        id: String,
+        /// The title the screen showed.
+        title: String,
+        #[serde(default)]
+        confirm: bool,
+    },
+    /// Hide a card, a track's bar or a whole project from the front screen (spec 2026-11-14
+    /// §3). Stale when something new happened to it since the screen showed it (the stamp
+    /// moved). Hiding never changes a number.
+    Hide {
+        repo: String,
+        /// `card:<id>`, `track:<repo>:<n>` or `project:<repo>`.
+        subject: String,
+        /// What it is called on screen, for the drawer.
+        label: String,
+        /// The stamp the screen saw.
+        stamp: i64,
+    },
+    /// Bring something hidden back.
+    Unhide { repo: String, subject: String },
+    /// Start a new track from the CLI (the owner needs no words). `intent` defaults to the
+    /// title.
+    StartTrack {
+        repo: String,
+        title: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        intent: Option<String>,
+    },
     /// Answer "which plan files are already finished?" (spec §12.1): left out or empty is
     /// a fresh run; otherwise the named files (commas or new lines) are already finished.
     PlanScope {
@@ -129,6 +172,23 @@ pub enum OwnerAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         done: Option<String>,
     },
+}
+
+impl OwnerAction {
+    /// May the progress card's one-time code answer this? Never the actions that change
+    /// what the plan holds or what is on the front screen (spec 2026-11-14): finishing a
+    /// track, starting one, hiding, removing.
+    pub fn allowed_on_card(&self) -> bool {
+        !matches!(
+            self,
+            Self::CloseTrack { .. }
+                | Self::ReopenTrack { .. }
+                | Self::StartTrack { .. }
+                | Self::Remove { .. }
+                | Self::Hide { .. }
+                | Self::Unhide { .. }
+        )
+    }
 }
 
 /// Where an owner action runs.
@@ -292,7 +352,27 @@ pub fn act(store: &mut Store, ctx: &ActCtx, action: &OwnerAction) -> Result<Stri
                 w.target_text
             ))
         }),
-        OwnerAction::CloseRun { repo } => close_run(store, repo),
+        OwnerAction::CloseRun { repo, track } => close_run(store, repo, *track),
+        OwnerAction::Remove {
+            repo,
+            id,
+            title,
+            confirm,
+        } => remove(store, repo, id, title, *confirm),
+        OwnerAction::Hide {
+            repo,
+            subject,
+            label,
+            stamp,
+        } => hide(store, repo, subject, label, *stamp),
+        OwnerAction::Unhide { repo, subject } => unhide(store, repo, subject),
+        OwnerAction::CloseTrack { repo, track } => close_track(store, repo, *track),
+        OwnerAction::ReopenTrack { repo, track } => reopen_track(store, repo, *track),
+        OwnerAction::StartTrack {
+            repo,
+            title,
+            intent,
+        } => start_track(store, repo, title, intent.as_deref()),
         OwnerAction::PlanScope { repo, done } => plan_scope(store, repo, done.as_deref()),
         OwnerAction::PromoteWait { wait_id } => store.write(|tx| {
             let w = crate::waits::find(tx, wait_id)?;
@@ -307,9 +387,27 @@ pub fn act(store: &mut Store, ctx: &ActCtx, action: &OwnerAction) -> Result<Stri
     }
 }
 
-fn close_run(store: &mut Store, repo: &str) -> Result<String> {
+/// The track an action means: the one named, or the only open one. Several open tracks
+/// and none named is refused with the list.
+fn pick_track(conn: &Connection, repo: &str, track: Option<u32>) -> Result<u32> {
+    if let Some(t) = track {
+        return Ok(t);
+    }
+    let open = crate::plan::track::open_tracks(conn, repo)?;
+    match open.as_slice() {
+        [] => Err(Error::Invalid("there is no plan to close a run of".into())),
+        [one] => Ok(one.no),
+        many => Err(Error::Invalid(format!(
+            "this folder has several tracks: say which one ({}); nothing was closed",
+            crate::plan::track::open_list_text(many)
+        ))),
+    }
+}
+
+fn close_run(store: &mut Store, repo: &str, track: Option<u32>) -> Result<String> {
     store.write(|tx| {
-        let run = crate::plan::runs::close_in(tx, repo, OWNER_SESSION, &Actor::default())?;
+        let track = pick_track(tx, repo, track)?;
+        let run = crate::plan::runs::close_in(tx, repo, track, OWNER_SESSION, &Actor::default())?;
         record(
             tx,
             repo,
@@ -322,6 +420,283 @@ fn close_run(store: &mut Store, repo: &str) -> Result<String> {
     })
 }
 
+fn hide(store: &mut Store, repo: &str, subject: &str, label: &str, stamp: i64) -> Result<String> {
+    use crate::hide::{Hidden, Subject};
+    let parsed = Subject::parse(subject)
+        .ok_or_else(|| Error::Invalid("that can't be hidden; nothing was hidden".into()))?;
+    let own = match &parsed {
+        Subject::Card(_) => true,
+        Subject::Track { repo: r, .. } | Subject::Project(r) => r == repo,
+    };
+    if !own {
+        return Err(Error::Invalid(
+            "that belongs to another project; nothing was hidden".into(),
+        ));
+    }
+    store.write(|tx| {
+        if crate::hide::stamp_of(tx, repo, &parsed)? != stamp {
+            return Err(stale(
+                "something new just happened, so it was not hidden; have another look",
+            ));
+        }
+        let label = label.trim();
+        let data = Hidden {
+            subject: subject.to_string(),
+            label: if label.is_empty() {
+                "something".to_string()
+            } else {
+                label.chars().take(120).collect()
+            },
+            stamp,
+        };
+        append_in(
+            tx,
+            EventDraft::new(repo, OWNER_SESSION, "hidden", serde_json::to_value(&data)?),
+        )?;
+        Ok(format!(
+            "Hid '{}'. It sits under \"Hidden\" and comes back by itself when something new happens to it; the numbers did not change.",
+            data.label
+        ))
+    })
+}
+
+fn unhide(store: &mut Store, repo: &str, subject: &str) -> Result<String> {
+    store.write(|tx| {
+        let Some(row) = crate::hide::row_of(tx, repo, subject)? else {
+            return Err(stale("it isn't hidden any more; nothing changed"));
+        };
+        append_in(
+            tx,
+            EventDraft::new(
+                repo,
+                OWNER_SESSION,
+                "unhidden",
+                serde_json::to_value(crate::hide::Unhidden {
+                    subject: subject.to_string(),
+                })?,
+            ),
+        )?;
+        Ok(format!("Brought back '{}'.", row.label))
+    })
+}
+
+/// What a status reads as when the owner removes it, in words.
+pub fn state_phrase(status: NodeStatus) -> &'static str {
+    match status {
+        NodeStatus::Todo => "not started",
+        NodeStatus::Active => "being worked on",
+        NodeStatus::Claimed => "claimed, not checked",
+        NodeStatus::L1 => "code written, tests not run",
+        NodeStatus::L2 => "tests pass",
+        NodeStatus::L3 => "tried end to end",
+        NodeStatus::L4 => "you signed it off",
+        NodeStatus::Reviewed => "done, no tests",
+        NodeStatus::Failed => "failed a check",
+        NodeStatus::Dropped => "already removed",
+    }
+}
+
+/// `task`, `milestone`, `track`, `step`.
+fn kind_word(node: &crate::plan::PlanNode) -> &'static str {
+    match node.kind {
+        crate::plan::NodeKind::Goal => "track",
+        crate::plan::NodeKind::Milestone => "milestone",
+        crate::plan::NodeKind::Task => "task",
+        crate::plan::NodeKind::Subtask => "step",
+    }
+}
+
+/// The plain-words question the owner confirms before a node is removed for good: what goes,
+/// how much of it is done, who is working on it, and what removing means.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RemoveImpact {
+    pub title: String,
+    /// Tasks under it (live leaves), how many of them are done, and live sessions working
+    /// on it.
+    pub tasks: usize,
+    pub done: usize,
+    pub working: usize,
+    /// `Remove the track 'Docs refresh' for good? 7 tasks, 2 done. …`
+    pub text: String,
+}
+
+/// The question the owner confirms before removing `node` for good (see [`RemoveImpact`]).
+pub fn impact_text(
+    node: &crate::plan::PlanNode,
+    shown: &str,
+    tasks: usize,
+    done: usize,
+    working: usize,
+) -> String {
+    let kind = kind_word(node);
+    let what = match node.kind {
+        crate::plan::NodeKind::Goal => format!("the track '{}'", node.title),
+        _ => format!("{kind} {shown} '{}'", node.title),
+    };
+    let mut text = format!("Remove {what} for good?");
+    match node.kind {
+        crate::plan::NodeKind::Goal | crate::plan::NodeKind::Milestone => {
+            let _ = write!(
+                text,
+                " {tasks} task{}, {done} done.",
+                if tasks == 1 { "" } else { "s" }
+            );
+        }
+        _ => {
+            let _ = write!(text, " It is {}.", state_phrase(node.status));
+        }
+    }
+    if working > 0 {
+        let _ = write!(
+            text,
+            " {working} session{} {} working on it.",
+            if working == 1 { "" } else { "s" },
+            if working == 1 { "is" } else { "are" }
+        );
+    }
+    text.push_str(
+        " It leaves the bars, the queue and the forecast and can't be brought back from the dashboard. The history keeps a record.",
+    );
+    text
+}
+
+/// The impact of removing `id`, read from the plan as it is now.
+pub fn remove_impact(conn: &Connection, repo: &str, id: &str) -> Result<RemoveImpact> {
+    let node = get_node(conn, repo, id)?
+        .filter(|n| n.status != NodeStatus::Dropped)
+        .ok_or_else(|| stale(format!("{id} is already gone from the plan")))?;
+    let under = crate::plan::subtree_ids(conn, repo, id)?;
+    let tree = crate::plan::load_tree(conn, repo, false)?;
+    let leaves: Vec<&crate::plan::PlanNode> = tree
+        .iter()
+        .filter(|n| under.contains(&n.id))
+        .filter(|n| {
+            matches!(
+                n.kind,
+                crate::plan::NodeKind::Task | crate::plan::NodeKind::Subtask
+            )
+        })
+        .filter(|n| !tree.iter().any(|c| c.parent_id.as_deref() == Some(&n.id)))
+        .collect();
+    let done = leaves.iter().filter(|n| n.status.counts_as_done()).count();
+    let working = session::list_live(conn, Some(repo))?
+        .iter()
+        .filter(|s| s.active_task.as_ref().is_some_and(|t| under.contains(t)))
+        .count();
+    let shown = crate::plan::runs::load_all(conn, repo)?.shown(id);
+    let text = impact_text(&node, &shown, leaves.len(), done, working);
+    Ok(RemoveImpact {
+        title: node.title,
+        tasks: leaves.len(),
+        done,
+        working,
+        text,
+    })
+}
+
+fn remove(store: &mut Store, repo: &str, id: &str, title: &str, confirm: bool) -> Result<String> {
+    if !confirm {
+        return Err(Error::Invalid(
+            "removing is for good: confirm it first; nothing was removed".into(),
+        ));
+    }
+    store.write(|tx| {
+        let node = get_node(tx, repo, id)?
+            .filter(|n| n.status != NodeStatus::Dropped)
+            .ok_or_else(|| {
+                stale(format!(
+                    "already gone: {id} was removed before; nothing changed"
+                ))
+            })?;
+        if node.title.trim() != title.trim() {
+            return Err(stale(format!(
+                "{id} changed since you looked: it is now '{}'; nothing was removed",
+                node.title
+            )));
+        }
+        let impact = remove_impact(tx, repo, id)?;
+        let shown = crate::plan::runs::load_all(tx, repo)?.shown(id);
+        let was = state_phrase(node.status);
+        let kind = kind_word(&node);
+        let what = if node.kind == crate::plan::NodeKind::Goal {
+            format!("track '{}'", node.title)
+        } else {
+            format!("{kind} {shown} '{}'", node.title)
+        };
+        crate::plan::owner_remove_in(tx, repo, OWNER_SESSION, id, "removed by the owner")?;
+        record(tx, repo, &owner_data("remove", None, Some(id.to_string())))?;
+        let detail = match node.kind {
+            crate::plan::NodeKind::Goal | crate::plan::NodeKind::Milestone => format!(
+                "{} task{}, {} done",
+                impact.tasks,
+                if impact.tasks == 1 { "" } else { "s" },
+                impact.done
+            ),
+            _ => format!("it was {was}"),
+        };
+        Ok(format!(
+            "Removed {what} ({detail}). It has left the bars, the queue and the forecast."
+        ))
+    })
+}
+
+fn close_track(store: &mut Store, repo: &str, track: u32) -> Result<String> {
+    store.write(|tx| {
+        let t = crate::plan::track::close_track_in(tx, repo, OWNER_SESSION, &Actor::default(), track)?;
+        record(
+            tx,
+            repo,
+            &owner_data("close_track", None, Some(t.goal_id.clone())),
+        )?;
+        Ok(format!(
+            "Finished track {} '{}'. It leaves the front screen and sits under \"Finished tracks\"; you can reopen it.",
+            t.no, t.title
+        ))
+    })
+}
+
+fn reopen_track(store: &mut Store, repo: &str, track: u32) -> Result<String> {
+    store.write(|tx| {
+        let t =
+            crate::plan::track::reopen_track_in(tx, repo, OWNER_SESSION, &Actor::default(), track)?;
+        record(
+            tx,
+            repo,
+            &owner_data("reopen_track", None, Some(t.goal_id.clone())),
+        )?;
+        Ok(format!("Reopened track {} '{}'.", t.no, t.title))
+    })
+}
+
+fn start_track(store: &mut Store, repo: &str, title: &str, intent: Option<&str>) -> Result<String> {
+    store.write(|tx| {
+        let ctx = crate::plan::EditContext {
+            repo_id: repo.to_string(),
+            session_id: OWNER_SESSION.to_string(),
+            actor: Actor::default(),
+            reason: Some("track started by the owner".into()),
+            replan: false,
+        };
+        let intent = intent
+            .map(str::trim)
+            .filter(|i| !i.is_empty())
+            .unwrap_or(title);
+        let goal = crate::plan::start_track_in(tx, &ctx, title, intent)?;
+        record(
+            tx,
+            repo,
+            &owner_data("start_track", None, Some(goal.clone())),
+        )?;
+        let no = crate::plan::track::track_of(&goal);
+        Ok(format!(
+            "Started track {no} '{}' (goal {goal}). Its tasks read {}, {}, … and restart from 1.",
+            title.trim(),
+            crate::plan::track::raw(no, "1"),
+            crate::plan::track::raw(no, "1.1")
+        ))
+    })
+}
+
 fn plan_scope(store: &mut Store, repo: &str, done: Option<&str>) -> Result<String> {
     let root = crate::import::registered_root(store.conn(), repo)?
         .ok_or_else(|| Error::NotFound(format!("no repo {repo}")))?;
@@ -329,6 +704,7 @@ fn plan_scope(store: &mut Store, repo: &str, done: Option<&str>) -> Result<Strin
         session_id: OWNER_SESSION.to_string(),
         actor: Actor::default(),
         dry_run: false,
+        track: None,
     };
     let names = crate::import::scope::split_names(done.unwrap_or_default());
     let line = crate::import::scope::answer(store, repo, &root, &import_ctx, &names)?;

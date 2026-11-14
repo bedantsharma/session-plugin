@@ -264,9 +264,46 @@ pub fn top_verification(
     .transpose()
 }
 
+/// Fewest words and characters of a claim's summary that count as a saved result for a
+/// review task that names no files.
+const REVIEW_MIN_WORDS: usize = 10;
+const REVIEW_MIN_CHARS: usize = 60;
+
+/// Is the task checked by review (not tests)?
+pub fn is_review(conn: &Connection, repo_id: &str, task_id: &str) -> Result<bool> {
+    let kind: Option<String> = conn
+        .prepare_cached("SELECT check_kind FROM plan_nodes WHERE repo_id = ?1 AND id = ?2")?
+        .query_row(params![repo_id, task_id], |r| r.get(0))
+        .optional()?;
+    Ok(kind.as_deref() == Some("review"))
+}
+
+/// Has a review task's result been saved? The newest claim names files and the L1 check
+/// found them committed; or it names none and its summary is a real one (at least
+/// [`REVIEW_MIN_WORDS`] words and [`REVIEW_MIN_CHARS`] characters). Files named but not
+/// yet committed leave it claimed until the checkpoint commit.
+pub fn review_saved(conn: &Connection, repo_id: &str, task_id: &str) -> Result<bool> {
+    let Some(claim) = crate::handoff::latest_claim(conn, repo_id, task_id)? else {
+        return Ok(false);
+    };
+    if !claim.files.is_empty() {
+        return Ok(current_level(conn, repo_id, task_id)? >= 1);
+    }
+    Ok(review_text_is_real(&claim.evidence))
+}
+
+/// Is a claim's summary a real review result (not a one-liner)?
+pub fn review_text_is_real(evidence: &str) -> bool {
+    let text = evidence.trim();
+    text.split_whitespace().count() >= REVIEW_MIN_WORDS && text.chars().count() >= REVIEW_MIN_CHARS
+}
+
 /// Set a task's plan status from its verifications and claims (never a dropped node):
 /// - `failed` when this is a `verification_failed`;
-/// - else `l<max level>` of its current and stale rows (a row at 0 counts for nothing);
+/// - else `l2`..`l4` by the highest level of its current and stale rows (a row at 0 counts
+///   for nothing);
+/// - else `reviewed` for a review task whose result is saved;
+/// - else `l1` at level 1;
 /// - else `claimed` when it was claimed done;
 /// - else `active` when a live session holds it, or `todo` (after a withdrawn sign-off or
 ///   a verification that dropped to nothing).
@@ -274,11 +311,15 @@ pub fn top_verification(
 /// `claim_task` moves `failed` back to `active` (see `plan::project::mark_claimed`).
 pub fn refresh_status(tx: &Transaction, repo_id: &str, task_id: &str, failed: bool) -> Result<()> {
     let status = if failed {
-        Some("failed".to_string())
+        "failed".to_string()
     } else {
         let level = current_level(tx, repo_id, task_id)?;
-        if level >= 1 {
-            Some(format!("l{}", level.min(4)))
+        if level >= 2 {
+            format!("l{}", level.min(4))
+        } else if is_review(tx, repo_id, task_id)? && review_saved(tx, repo_id, task_id)? {
+            "reviewed".to_string()
+        } else if level >= 1 {
+            "l1".to_string()
         } else {
             let claimed: i64 = tx
                 .prepare_cached(
@@ -286,7 +327,7 @@ pub fn refresh_status(tx: &Transaction, repo_id: &str, task_id: &str, failed: bo
                 )?
                 .query_row(params![repo_id, task_id], |r| r.get(0))?;
             if claimed > 0 {
-                Some("claimed".to_string())
+                "claimed".to_string()
             } else {
                 let held: i64 = tx
                     .prepare_cached(
@@ -294,18 +335,36 @@ pub fn refresh_status(tx: &Transaction, repo_id: &str, task_id: &str, failed: bo
                          WHERE repo_id = ?1 AND active_task = ?2 AND state != 'ended'",
                     )?
                     .query_row(params![repo_id, task_id], |r| r.get(0))?;
-                Some(if held > 0 { "active" } else { "todo" }.to_string())
+                if held > 0 { "active" } else { "todo" }.to_string()
             }
         }
     };
-    if let Some(status) = status {
+    if status == "reviewed" {
+        // Nothing is left to nudge about.
         tx.execute(
-            "UPDATE plan_nodes SET status = ?3
-             WHERE repo_id = ?1 AND id = ?2 AND status != 'dropped'",
-            params![repo_id, task_id, status],
+            "DELETE FROM verify_nudges WHERE repo_id = ?1 AND task_id = ?2",
+            params![repo_id, task_id],
         )?;
     }
+    tx.execute(
+        "UPDATE plan_nodes SET status = ?3
+         WHERE repo_id = ?1 AND id = ?2 AND status != 'dropped'",
+        params![repo_id, task_id, status],
+    )?;
     Ok(())
+}
+
+/// The task's `check` changed: a task that was `reviewed` may no longer be done, and one
+/// that was claimed may now be. A failed task stays failed.
+pub fn refresh_after_check_switch(tx: &Transaction, repo_id: &str, task_id: &str) -> Result<()> {
+    let status: Option<String> = tx
+        .prepare_cached("SELECT status FROM plan_nodes WHERE repo_id = ?1 AND id = ?2")?
+        .query_row(params![repo_id, task_id], |r| r.get(0))
+        .optional()?;
+    match status.as_deref() {
+        None | Some("dropped" | "todo" | "active") => Ok(()),
+        Some(s) => refresh_status(tx, repo_id, task_id, s == "failed"),
+    }
 }
 
 /// Plan-tree markers from verifications: `stale` when a task's newest verification went
@@ -374,6 +433,9 @@ pub struct Progress {
     pub claimed_min: u64,
     pub total_min: u64,
     pub unestimated: usize,
+    /// How many of the done leaves are done without tests (review tasks with a saved
+    /// result); they count in `done_pct`.
+    pub reviewed_tasks: usize,
 }
 
 fn pct(part: u64, total: u64) -> u32 {
@@ -383,38 +445,44 @@ fn pct(part: u64, total: u64) -> u32 {
     u32::try_from(part * 100 / total).unwrap_or(100)
 }
 
-/// Done% and claimed% of the **current run** (spec §10.1); closed runs are left out.
-pub fn progress(conn: &Connection, repo_id: &str) -> Result<Progress> {
-    let first = crate::plan::runs::load(conn, repo_id)?.current_first;
-    let mut stmt = conn.prepare_cached(
-        "SELECT n.status, n.estimate_min FROM plan_nodes n
-         WHERE n.repo_id = ?1 AND n.kind IN ('task', 'subtask') AND n.status != 'dropped'
-           AND CAST(substr(n.id, 1, instr(n.id || '.', '.') - 1) AS INTEGER) >= ?2
-           AND NOT EXISTS (SELECT 1 FROM plan_nodes c
-                           WHERE c.repo_id = n.repo_id AND c.parent_id = n.id
-                             AND c.status != 'dropped')",
-    )?;
-    let rows = stmt.query_map(rusqlite::params![repo_id, first], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?))
-    })?;
-    let mut p = Progress::default();
-    for row in rows {
-        let (status, estimate) = row?;
-        let minutes = estimate.and_then(|m| u64::try_from(m).ok());
-        if minutes.is_none() {
-            p.unestimated += 1;
+impl Progress {
+    /// Done% and claimed% over `leaves` (live tasks and subtasks with no live children).
+    pub fn of_leaves(leaves: &[&crate::plan::PlanNode]) -> Self {
+        let mut p = Progress::default();
+        for leaf in leaves {
+            let minutes = leaf.estimate_min.map(u64::from);
+            if minutes.is_none() {
+                p.unestimated += 1;
+            }
+            let minutes = minutes.unwrap_or(0);
+            p.total_min += minutes;
+            if leaf.status.counts_as_done() {
+                p.done_min += minutes;
+                if leaf.status == crate::plan::NodeStatus::Reviewed {
+                    p.reviewed_tasks += 1;
+                }
+            } else if leaf.status.is_claimed_not_done() {
+                p.claimed_min += minutes;
+            }
         }
-        let minutes = minutes.unwrap_or(0);
-        p.total_min += minutes;
-        match status.as_str() {
-            "l2" | "l3" | "l4" => p.done_min += minutes,
-            "claimed" | "l1" => p.claimed_min += minutes,
-            _ => {}
-        }
+        p.done_pct = pct(p.done_min, p.total_min);
+        p.claimed_pct = pct(p.claimed_min, p.total_min);
+        p
     }
-    p.done_pct = pct(p.done_min, p.total_min);
-    p.claimed_pct = pct(p.claimed_min, p.total_min);
-    Ok(p)
+}
+
+/// Done% and claimed% of the **current run of one track** (spec §10.1); closed runs are
+/// left out.
+pub fn progress(conn: &Connection, repo_id: &str, track: u32) -> Result<Progress> {
+    let tree = crate::plan::runs::run_tree(conn, repo_id, track)?;
+    Ok(Progress::of_leaves(&crate::plan::runs::leaf_nodes(&tree)))
+}
+
+/// [`progress`] pooled over every open track (estimate-weighted). With one open track it
+/// is that track's.
+pub fn progress_all(conn: &Connection, repo_id: &str) -> Result<Progress> {
+    let tree = crate::plan::runs::open_run_tree(conn, repo_id)?;
+    Ok(Progress::of_leaves(&crate::plan::runs::leaf_nodes(&tree)))
 }
 
 #[cfg(test)]

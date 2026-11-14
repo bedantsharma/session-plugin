@@ -403,6 +403,7 @@ pub fn promote_detour_in(
                 parent: parent.to_string(),
                 title: title.to_string(),
                 estimate_min,
+                check: None,
             },
             mode: ClaimMode::Auto,
             confidence: 1.0,
