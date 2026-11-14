@@ -79,6 +79,8 @@ pub enum ImportOutcome {
         removed: usize,
         kept: usize,
         claimed: usize,
+        /// Step subtasks from older imports that were dropped (steps are no longer tasks).
+        steps_removed: usize,
         replan: bool,
         /// Plain-words lines for each change (shown by `--dry-run`).
         changes: Vec<String>,
@@ -141,6 +143,7 @@ impl ImportOutcome {
                 removed,
                 kept,
                 claimed,
+                steps_removed,
                 ..
             } => {
                 let mut parts = Vec::new();
@@ -161,17 +164,20 @@ impl ImportOutcome {
                 let mut line = if parts.is_empty() {
                     format!("Imported {}: nothing changed", short_name(path))
                 } else {
-                    format!(
-                        "Imported {}: {} tasks and steps",
-                        short_name(path),
-                        parts.join(", ")
-                    )
+                    format!("Imported {}: {} tasks", short_name(path), parts.join(", "))
                 };
                 if *claimed > 0 {
                     let _ = write!(
                         line,
-                        "; {claimed} ticked step{} recorded as claimed (not checked)",
+                        "; {claimed} finished task{} recorded as claimed (not checked)",
                         if *claimed == 1 { "" } else { "s" }
+                    );
+                }
+                if *steps_removed > 0 {
+                    let _ = write!(
+                        line,
+                        "; dropped {steps_removed} step item{} (steps are not tasks)",
+                        if *steps_removed == 1 { "" } else { "s" }
                     );
                 }
                 Some(line)
@@ -250,6 +256,19 @@ pub fn sources(conn: &Connection, repo_id: &str) -> Result<Vec<PlanSource>> {
 
 fn source(conn: &Connection, repo_id: &str, path: &str) -> Result<Option<PlanSource>> {
     Ok(sources(conn, repo_id)?.into_iter().find(|s| s.path == path))
+}
+
+/// Does the file's last import still hold step subtasks (older versions imported every
+/// step checkbox as a task)? Such a file is imported once more to drop them.
+fn has_step_items(conn: &Connection, repo_id: &str, path: &str) -> Result<bool> {
+    let n: i64 = conn
+        .prepare_cached(
+            "SELECT count(*) FROM plan_source_items i
+             JOIN plan_nodes n ON n.repo_id = i.repo_id AND n.id = i.node_id
+             WHERE i.repo_id = ?1 AND i.path = ?2 AND i.step_no != 0 AND n.status != 'dropped'",
+        )?
+        .query_row(params![repo_id, path], |r| r.get(0))?;
+    Ok(n > 0)
 }
 
 /// A file's `plan_source_items` with their nodes' state.
@@ -358,7 +377,7 @@ fn container_titled(conn: &Connection, repo_id: &str, title: &str) -> Result<Opt
 }
 
 /// Link a file to an existing goal or milestone by hand (`--into`): its children are
-/// matched to the file's tasks by title (case-insensitive), their children to the steps.
+/// matched to the file's tasks by title (case-insensitive). Steps are not tasks.
 fn items_by_title(
     conn: &Connection,
     repo_id: &str,
@@ -387,24 +406,6 @@ fn items_by_title(
             files: node.expected_files.clone(),
             next_child: next,
         });
-        for s in &t.steps {
-            if let Some(sub) = tree.iter().find(|n| {
-                n.parent_id.as_deref() == Some(node.id.as_str())
-                    && !used.contains(&n.id)
-                    && n.title.trim().eq_ignore_ascii_case(&s.text)
-            }) {
-                used.push(sub.id.clone());
-                out.push(SourceItem {
-                    task_no: t.number,
-                    step_no: Some(s.number),
-                    node_id: sub.id.clone(),
-                    title: s.text.clone(),
-                    status: sub.status,
-                    files: sub.expected_files.clone(),
-                    next_child: next_child(conn, repo_id, &sub.id)?,
-                });
-            }
-        }
     }
     Ok(out)
 }
@@ -519,7 +520,7 @@ fn import_in(
     if into.is_none()
         && let Some(p) = &prev
     {
-        if p.hash == hash {
+        if p.hash == hash && !has_step_items(tx, repo_id, &rel)? {
             // Same content (perhaps a new mtime): nothing is written.
             return Ok(ImportOutcome::Unchanged { path: rel });
         }
@@ -613,31 +614,8 @@ fn apply_import(
             )));
         }
     }
-    for (id, reason) in &d.keeps {
-        if let Some(node) = get_node(tx, repo_id, id)? {
-            let data = NodeEdited {
-                id: id.clone(),
-                title: None,
-                expected_files: Some(node.expected_files),
-                meta: EditMeta {
-                    reason: Some(reason.clone()),
-                    replan_id: None,
-                },
-            };
-            append_in(
-                tx,
-                EventDraft::new(
-                    repo_id,
-                    &ctx.session_id,
-                    "node_edited",
-                    serde_json::to_value(data)?,
-                )
-                .actor(ctx.actor.clone())
-                .task(id),
-            )?;
-            changes.push(format!("keep {id}: {reason}, and work was done on it"));
-        }
-    }
+    record_keeps(tx, repo_id, ctx, &d.keeps, &mut changes)?;
+    changes.extend(d.step_notes.iter().cloned());
     record_claims(tx, repo_id, ctx, &rel, &d.claims, &mut changes)?;
     let data = PlanImported {
         path: rel.clone(),
@@ -670,6 +648,7 @@ fn apply_import(
         .actor(ctx.actor.clone()),
     )?;
     let count = |p: fn(&PlanOp) -> bool| d.ops.iter().filter(|o| p(o)).count();
+    let steps_removed = d.steps_removed;
     Ok(ImportOutcome::Imported {
         path: rel,
         node_id,
@@ -683,12 +662,49 @@ fn apply_import(
             )
         }),
         edited: count(|o| matches!(o, PlanOp::EditNode { .. })),
-        removed: count(|o| matches!(o, PlanOp::RemoveNode { .. })),
-        kept: d.keeps.len(),
+        removed: count(|o| matches!(o, PlanOp::RemoveNode { .. })).saturating_sub(steps_removed),
+        kept: d.keeps.len() - d.step_notes.len(),
         claimed: d.claims.len(),
+        steps_removed,
         replan: d.replan,
         changes,
     })
+}
+
+/// Note on each node that is no longer in the file but kept because work was done on it.
+fn record_keeps(
+    tx: &Transaction,
+    repo_id: &str,
+    ctx: &ImportCtx,
+    keeps: &[(String, String)],
+    changes: &mut Vec<String>,
+) -> Result<()> {
+    for (id, reason) in keeps {
+        if let Some(node) = get_node(tx, repo_id, id)? {
+            let data = NodeEdited {
+                id: id.clone(),
+                title: None,
+                expected_files: Some(node.expected_files),
+                meta: EditMeta {
+                    reason: Some(reason.clone()),
+                    replan_id: None,
+                },
+            };
+            append_in(
+                tx,
+                EventDraft::new(
+                    repo_id,
+                    &ctx.session_id,
+                    "node_edited",
+                    serde_json::to_value(data)?,
+                )
+                .actor(ctx.actor.clone())
+                .task(id),
+            )?;
+            changes.push(format!("keep {id}: {reason}, and work was done on it"));
+        }
+    }
+    Ok(())
 }
 
 /// Record each ticked step as claimed done: inferred, so no decision ask, no checkpoint
@@ -798,7 +814,8 @@ pub fn scan(
         };
         if known.iter().any(|k| {
             k.path == f.rel && k.size == f.size && k.mtime == f.mtime && !k.hash.is_empty()
-        }) {
+        }) && !has_step_items(store.conn(), repo_id, &f.rel)?
+        {
             continue;
         }
         let cost = f.size.min(MAX_FILE_BYTES);

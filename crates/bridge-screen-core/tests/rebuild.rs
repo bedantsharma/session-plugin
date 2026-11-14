@@ -1138,9 +1138,9 @@ fn rebuild_reproduces_import_init_wait_and_branch_views() {
             .filter(|l| l.starts_with(&format!("{table}: ")))
             .count()
     };
-    // a.md in repos a and c (c's as a baseline), its tasks and steps, three waits.
+    // a.md in repos a and c (c as a baseline), its tasks (steps are not imported), three waits.
     assert_eq!(rows("plan_sources"), 2);
-    assert!(rows("plan_source_items") >= 12);
+    assert!(rows("plan_source_items") >= 4);
     assert_eq!(rows("waits"), 3);
     let one = |sql: &str| -> i64 { s.conn().query_row(sql, [], |r| r.get(0)).unwrap() };
     assert_eq!(

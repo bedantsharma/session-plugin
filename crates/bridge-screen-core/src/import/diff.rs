@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use crate::plan::{NodeKind, NodeSource, NodeStatus, PlanOp};
 
-use super::parse::{ParsedPlan, ParsedStep, ParsedTask};
+use super::parse::{ParsedPlan, ParsedTask, Ticks};
 
 /// One task or step a file's last import produced (a `plan_source_items` row), with its
 /// node's current state.
@@ -79,6 +79,10 @@ pub struct ImportDiff {
     pub claims: Vec<String>,
     /// Nodes no longer in the file but with work on them: kept, with this reason.
     pub keeps: Vec<(String, String)>,
+    /// Step subtasks from older imports that were dropped (they are no longer tasks).
+    pub steps_removed: usize,
+    /// Plain-words notes for old step subtasks that were kept because they passed tests.
+    pub step_notes: Vec<String>,
     /// Every task and step of the file after the import.
     pub items: Vec<ItemLink>,
     pub tasks_added: usize,
@@ -136,15 +140,17 @@ fn pair<'a, W, H>(
     out.into_iter().map(|j| j.map(|j| &have[j])).collect()
 }
 
-/// A task (`step` none) or subtask the file adds.
+/// A task the file adds.
 struct NewNode<'a> {
     parent: &'a str,
     id: String,
     title: &'a str,
     files: Vec<String>,
     task: u32,
-    step: Option<u32>,
 }
+
+/// Why an old step subtask was dropped.
+pub const STEP_REMOVED_REASON: &str = "step checkboxes are no longer imported as tasks";
 
 struct Builder<'a> {
     file: &'a str,
@@ -161,11 +167,7 @@ impl Builder<'_> {
         self.push(
             PlanOp::AddNode {
                 parent: Some(n.parent.to_string()),
-                kind: if n.step.is_some() {
-                    NodeKind::Subtask
-                } else {
-                    NodeKind::Task
-                },
+                kind: NodeKind::Task,
                 title: n.title.to_string(),
                 intent: None,
                 estimate_min: None,
@@ -174,10 +176,10 @@ impl Builder<'_> {
             Some(NodeSource::File {
                 file: self.file.to_string(),
                 task: n.task,
-                step: n.step,
+                step: None,
             }),
         );
-        self.link(n.task, n.step, &n.id, n.title);
+        self.link(n.task, None, &n.id, n.title);
         self.d.added.push(n.id);
     }
 
@@ -192,7 +194,7 @@ impl Builder<'_> {
 
     /// Drop `item` if nothing was done on it (nor on `children`), else keep it.
     fn retire(&mut self, item: &SourceItem, children: &[&SourceItem]) {
-        if has_work(item.status) || children.iter().any(|c| has_work(c.status)) {
+        if has_work(item.status) || children.iter().any(|c| c.status.counts_as_done()) {
             self.d
                 .keeps
                 .push((item.node_id.clone(), format!("no longer in {}", self.file)));
@@ -275,25 +277,13 @@ impl Builder<'_> {
             title: &t.title,
             files: t.files.clone(),
             task: t.number,
-            step: None,
         });
-        for (k, s) in t.steps.iter().enumerate() {
-            let sid = format!("{id}.{}", k + 1);
-            self.add_node(NewNode {
-                parent: id,
-                id: sid.clone(),
-                title: &s.text,
-                files: Vec::new(),
-                task: t.number,
-                step: Some(s.number),
-            });
-            if s.checked {
-                self.d.claims.push(sid);
-            }
+        if t.ticks() == Ticks::All {
+            self.d.claims.push(id.to_string());
         }
     }
 
-    fn existing_task(&mut self, t: &ParsedTask, item: &SourceItem, prev_steps: &[&SourceItem]) {
+    fn existing_task(&mut self, t: &ParsedTask, item: &SourceItem) {
         let title = (!same_title(&t.title, &item.title)).then(|| t.title.clone());
         let files = (!t.files.is_empty() && t.files != item.files).then(|| t.files.clone());
         if title.is_some() {
@@ -310,52 +300,31 @@ impl Builder<'_> {
             );
         }
         self.link(t.number, None, &item.node_id, &t.title);
-        let have: Vec<SourceItem> = prev_steps.iter().map(|s| (*s).clone()).collect();
-        let pairs = pair(
-            &t.steps,
-            &have,
-            |s: &ParsedStep| s.number,
-            |s| &s.text,
-            |h: &SourceItem| h.step_no.unwrap_or(0),
-            |h| &h.title,
-        );
-        let mut next = item.next_child;
-        for (s, matched) in t.steps.iter().zip(&pairs) {
-            if let Some(h) = matched {
-                if !same_title(&s.text, &h.title) {
-                    self.push(
-                        PlanOp::EditNode {
-                            id: h.node_id.clone(),
-                            title: Some(s.text.clone()),
-                            expected_files: None,
-                        },
-                        None,
-                    );
-                }
-                self.link(t.number, Some(s.number), &h.node_id, &s.text);
-                if s.checked && !is_done(h.status) {
-                    self.d.claims.push(h.node_id.clone());
-                }
-            } else {
-                let sid = format!("{}.{next}", item.node_id);
-                next += 1;
-                self.add_node(NewNode {
-                    parent: &item.node_id,
-                    id: sid.clone(),
-                    title: &s.text,
-                    files: Vec::new(),
-                    task: t.number,
-                    step: Some(s.number),
-                });
-                if s.checked {
-                    self.d.claims.push(sid);
-                }
-            }
+        if t.ticks() == Ticks::All && !is_done(item.status) {
+            self.d.claims.push(item.node_id.clone());
         }
-        for h in &have {
-            if !pairs.iter().flatten().any(|m| m.node_id == h.node_id) {
-                self.retire(h, &[]);
-            }
+    }
+
+    /// Old imports made a subtask of every step checkbox; drop them (spec §6). A step that
+    /// passed tests is kept and named.
+    fn drop_step(&mut self, step: &SourceItem) {
+        if step.status.counts_as_done() {
+            self.d.keeps.push((
+                step.node_id.clone(),
+                "step checkboxes are no longer imported as tasks".to_string(),
+            ));
+            self.d.step_notes.push(format!(
+                "kept step {} because it passed its tests",
+                step.node_id
+            ));
+        } else {
+            self.d.steps_removed += 1;
+            self.push(
+                PlanOp::RemoveNode {
+                    id: step.node_id.clone(),
+                },
+                None,
+            );
         }
     }
 }
@@ -378,6 +347,10 @@ pub fn diff(
         .collect();
     let mut next = b.open(target, parsed);
     let container = target.container().to_string();
+    // Step subtasks left by older imports go first, so a task removed later is still whole.
+    for step in prev.iter().filter(|i| i.step_no.is_some()) {
+        b.drop_step(step);
+    }
     let prev_tasks: Vec<SourceItem> = prev
         .iter()
         .filter(|i| i.step_no.is_none())
@@ -393,12 +366,7 @@ pub fn diff(
     );
     for (t, matched) in parsed.tasks.iter().zip(&pairs) {
         if let Some(item) = matched {
-            let steps: Vec<&SourceItem> = prev
-                .iter()
-                .filter(|i| i.task_no == item.task_no && i.step_no.is_some())
-                .copied()
-                .collect();
-            b.existing_task(t, item, &steps);
+            b.existing_task(t, item);
         } else {
             let id = if container == "G" {
                 next.to_string()
