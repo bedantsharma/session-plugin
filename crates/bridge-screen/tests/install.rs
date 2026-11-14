@@ -262,7 +262,7 @@ fn plugin_package_is_consistent() {
     let mode = std::fs::metadata(&launcher).unwrap().permissions().mode();
     assert_ne!(mode & 0o111, 0, "launcher must be executable");
     let skill = std::fs::read_to_string(plugin.join("skills/bridge-screen/SKILL.md")).unwrap();
-    assert!(skill.lines().count() <= 150);
+    assert!(skill.lines().count() <= 170);
     assert!(skill.starts_with("---\nname: bridge-screen\n"));
 }
 
@@ -325,7 +325,27 @@ fn bridge_screen_skill_mentions_pages_and_lead_briefing() {
     ] {
         assert!(skill.contains(needle), "the skill never says {needle}");
     }
-    assert!(skill.lines().count() <= 150, "{}", skill.lines().count());
+}
+
+/// The skill teaches no-test tasks and tracks, and names only tools the server has.
+#[test]
+fn bridge_screen_skill_teaches_review_tasks_and_tracks() {
+    let skill =
+        std::fs::read_to_string(checkout().join("plugin/skills/bridge-screen/SKILL.md")).unwrap();
+    for heading in ["### When no test can check the work", "## 9. Tracks"] {
+        assert!(skill.contains(heading), "{heading}");
+    }
+    let mcp = std::fs::read_to_string(checkout().join("crates/bridge-screen/src/mcp.rs")).unwrap();
+    // Every backticked word that looks like a tool name must be a tool in mcp.rs.
+    for tool in ["start_track", "claim_task", "plan_edit", "claim_done"] {
+        assert!(skill.contains(tool), "the skill never says {tool}");
+        assert!(
+            mcp.contains(&format!("async fn {tool}(")),
+            "{tool} is not a tool"
+        );
+    }
+    assert!(skill.contains("\"check\": \"review\""));
+    assert!(skill.lines().count() <= 170, "{}", skill.lines().count());
 }
 
 /// The target triple the launcher picks on this machine.

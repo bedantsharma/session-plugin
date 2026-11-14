@@ -112,6 +112,15 @@ the owner has been flagged; keep going only if essential, and follow any owner a
   settled. Changing one? Supersede it (`"supersedes": "D4"`); don't contradict it.
 - "X is done on `branch` @sha": a task yours depends on is verified — merge or rebase.
 
+### When no test can check the work
+
+Research, planning, docs and tidying plan files can't be tested. Give such a task
+`"check": "review"` (in `plan_edit` `add_node` / `edit_node`, `claim_task` `new_task`, or
+an `init_plan` draft). It counts as done once its result is saved: `claim_done` with the
+files committed, or with no files and a real summary (at least 10 words). The owner can
+still mark it broken. Never switch a task to `review` to dodge a failing test: switching
+needs a reason, is refused after "broken" or once tests passed, and shows in the history.
+
 ## 6. Leftovers of dead sessions
 
 The briefing lists uncommitted files a crashed or abandoned session left, each with a
@@ -143,6 +152,16 @@ summary, publish with the Artifact tool once they confirm, then `report_publishe
   **decision-log** (`"mode": "append"`) for a choice someone will later ask "why?" about;
   **glossary** for each new term; **project-map** when a part is added or changes job.
   The **intent** is the owner's: change it only with their words in `owner_said`.
+
+## 9. Tracks
+
+One folder can hold several unrelated pieces of work, each a **track** with its own goal,
+bar and numbering. The briefing lists them ("Tracks (2 open): …"). If your work doesn't
+clearly belong to one, ask the owner: "continue track X, or start a new one?" Start one
+only with their words: `start_track {"title": "…", "intent": "…", "owner_said": "<their
+words>"}`. Ids are raw (`T2-1.3` is task 1.3 of track 2; track 1 has no prefix), so every
+tool takes one id and no track argument. Hiding things from the front screen, removing
+work for good and finishing a track are the owner's: never do them yourself.
 
 ## Notes from bridge-screen
 
